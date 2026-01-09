@@ -1,0 +1,71 @@
+/* Head Teacher Portal Custom Styles */
+
+.headteacher-portal {
+  background-color: #f0f8ff;
+  min-height: 100vh;
+}
+
+/* Academic Performance Cards */
+.academic-card {
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border: none !important;
+  border-radius: 12px !important;
+}
+
+.academic-card .performance-badge {
+  font-size: 1.25rem;
+  font-weight: bold;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+}
+
+/* Student/Staff Directory */
+.directory-item {
+  padding: 1rem;
+  border-radius: 8px;
+  transition: all 0.3s ease;
+  border: 1px solid transparent;
+}
+
+.directory-item:hover {
+  border-color: #007bff;
+  background-color: #f8f9fa;
+}
+
+/* Attendance Chart */
+.attendance-chart {
+  height: 200px;
+}
+
+/* Discipline Case */
+.discipline-case {
+  border-left: 4px solid;
+  padding-left: 1rem;
+  margin-bottom: 1rem;
+}
+
+.discipline-case.major {
+  border-left-color: #dc3545;
+}
+
+.discipline-case.minor {
+  border-left-color: #ffc107;
+}
+
+.discipline-case.resolved {
+  border-left-color: #28a745;
+}
+
+/* Meeting Schedule */
+.meeting-schedule {
+  list-style: none;
+  padding: 0;
+}
+
+.meeting-schedule li {
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: 8px;
+  background-color: #f8f9fa;
+  border-left: 4px solid #007bff;
+}

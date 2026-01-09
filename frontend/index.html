@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
+    />
+    <meta
+      name="description"
+      content="Delvok Academy – A modern school management system for students, teachers, and administrators."
+    />
+    <meta name="theme-color" content="#1a73e8" />
+    <meta name="keywords" content="school, academy, education, management, students, teachers, delvok" />
+    <meta name="author" content="Delvok Academy" />
+
+    <title>Delvok Academy | School Management System</title>
+
+    <!-- ✅ Favicon and Logo -->
+    <link rel="icon" type="image/svg+xml" href="/src/assets/favicon.svg" />
+    <link rel="apple-touch-icon" href="/src/assets/logo192.png" />
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- ✅ Fonts -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css"
+      rel="stylesheet"
+    />
+
+    <!-- ✅ Preload critical resources -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <!-- ✅ Open Graph / Social Media Meta Tags -->
+    <meta property="og:title" content="Delvok Academy | School Management System" />
+    <meta property="og:description" content="A modern school management system for students, teachers, and administrators." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://delvok.academy" />
+    <meta property="og:image" content="/src/assets/img/logo.png" />
+
+    <!-- ✅ Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Delvok Academy | School Management System" />
+    <meta name="twitter:description" content="A modern school management system for students, teachers, and administrators." />
+    <meta name="twitter:image" content="/src/assets/img/logo.png" />
+
+    <!-- ✅ Structured Data for SEO -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "EducationalOrganization",
+      "name": "Delvok Academy",
+      "description": "A modern school management system for students, teachers, and administrators.",
+      "url": "https://delvok.academy",
+      "logo": "/src/assets/img/logo.png",
+      "sameAs": []
+    }
+    </script>
+
+    <!-- Optional Security Policy -->
+    <!--
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self' 'unsafe-inline';
+               style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net;
+               font-src https://fonts.gstatic.com https://cdn.jsdelivr.net;"
+    />
+    -->
+  </head>
+
+  <body class="font-inter antialiased bg-gray-50 text-gray-900">
+    <noscript>
+      <div class="flex items-center justify-center min-h-screen bg-red-50">
+        <div class="text-center p-8 bg-white rounded-lg shadow-lg max-w-md mx-4">
+          <div class="text-red-600 text-6xl mb-4">⚠️</div>
+          <h1 class="text-2xl font-bold text-gray-900 mb-4">JavaScript Required</h1>
+          <p class="text-gray-600 mb-6">
+            Delvok Academy requires JavaScript to function properly. Please enable JavaScript in your browser settings to continue.
+          </p>
+          <div class="text-sm text-gray-500">
+            If you need assistance, please contact your system administrator.
+          </div>
+        </div>
+      </div>
+    </noscript>
+
+    <!-- ✅ Loading Screen (shown until React app loads) -->
+    <div id="loading-screen" class="fixed inset-0 bg-white z-50 flex flex-col items-center justify-center transition-opacity duration-300">
+      <!-- ✅ Logo Section -->
+      <div class="mb-8 text-center animate-fade-in">
+        <img
+          src="/src/assets/img/logo.png"
+          alt="Delvok Academy Logo"
+          width="300"
+          height="250"
+          class="rounded-2xl shadow-lg mx-auto"
+          onerror="this.style.display='none'"
+        />
+        <h1 class="text-3xl font-bold text-gray-900 mt-4">Delvok Academy</h1>
+        <p class="text-gray-600 mt-2">School Management System</p>
+      </div>
+
+      <!-- ✅ Loading Spinner -->
+      <div class="flex flex-col items-center space-y-4">
+        <div class="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-gray-500 text-sm">Loading application...</p>
+      </div>
+    </div>
+
+    <!-- ✅ App Root -->
+    <div id="root"></div>
+
+    <!-- ✅ Vite Entry -->
+    <script type="module" src="/src/main.jsx"></script>
+
+    <style>
+      /* Custom animations */
+      @keyframes fade-in {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      
+      .animate-fade-in {
+        animation: fade-in 0.6s ease-out;
+      }
+
+      /* Hide loading screen when app loads */
+      #root:not(:empty) + #loading-screen {
+        opacity: 0;
+        pointer-events: none;
+      }
+    </style>
+
+    <script>
+      // Hide loading screen when React app mounts
+      window.addEventListener('load', function() {
+        setTimeout(() => {
+          const loadingScreen = document.getElementById('loading-screen');
+          if (loadingScreen) {
+            loadingScreen.style.opacity = '0';
+            setTimeout(() => {
+              loadingScreen.style.display = 'none';
+            }, 300);
+          }
+        }, 1000);
+      });
+
+      // Handle image loading errors
+      document.addEventListener('DOMContentLoaded', function() {
+        const logo = document.querySelector('img[alt="Delvok Academy Logo"]');
+        if (logo) {
+          logo.onerror = function() {
+            this.style.display = 'none';
+            const logoContainer = document.getElementById('app-logo');
+            if (logoContainer) {
+              logoContainer.innerHTML = `
+                <div class="bg-blue-600 text-white rounded-2xl p-8 text-center">
+                  <h1 class="text-4xl font-bold">Delvok Academy</h1>
+                  <p class="text-blue-100 mt-2">School Management System</p>
+                </div>
+              `;
+            }
+          };
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,69 @@
+/* Teacher Portal Custom Styles */
+
+.teacher-portal {
+  background-color: #f9f7ff;
+  min-height: 100vh;
+}
+
+/* Class Card */
+.class-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 12px !important;
+  overflow: hidden;
+}
+
+.class-card .card-body {
+  padding: 1.5rem;
+}
+
+/* Assignment Section */
+.assignment-item {
+  padding: 1rem;
+  background: white;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  border-left: 4px solid #007bff;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.assignment-item.late {
+  border-left-color: #dc3545;
+}
+
+.assignment-item.submitted {
+  border-left-color: #28a745;
+}
+
+/* Grade Book */
+.grade-book {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+}
+
+.grade-book table {
+  width: 100%;
+}
+
+.grade-book th {
+  background-color: #f8f9fa;
+  padding: 1rem;
+  text-align: left;
+  border-bottom: 2px solid #e9ecef;
+}
+
+.grade-book td {
+  padding: 1rem;
+  border-bottom: 1px solid #e9ecef;
+}
+
+/* Lesson Plan */
+.lesson-plan {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+  border-left: 4px solid #20c997;
+}

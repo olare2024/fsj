@@ -1,0 +1,178 @@
+/* DataTable.css */
+.data-table-container {
+  overflow: hidden;
+}
+
+.data-table-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 2rem;
+  color: #666;
+}
+
+/* StatCard.css */
+.stat-card {
+  height: 100%;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+}
+
+.stat-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+.stat-card-icon {
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.04);
+}
+
+.stat-card-value {
+  font-weight: 600 !important;
+  margin-bottom: 0.5rem;
+}
+
+.stat-card-unit {
+  font-size: 0.8em;
+  margin-left: 4px;
+  opacity: 0.7;
+}
+
+.stat-card-footer {
+  margin-top: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.trend-chip.positive {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+}
+
+.trend-chip.negative {
+  background-color: #ffebee;
+  color: #c62828;
+}
+
+.trend-chip.neutral {
+  background-color: #f5f5f5;
+  color: #616161;
+}
+
+/* ChartCard.css */
+.chart-card {
+  height: 100%;
+}
+
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.range-selector {
+  min-width: 120px;
+}
+
+.chart-loading,
+.chart-error,
+.chart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  color: #666;
+}
+
+/* LoadingOverlay.css */
+.loading-overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-overlay-inline {
+  position: relative;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.error-container {
+  text-align: center;
+  padding: 2rem;
+}
+
+.retry-button {
+  margin-top: 1rem;
+  padding: 8px 16px;
+  background: #1976d2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* ErrorBoundary.css */
+.error-boundary {
+  max-width: 600px;
+  margin: 2rem auto;
+  padding: 2rem;
+}
+
+.error-content {
+  text-align: center;
+}
+
+.error-icon {
+  font-size: 64px !important;
+  color: #f44336;
+  margin-bottom: 1rem;
+}
+
+.error-actions {
+  margin: 2rem 0;
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+}
+
+.error-details {
+  margin-top: 2rem;
+  padding: 1rem;
+  background: #f5f5f5;
+  border-radius: 4px;
+  text-align: left;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.error-stack {
+  font-family: monospace;
+  white-space: pre-wrap;
+  color: #d32f2f;
+}
+
+.support-section {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid #eee;
+}

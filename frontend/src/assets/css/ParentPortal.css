@@ -1,0 +1,121 @@
+/* Parent Portal Custom Styles */
+
+.parent-portal {
+  background-color: #fff9f0;
+  min-height: 100vh;
+}
+
+/* Child Info */
+.child-info {
+  background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+  color: white;
+  border-radius: 12px !important;
+  overflow: hidden;
+}
+
+/* Fee Status */
+.fee-status {
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.fee-status.paid {
+  background-color: #d4edda;
+  color: #155724;
+}
+
+.fee-status.partial {
+  background-color: #fff3cd;
+  color: #856404;
+}
+
+.fee-status.overdue {
+  background-color: #f8d7da;
+  color: #721c24;
+}
+
+/* Academic Progress */
+.progress-tracker {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.progress-subject {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.progress-bar-container {
+  height: 8px;
+  background-color: #e9ecef;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+
+/* Attendance Record */
+.attendance-record {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.attendance-day {
+  display: inline-block;
+  width: 30px;
+  height: 30px;
+  line-height: 30px;
+  text-align: center;
+  border-radius: 50%;
+  margin: 2px;
+  font-size: 0.75rem;
+}
+
+.attendance-day.present {
+  background-color: #d4edda;
+  color: #155724;
+}
+
+.attendance-day.absent {
+  background-color: #f8d7da;
+  color: #721c24;
+}
+
+.attendance-day.late {
+  background-color: #fff3cd;
+  color: #856404;
+}
+
+/* Communication */
+.communication-log {
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.message-item {
+  padding: 1rem;
+  margin-bottom: 1rem;
+  border-radius: 8px;
+  border-left: 4px solid;
+}
+
+.message-item.sent {
+  border-left-color: #007bff;
+  background-color: #f8f9fa;
+}
+
+.message-item.received {
+  border-left-color: #28a745;
+  background-color: #f0fff4;
+}

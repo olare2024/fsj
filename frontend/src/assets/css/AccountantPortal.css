@@ -1,0 +1,83 @@
+/* Accountant Portal Custom Styles */
+
+.accountant-portal {
+  background-color: #f8f9fa;
+  min-height: 100vh;
+}
+
+/* Financial Cards */
+.financial-card {
+  border-left: 4px solid;
+  border-radius: 12px !important;
+  transition: all 0.3s ease;
+}
+
+.financial-card.revenue {
+  border-left-color: #28a745;
+}
+
+.financial-card.expense {
+  border-left-color: #dc3545;
+}
+
+.financial-card.balance {
+  border-left-color: #007bff;
+}
+
+.financial-card.pending {
+  border-left-color: #ffc107;
+}
+
+/* Currency Display */
+.currency-display {
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+.currency-positive {
+  color: #28a745;
+}
+
+.currency-negative {
+  color: #dc3545;
+}
+
+/* Transaction Table */
+.transaction-table tbody tr {
+  transition: background-color 0.2s;
+}
+
+.transaction-table tbody tr:hover {
+  background-color: #f8fafc;
+}
+
+/* Export Button */
+.export-btn {
+  background: linear-gradient(135deg, #28a745 0%, #20c997 100%) !important;
+  border: none !important;
+}
+
+/* Reconciliation Status */
+.reconciliation-status {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.reconciliation-status.reconciled {
+  background-color: #d4edda;
+  color: #155724;
+}
+
+.reconciliation-status.pending {
+  background-color: #fff3cd;
+  color: #856404;
+}
+
+.reconciliation-status.discrepancy {
+  background-color: #f8d7da;
+  color: #721c24;
+}

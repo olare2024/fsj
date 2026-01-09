@@ -1,0 +1,215 @@
+/* Navbar.css */
+
+/* Navbar Wrapper */
+.navbar-wrapper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1030;
+}
+
+.upper-navbar {
+  min-height: 45px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.lower-navbar {
+  min-height: 65px;
+  top: 45px;
+  z-index: 1029;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Background Gradient */
+.bg-primary-gradient {
+  background: linear-gradient(135deg, var(--bs-primary) 0%, #0056b3 100%) !important;
+}
+
+/* Nav Links */
+.nav-link {
+  border-radius: 6px;
+  transition: all 0.3s ease;
+  margin: 1px 0;
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+.nav-link:hover, .nav-link.active {
+  background: rgba(255, 255, 255, 0.15);
+  transform: translateY(-1px);
+  color: white !important;
+}
+
+.nav-link.active {
+  background: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Active Indicator */
+.active-indicator {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  background: white;
+  border-radius: 50%;
+}
+
+/* School Icon */
+.school-icon {
+  font-size: 1.5rem;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+
+/* Dropdowns */
+.dropdown-menu {
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.dropdown-item {
+  border-radius: 4px;
+  margin: 1px 4px;
+  transition: all 0.2s ease;
+}
+
+.dropdown-item:hover, .dropdown-item.active {
+  background: var(--bs-primary);
+  color: white !important;
+  transform: translateX(3px);
+}
+
+.dropdown-header {
+  padding: 0.75rem 1rem;
+}
+
+/* Search Input */
+.search-input {
+  border-radius: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  backdrop-filter: blur(10px);
+}
+
+.search-input::placeholder {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.search-input:focus {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: white;
+  box-shadow: 0 0 0 0.2rem rgba(255, 255, 255, 0.25);
+}
+
+/* Search Results */
+.search-results-dropdown {
+  background: white;
+  border-radius: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: 1060;
+}
+
+.search-result-item {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.search-result-item:hover {
+  background: #f8f9fa;
+  transform: translateX(3px);
+}
+
+/* Mobile Search Overlay */
+.search-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.9);
+  z-index: 1040;
+  display: flex;
+  align-items: flex-start;
+  padding-top: 80px;
+}
+
+.search-overlay-content {
+  width: 100%;
+  padding: 0 1rem;
+}
+
+.search-input-lg {
+  height: 50px;
+  font-size: 1.2rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  color: white;
+}
+
+.search-input-lg:focus {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: white;
+}
+
+.search-results-overlay {
+  margin-top: 1rem;
+  background: white;
+  border-radius: 8px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+/* Responsive Styles */
+@media (max-width: 991.98px) {
+  body {
+    padding-top: 106px !important;
+  }
+  
+  .upper-navbar .navbar-nav {
+    display: none !important;
+  }
+  
+  .nav-link {
+    margin: 3px 0;
+    text-align: center;
+    justify-content: center;
+  }
+  
+  .dropdown-menu {
+    background: rgba(255, 255, 255, 0.95);
+    text-align: center;
+  }
+  
+  .dropdown-item {
+    color: #333 !important;
+    justify-content: center;
+  }
+  
+  .dropdown-item:hover {
+    background: var(--bs-primary);
+    color: white !important;
+  }
+  
+  .search-container-desktop {
+    display: none;
+  }
+}
+
+@media (min-width: 992px) {
+  body {
+    padding-top: 110px !important;
+  }
+  
+  .upper-navbar .navbar-brand {
+    display: none !important;
+  }
+}

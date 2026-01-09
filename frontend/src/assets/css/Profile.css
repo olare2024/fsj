@@ -1,0 +1,62 @@
+/* Profile.css */
+.profile-image-section {
+  text-align: center;
+}
+
+.profile-image-container {
+  margin-bottom: 20px;
+}
+
+.profile-image {
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 4px solid #f8f9fa;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.profile-image-placeholder {
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  font-weight: bold;
+  margin: 0 auto;
+  border: 4px solid #f8f9fa;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.profile-image-actions {
+  margin-top: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.profile-stats .progress {
+  background-color: #e9ecef;
+}
+
+.profile-stats .progress-bar {
+  transition: width 0.6s ease;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .profile-image {
+    width: 140px;
+    height: 140px;
+  }
+  
+  .profile-image-placeholder {
+    width: 140px;
+    height: 140px;
+    font-size: 36px;
+  }
+}
