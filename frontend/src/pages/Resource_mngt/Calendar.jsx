@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import {academicAPI} from '../../services/academicAPI';
+import {academicsAPI} from '../../services/academicAPI';
 import userAPI from '../../services/userAPI';
 import { 
   CalendarIcon,

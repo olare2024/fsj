@@ -8,7 +8,7 @@ from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
 
 # Import models from other apps
-from academics.models import Class, Subject, AcademicYear, AcademicTerm
+from academics.models import Classroom, Subject, AcademicYear, AcademicTerm
 from accounts.models import User
 from students.models import StudentProfile, StudentEnrollment
 
@@ -187,7 +187,7 @@ class Examination(BaseExamModel):
     # Academic context
     academic_year = models.ForeignKey(AcademicYear, on_delete=models.CASCADE)
     term = models.ForeignKey(AcademicTerm, on_delete=models.CASCADE)
-    classes = models.ManyToManyField(Class, related_name="examinations")
+    classes = models.ManyToManyField(Classroom, related_name="examinations")
     subjects = models.ManyToManyField(Subject, related_name="examinations", blank=True)
     
     # Additional details
@@ -552,7 +552,7 @@ class Result(BaseExamModel):
         
         if self.class_position and self.total_students:
             if self.class_position > self.total_students:
-                raise ValidationError("Class position cannot exceed total students.")
+                raise ValidationError("Classroom position cannot exceed total students.")
 
     def save(self, *args, **kwargs):
         """Auto-calculate total students if not provided"""

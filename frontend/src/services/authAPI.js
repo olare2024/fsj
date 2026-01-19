@@ -1,7 +1,7 @@
-// authAPI.js - FIXED & IMPROVED VERSION
+// authAPI.js - UPDATED TO MATCH DJANGO ENDPOINTS
 import api from './api.js';
 
-// Built-in error handling utility - ALWAYS RETURNS, NEVER THROWS
+// Built-in error handling utility
 const handleAPIError = (error, defaultMessage = 'An error occurred') => {
   console.error('🔴 API Error:', error);
   
@@ -9,7 +9,6 @@ const handleAPIError = (error, defaultMessage = 'An error occurred') => {
     const serverError = error.response.data;
     const status = error.response.status;
     
-    // Handle specific status codes
     if (status === 401) {
       return {
         success: false,
@@ -30,7 +29,6 @@ const handleAPIError = (error, defaultMessage = 'An error occurred') => {
       };
     }
     
-    // Handle Django error formats
     if (typeof serverError === 'object') {
       return {
         success: false,
@@ -68,10 +66,6 @@ const handleAPIError = (error, defaultMessage = 'An error occurred') => {
 const authAPI = {
   // ==================== AUTHENTICATION ENDPOINTS ====================
   
-  /**
-   * User Login - POST to /api/v1/auth/login/
-   * FIXED: Returns object, never throws
-   */
   login: async (credentials) => {
     try {
       console.log('🔄 API Request: POST /auth/login/', { 
@@ -84,17 +78,15 @@ const authAPI = {
       
       const responseData = response.data;
       
-      // Handle successful login
-      if (response.status >= 200 && response.status < 300) {
-        console.log('✅ Login successful with status:', response.status);
+      // Check for success boolean
+      if (responseData.success === true) {
+        console.log('✅ Login successful');
         
-        // Store user data
         if (responseData.user) {
           localStorage.setItem('user_data', JSON.stringify(responseData.user));
           console.log('💾 User data stored:', responseData.user.email);
         }
         
-        // Store tokens if available
         if (responseData.tokens) {
           localStorage.setItem('access_token', responseData.tokens.access);
           localStorage.setItem('refresh_token', responseData.tokens.refresh);
@@ -103,23 +95,21 @@ const authAPI = {
         
         return {
           success: true,
-          status: 'success',
           message: responseData.message || 'Login successful',
           user: responseData.user,
           tokens: responseData.tokens,
           redirect_url: responseData.redirect_url || '/dashboard',
           requires_2fa: responseData.requires_2fa || false,
           session_token: responseData.session_token,
-          user_id: responseData.user_id,
+          user_id: responseData.user?.id,
           data: responseData
         };
       }
       
-      // Handle error response
-      console.error('❌ Unexpected login response format:', responseData);
+      console.error('❌ Login failed:', responseData);
       return {
         success: false,
-        message: responseData.detail || responseData.message || 'Login failed',
+        message: responseData.message || responseData.detail || 'Login failed',
         status: response.status,
         data: responseData
       };
@@ -130,10 +120,6 @@ const authAPI = {
     }
   },
 
-  /**
-   * Verify OTP/2FA - POST to /api/v1/auth/verify-otp/
-   * FIXED: Returns object, never throws
-   */
   verifyOTP: async (otpData) => {
     try {
       console.log('🔄 Verifying OTP:', { 
@@ -147,11 +133,10 @@ const authAPI = {
       
       const responseData = response.data;
       
-      // Handle successful OTP verification
-      if (responseData.status === 'success' || response.status === 200) {
+      // Check for success boolean
+      if (responseData.success === true) {
         console.log('✅ OTP verification successful');
         
-        // Store user data and tokens
         if (responseData.user) {
           localStorage.setItem('user_data', JSON.stringify(responseData.user));
           console.log('💾 User data stored after OTP verification');
@@ -165,7 +150,6 @@ const authAPI = {
         
         return {
           success: true,
-          status: 'success',
           message: responseData.message || 'OTP verified successfully',
           user: responseData.user,
           tokens: responseData.tokens,
@@ -174,11 +158,10 @@ const authAPI = {
         };
       }
       
-      // Handle OTP verification failure
       console.error('❌ OTP verification failed:', responseData);
       return {
         success: false,
-        message: responseData.detail || responseData.message || 'OTP verification failed',
+        message: responseData.message || responseData.detail || 'OTP verification failed',
         status: response.status,
         data: responseData
       };
@@ -189,10 +172,65 @@ const authAPI = {
     }
   },
 
-  /**
-   * User Registration - POST to /api/v1/auth/register/
-   * FIXED: Returns object, never throws
-   */
+  // IMPORTANT FIX: Add this method that matches Django endpoint
+  verifyLoginOTP: async (otpData) => {
+    try {
+      console.log('🔄 Verifying Login OTP:', { 
+        email: otpData.email,
+        otp: otpData.otp,
+        method: otpData.method,
+        session_token: otpData.session_token
+      });
+      
+      const response = await api.post('/auth/verify-otp/', {
+        otp: otpData.otp,
+        session_token: otpData.session_token,
+        email: otpData.email
+      });
+      
+      console.log('✅ Login OTP verification response:', response.data);
+      
+      const responseData = response.data;
+      
+      // Check for success boolean
+      if (responseData.success === true) {
+        console.log('✅ Login OTP verification successful');
+        
+        if (responseData.user) {
+          localStorage.setItem('user_data', JSON.stringify(responseData.user));
+          console.log('💾 User data stored after login OTP verification');
+        }
+        
+        if (responseData.tokens) {
+          localStorage.setItem('access_token', responseData.tokens.access);
+          localStorage.setItem('refresh_token', responseData.tokens.refresh);
+          console.log('🔑 Tokens stored after login OTP verification');
+        }
+        
+        return {
+          success: true,
+          message: responseData.message || 'Login OTP verified successfully',
+          user: responseData.user,
+          tokens: responseData.tokens,
+          redirect_url: responseData.redirect_url,
+          data: responseData
+        };
+      }
+      
+      console.error('❌ Login OTP verification failed:', responseData);
+      return {
+        success: false,
+        message: responseData.message || responseData.detail || 'Login OTP verification failed',
+        status: response.status,
+        data: responseData
+      };
+      
+    } catch (error) {
+      console.error('❌ Login OTP verification error:', error.response?.data || error.message);
+      return handleAPIError(error, 'Login OTP verification failed');
+    }
+  },
+
   register: async (userData) => {
     try {
       console.log('🔄 API Request: POST /auth/register/', {
@@ -206,8 +244,8 @@ const authAPI = {
       
       const responseData = response.data;
       
-      // Handle successful registration
-      if (responseData.status === 'success' || response.status === 201) {
+      // Check for success boolean
+      if (responseData.success === true) {
         console.log('✅ Registration successful');
         
         return {
@@ -219,11 +257,10 @@ const authAPI = {
         };
       }
       
-      // Handle registration error
       console.error('❌ Registration failed:', responseData);
       return {
         success: false,
-        message: responseData.detail || responseData.message || 'Registration failed',
+        message: responseData.message || responseData.detail || 'Registration failed',
         status: response.status,
         data: responseData
       };
@@ -234,42 +271,39 @@ const authAPI = {
     }
   },
 
-  /**
-   * User Logout - POST to /api/v1/auth/logout/
-   * UPDATED: Accepts logout data for token blacklisting
-   */
   logout: async (logoutData = null) => {
     try {
       console.log('🔄 API Request: POST /auth/logout/');
       
-      // If logoutData is provided, use it (for blacklisting refresh token)
       const data = logoutData ? { refresh: logoutData.refresh } : {};
       
       const response = await api.post('/auth/logout/', data);
       console.log('✅ Logout response:', response.data);
       
+      // Check for success boolean
+      if (response.data.success === true) {
+        return {
+          success: true,
+          message: response.data.message || 'Logged out successfully'
+        };
+      }
+      
       return {
-        success: true,
-        message: response.data?.message || 'Logged out successfully'
+        success: true, // Still return true for logout even if API fails
+        message: response.data?.message || 'Logged out locally'
       };
     } catch (error) {
       console.error('❌ Logout API error (ignoring):', error);
-      // Return success anyway - we'll clear local storage regardless
       return {
-        success: true,
+        success: true, // Always return success for logout
         message: 'Logged out locally'
       };
     } finally {
-      // Always clear local storage
       authAPI.clearAuthData();
       console.log('🧹 Auth data cleared from localStorage');
     }
   },
 
-  /**
-   * Request Password Reset - POST to /api/v1/auth/password/reset/
-   * FIXED: Returns object, never throws
-   */
   requestPasswordReset: async (email) => {
     try {
       console.log('🔄 Requesting password reset:', { email });
@@ -278,7 +312,8 @@ const authAPI = {
       
       const responseData = response.data;
       
-      if (responseData && (responseData.status === 'success' || response.status === 200)) {
+      // Check for success boolean
+      if (responseData && responseData.success === true) {
         return {
           success: true,
           message: responseData.message || 'Password reset instructions sent!',
@@ -288,7 +323,7 @@ const authAPI = {
       
       return {
         success: false,
-        message: responseData?.detail || responseData?.message || 'Password reset request failed',
+        message: responseData?.message || responseData?.detail || 'Password reset request failed',
         status: response.status,
         data: responseData
       };
@@ -299,10 +334,6 @@ const authAPI = {
     }
   },
 
-  /**
-   * Confirm Password Reset - POST to /api/v1/auth/password/reset/confirm/
-   * FIXED: Returns object, never throws
-   */
   confirmPasswordReset: async (resetData) => {
     try {
       console.log('🔄 Confirming password reset');
@@ -311,7 +342,8 @@ const authAPI = {
       
       const responseData = response.data;
       
-      if (responseData && (responseData.status === 'success' || response.status === 200)) {
+      // Check for success boolean
+      if (responseData && responseData.success === true) {
         return {
           success: true,
           message: responseData.message || 'Password reset successfully!',
@@ -321,7 +353,7 @@ const authAPI = {
       
       return {
         success: false,
-        message: responseData?.detail || responseData?.message || 'Password reset failed',
+        message: responseData?.message || responseData?.detail || 'Password reset failed',
         status: response.status,
         data: responseData
       };
@@ -336,11 +368,10 @@ const authAPI = {
   
   /**
    * Get Current User Profile - GET to /api/v1/auth/me/
-   * FIXED: Returns object, never throws
    */
   getCurrentUser: async () => {
     try {
-      console.log('🔄 Getting current user profile...');
+      console.log('🔄 Getting current user profile from /auth/me/...');
       
       const token = localStorage.getItem('access_token');
       if (!token) {
@@ -358,10 +389,9 @@ const authAPI = {
       
       const responseData = response.data;
       
-      // Extract user from responseData.user or fallback to responseData
-      const userData = responseData.user || responseData;
-      
-      if (userData && (userData.id || userData.email)) {
+      // Handle both formats: {success: true, user: {...}} or direct user object
+      if (responseData.success === true && responseData.user) {
+        const userData = responseData.user;
         localStorage.setItem('user_data', JSON.stringify(userData));
         console.log('💾 User profile stored in localStorage:', userData.email);
         
@@ -369,6 +399,17 @@ const authAPI = {
           success: true,
           user: userData,
           message: responseData.message || 'User profile fetched successfully',
+          data: responseData
+        };
+      } else if (responseData.email) {
+        // Direct user object
+        localStorage.setItem('user_data', JSON.stringify(responseData));
+        console.log('💾 User profile stored in localStorage:', responseData.email);
+        
+        return {
+          success: true,
+          user: responseData,
+          message: 'User profile fetched successfully',
           data: responseData
         };
       }
@@ -415,22 +456,23 @@ const authAPI = {
   },
 
   /**
-   * Update User Profile - PATCH to /api/v1/auth/profile/
-   * FIXED: Returns object, never throws
+   * Update User Profile - PATCH to /api/v1/auth/me/
    */
   updateProfile: async (userData) => {
     try {
-      console.log('🔄 Updating user profile:', {
+      console.log('🔄 Updating user profile via PATCH /auth/me/', {
         firstName: userData.first_name,
-        lastName: userData.last_name
+        lastName: userData.last_name,
+        phoneNumber: userData.phone_number
       });
       
-      const response = await api.patch('/auth/profile/', userData);
+      const response = await api.patch('/auth/me/', userData);
       console.log('✅ Profile update response:', response.data);
       
       const responseData = response.data;
       
-      if (responseData && (responseData.status === 'success' || response.status === 200)) {
+      // Check for success boolean
+      if (responseData && responseData.success === true) {
         const updatedUserData = responseData.user || responseData;
         authAPI.updateStoredUser(updatedUserData);
         console.log('💾 User profile updated in localStorage');
@@ -445,7 +487,7 @@ const authAPI = {
       
       return {
         success: false,
-        message: responseData?.detail || responseData?.message || 'Profile update failed',
+        message: responseData?.message || responseData?.detail || 'Profile update failed',
         status: response.status,
         data: responseData
       };
@@ -457,18 +499,18 @@ const authAPI = {
   },
 
   /**
-   * Change Password - POST to /api/v1/auth/password/change/
-   * FIXED: Returns object, never throws
+   * Change Password - POST to /api/v1/auth/me/change-password/
    */
   changePassword: async (passwordData) => {
     try {
-      console.log('🔄 Changing password');
-      const response = await api.post('/auth/password/change/', passwordData);
+      console.log('🔄 Changing password via /auth/me/change-password/');
+      const response = await api.post('/auth/me/change-password/', passwordData);
       console.log('✅ Password change response:', response.data);
       
       const responseData = response.data;
       
-      if (responseData && (responseData.status === 'success' || response.status === 200)) {
+      // Check for success boolean
+      if (responseData && responseData.success === true) {
         return {
           success: true,
           message: responseData.message || 'Password changed successfully!',
@@ -478,7 +520,7 @@ const authAPI = {
       
       return {
         success: false,
-        message: responseData?.detail || responseData?.message || 'Password change failed',
+        message: responseData?.message || responseData?.detail || 'Password change failed',
         status: response.status,
         data: responseData
       };
@@ -491,10 +533,6 @@ const authAPI = {
 
   // ==================== TOKEN MANAGEMENT ====================
   
-  /**
-   * Refresh Token - POST to /api/v1/auth/token/refresh/
-   * FIXED: Returns object, never throws
-   */
   refreshToken: async () => {
     try {
       const refreshToken = localStorage.getItem('refresh_token');
@@ -506,15 +544,22 @@ const authAPI = {
         };
       }
 
-      console.log('🔄 Refreshing token');
+      console.log('🔄 Refreshing token via /auth/token/refresh/');
       const response = await api.post('/auth/token/refresh/', {
         refresh: refreshToken
       });
       
       console.log('✅ Token refresh response:', response.data);
       
+      // Django SimpleJWT returns {access: "...", refresh: "..."} directly
       if (response.data.access) {
         localStorage.setItem('access_token', response.data.access);
+        
+        // Update refresh token if new one is provided
+        if (response.data.refresh) {
+          localStorage.setItem('refresh_token', response.data.refresh);
+        }
+        
         console.log('🔑 New access token stored');
         
         return {
@@ -533,7 +578,6 @@ const authAPI = {
     } catch (error) {
       console.error('❌ Token refresh error:', error.response?.data || error.message);
       
-      // Check if token is blacklisted
       if (error.response?.data?.detail?.includes('blacklisted')) {
         authAPI.clearAuthData();
         return {
@@ -548,87 +592,118 @@ const authAPI = {
     }
   },
 
-  // ==================== TWO-FACTOR AUTHENTICATION ====================
+  // ==================== PROFILE COMPLETION ====================
   
   /**
-   * Setup 2FA - POST to /api/v1/auth/2fa/setup/
-   * FIXED: Returns object, never throws
+   * Get Profile Completion Status - GET to /api/v1/auth/profile/completion-status/
    */
-  setup2FA: async () => {
+  getProfileCompletion: async () => {
     try {
-      console.log('🔄 Setting up 2FA');
-      const response = await api.post('/auth/2fa/setup/');
-      console.log('✅ 2FA setup response:', response.data);
+      console.log('🔄 Getting profile completion status via /auth/profile/completion-status/');
+      const response = await api.get('/auth/profile/completion-status/');
+      console.log('✅ Profile completion response:', response.data);
+      
+      const responseData = response.data;
+      
+      // Check for success boolean
+      if (responseData && responseData.success === true) {
+        return {
+          success: true,
+          completion_percentage: responseData.completion_percentage || 0,
+          missing_fields: responseData.missing_fields || [],
+          is_completed: responseData.is_completed || false,
+          message: responseData.message || 'Profile completion status fetched',
+          data: responseData
+        };
+      }
       
       return {
-        success: true,
-        ...response.data
+        success: false,
+        message: responseData?.message || responseData?.detail || 'Failed to get profile completion status',
+        status: response.status,
+        data: responseData
       };
+      
     } catch (error) {
-      console.error('❌ 2FA setup error:', error);
-      return handleAPIError(error, '2FA setup failed');
+      console.error('❌ Profile completion error:', error.response?.data || error.message);
+      return handleAPIError(error, 'Failed to get profile completion status');
     }
   },
 
   /**
-   * Verify 2FA - POST to /api/v1/auth/2fa/verify/
-   * FIXED: Returns object, never throws
+   * Mark Profile as Completed
    */
-  verify2FA: async (otp) => {
+  markProfileCompleted: async () => {
     try {
-      console.log('🔄 Verifying 2FA');
-      const response = await api.post('/auth/2fa/verify/', { otp });
-      console.log('✅ 2FA verification response:', response.data);
+      console.log('🔄 Marking profile as completed via POST /auth/profile/mark-completed/');
+      
+      const response = await api.post('/auth/profile/mark-completed/');
+      
+      console.log('✅ Profile marked as completed:', response.data);
+      
+      const responseData = response.data;
+      
+      // Check for success boolean
+      if (responseData && responseData.success === true) {
+        const updatedUserData = responseData.user || responseData;
+        authAPI.updateStoredUser(updatedUserData);
+        
+        return {
+          success: true,
+          message: responseData.message || 'Profile marked as completed!',
+          user: updatedUserData,
+          data: responseData
+        };
+      }
       
       return {
-        success: true,
-        ...response.data
+        success: false,
+        message: responseData?.message || responseData?.detail || 'Failed to mark profile as completed',
+        status: response.status,
+        data: responseData
       };
-    } catch (error) {
-      console.error('❌ 2FA verification error:', error);
-      return handleAPIError(error, '2FA verification failed');
-    }
-  },
-
-  /**
-   * Check 2FA Status - GET to /api/v1/auth/2fa/status/
-   * FIXED: Returns object, never throws
-   */
-  get2FAStatus: async () => {
-    try {
-      console.log('🔄 Getting 2FA status');
-      const response = await api.get('/auth/2fa/status/');
-      console.log('✅ 2FA status response:', response.data);
       
-      return {
-        success: true,
-        ...response.data
-      };
     } catch (error) {
-      console.error('❌ 2FA status error:', error);
-      return handleAPIError(error, 'Failed to get 2FA status');
+      console.error('❌ Mark profile completed error:', error.response?.data || error.message);
+      return handleAPIError(error, 'Failed to mark profile as completed');
     }
   },
 
   // ==================== ADDITIONAL METHODS ====================
   
-  /**
-   * Resend Verification Code
-   */
-  resendVerification: async (email, purpose = 'login') => {
+  resendOTP: async (email, purpose = 'login') => {
     try {
-      console.log('🔄 Resending verification to:', email);
-      const response = await api.post('/auth/resend-verification/', {
-        email,
-        purpose
-      });
+      console.log('🔄 Resending verification to:', email, 'purpose:', purpose);
       
-      console.log('✅ Resend verification response:', response.data);
+      let endpoint, data;
+      
+      if (purpose === 'login') {
+        endpoint = '/auth/resend-otp/';
+        data = { email };
+      } else {
+        endpoint = '/auth/resend-verification/';
+        data = { email, purpose };
+      }
+      
+      const response = await api.post(endpoint, data);
+      
+      console.log('✅ Resend response:', response.data);
+      
+      const responseData = response.data;
+      
+      // Check for success boolean
+      if (responseData.success === true) {
+        return {
+          success: true,
+          message: responseData.message || 'Verification code sent!',
+          data: responseData
+        };
+      }
       
       return {
-        success: true,
-        message: response.data?.message || 'Verification code sent!',
-        data: response.data
+        success: false,
+        message: responseData.message || 'Failed to resend verification',
+        data: responseData
       };
     } catch (error) {
       console.error('❌ Resend verification error:', error);
@@ -774,7 +849,24 @@ const authAPI = {
 
   getDashboardUrl: () => {
     const user = authAPI.getStoredUser();
-    return user?.dashboard_url || '/dashboard';
+    if (!user) return '/dashboard';
+    
+    // Map Django role to dashboard URL - updated to match your routes
+    const dashboardMap = {
+      'admin': '/admin/admin-portal',
+      'teacher': '/teacher/teacher-portal',
+      'student': '/student/student-portal',
+      'parent': '/parent/parent-portal',
+      'head_teacher': '/head-teacher/headteacher-portal',
+      'curriculum_coordinator': '/curriculum/curriculum-portal',
+      'accountant': '/accountant/accountant-portal',
+      'librarian': '/library/library-portal',
+      'it_support': '/it/it-portal',
+      'counselor': '/counselor/counselor-portal',
+      'office_staff': '/staff/staff-portal'
+    };
+    
+    return dashboardMap[user.role] || '/dashboard';
   },
 
   // Debug method to check stored data
@@ -792,7 +884,7 @@ const authAPI = {
       displayName: authAPI.getDisplayName(),
       role: user?.role,
       userId: user?.id,
-      dashboardUrl: user?.dashboard_url
+      dashboardUrl: authAPI.getDashboardUrl()
     };
   },
 
@@ -834,7 +926,7 @@ const authAPI = {
   // Test endpoint connectivity
   testEndpoints: async () => {
     const endpoints = [
-      { path: '/auth/login/', method: 'OPTIONS' },
+      { path: '/auth/login/', method: 'POST', data: { email: 'test@example.com', password: 'test123' } },
       { path: '/auth/register/', method: 'OPTIONS' },
       { path: '/auth/me/', method: 'GET' },
       { path: '/auth/token/refresh/', method: 'OPTIONS' },
@@ -848,6 +940,7 @@ const authAPI = {
         const response = await api({
           method: endpoint.method,
           url: endpoint.path,
+          data: endpoint.data,
           timeout: 5000
         });
         results.push({
@@ -869,216 +962,23 @@ const authAPI = {
     return results;
   },
 
-  // Compatibility layer to ensure consistent response format
-  ensureResponseFormat: (response) => {
-    return {
-      success: response.success || false,
-      message: response.message || '',
-      status: response.status || (response.success ? 'success' : 'error'),
-      data: response.data || response,
-      ...response
-    };
-  },
-
-  // ==================== PERMISSIONS METHODS ====================
-
-  /**
-   * Get user permissions - GET to /api/v1/auth/permissions/
-   * Returns permissions array or empty array on failure
-   */
-  getPermissions: async () => {
+  // Test login directly
+  testLogin: async (email = 'test@delvok.ac.ke', password = 'Password123!') => {
     try {
-      console.log('🔄 Fetching user permissions...');
-      const response = await api.get('/auth/permissions/');
-      console.log('✅ Permissions response:', response.data);
+      console.log('🧪 Testing login with:', email);
       
-      return {
-        success: true,
-        permissions: response.data.permissions || response.data || [],
-        data: response.data
-      };
+      const result = await authAPI.login({ email, password });
+      console.log('🧪 Login test result:', result);
+      
+      return result;
     } catch (error) {
-      console.error('❌ Error fetching permissions:', error.response?.data || error.message);
-      
-      // Don't return failure - just return empty permissions to avoid breaking the UI
+      console.error('🧪 Login test error:', error);
       return {
-        success: true,
-        permissions: [],
-        message: 'Using default permissions',
+        success: false,
+        message: 'Login test failed',
         error: error.message
       };
     }
-  },
-
-  /**
-   * Get user with permissions - Enhanced version of getCurrentUser
-   * Combines user data with permissions
-   */
-  getUserWithPermissions: async () => {
-    try {
-      // First get user data
-      const userResponse = await authAPI.getCurrentUser();
-      
-      if (!userResponse.success) {
-        return userResponse;
-      }
-      
-      // Then fetch permissions separately if not included
-      if (!userResponse.user.permissions) {
-        const permResponse = await authAPI.getPermissions();
-        userResponse.user.permissions = permResponse.permissions || [];
-        userResponse.permissions = permResponse.permissions || [];
-      } else {
-        userResponse.permissions = userResponse.user.permissions;
-      }
-      
-      return userResponse;
-    } catch (error) {
-      console.error('❌ Error in getUserWithPermissions:', error);
-      return {
-        success: false,
-        message: 'Failed to get user with permissions',
-        user: null,
-        permissions: []
-      };
-    }
-  },
-
-  /**
-   * Check if user has specific permission
-   * @param {string|Array} permission - Permission string or array of permissions
-   * @returns {Promise<boolean>}
-   */
-  hasPermission: async (permission) => {
-    try {
-      const permissionsResponse = await authAPI.getPermissions();
-      const permissions = permissionsResponse.permissions || [];
-      
-      if (Array.isArray(permission)) {
-        // Check if user has ANY of the permissions in the array
-        return permission.some(perm => permissions.includes(perm));
-      } else {
-        // Check for single permission
-        return permissions.includes(permission);
-      }
-    } catch (error) {
-      console.error('❌ Error checking permission:', error);
-      return false;
-    }
-  },
-
-  /**
-   * Check if user has all specified permissions
-   * @param {Array} permissions - Array of required permissions
-   * @returns {Promise<boolean>}
-   */
-  hasAllPermissions: async (permissions) => {
-    try {
-      const permissionsResponse = await authAPI.getPermissions();
-      const userPermissions = permissionsResponse.permissions || [];
-      
-      return permissions.every(perm => userPermissions.includes(perm));
-    } catch (error) {
-      console.error('❌ Error checking all permissions:', error);
-      return false;
-    }
-  },
-
-  // ==================== SESSION MANAGEMENT ====================
-
-  /**
-   * Validate current session
-   * Checks if token is valid and user is properly authenticated
-   */
-  validateSession: async () => {
-    try {
-      if (!authAPI.isAuthenticated()) {
-        return {
-          valid: false,
-          message: 'Not authenticated',
-          requiresLogin: true
-        };
-      }
-
-      // Try to get current user to validate token
-      const userResponse = await authAPI.getCurrentUser();
-      
-      if (userResponse.success) {
-        return {
-          valid: true,
-          message: 'Session is valid',
-          user: userResponse.user
-        };
-      }
-      
-      // If token is expired, try to refresh it
-      if (userResponse.status === 401 || userResponse.requiresReauth) {
-        console.log('🔑 Token expired, attempting refresh...');
-        const refreshResponse = await authAPI.refreshToken();
-        
-        if (refreshResponse.success) {
-          // Retry getting user with new token
-          const retryUserResponse = await authAPI.getCurrentUser();
-          
-          if (retryUserResponse.success) {
-            return {
-              valid: true,
-              message: 'Session refreshed and valid',
-              user: retryUserResponse.user,
-              refreshed: true
-            };
-          }
-        }
-        
-        return {
-          valid: false,
-          message: 'Session expired, please login again',
-          requiresLogin: true
-        };
-      }
-      
-      return {
-        valid: false,
-        message: userResponse.message || 'Session validation failed',
-        requiresLogin: true
-      };
-    } catch (error) {
-      console.error('❌ Session validation error:', error);
-      return {
-        valid: false,
-        message: 'Session validation failed',
-        requiresLogin: true
-      };
-    }
-  },
-
-  /**
-   * Initialize and check authentication state
-   * Useful for app initialization
-   */
-  initializeAuth: async () => {
-    console.log('🚀 Initializing authentication...');
-    
-    const session = await authAPI.validateSession();
-    
-    if (session.valid) {
-      console.log('✅ Authentication initialized successfully');
-      return {
-        success: true,
-        authenticated: true,
-        user: session.user,
-        refreshed: session.refreshed || false,
-        message: session.message
-      };
-    }
-    
-    console.log('⚠️ Authentication initialization failed');
-    return {
-      success: false,
-      authenticated: false,
-      requiresLogin: true,
-      message: session.message
-    };
   }
 };
 

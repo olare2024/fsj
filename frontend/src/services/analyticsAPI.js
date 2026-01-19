@@ -15,7 +15,9 @@ export const ANALYTICS_CONSTANTS = {
     LAST_QUARTER: 'last_quarter',
     THIS_YEAR: 'this_year',
     LAST_YEAR: 'last_year',
-    CUSTOM: 'custom'
+    CUSTOM: 'custom',
+    THIS_TERM: 'this_term',
+    NEXT_QUARTER: 'next_quarter'
   },
   
   // Metrics types
@@ -42,7 +44,7 @@ export const ANALYTICS_CONSTANTS = {
     GAUGE: 'gauge'
   },
   
-  // User roles for analytics
+  // User roles
   USER_ROLE: {
     ADMIN: 'admin',
     TEACHER: 'teacher',
@@ -63,18 +65,6 @@ export const ANALYTICS_CONSTANTS = {
     ENGAGEMENT: 'engagement'
   },
   
-  // Cache settings
-  CACHE_TTL: {
-    SHORT: 1 * 60 * 1000, // 1 minute
-    MEDIUM: 5 * 60 * 1000, // 5 minutes
-    LONG: 30 * 60 * 1000, // 30 minutes
-    VERY_LONG: 24 * 60 * 60 * 1000 // 24 hours
-  },
-  
-  // Default limits
-  DEFAULT_LIMIT: 10,
-  MAX_LIMIT: 1000,
-  
   // Export formats
   EXPORT_FORMAT: {
     CSV: 'csv',
@@ -94,19 +84,17 @@ const getCacheKey = (endpoint, params = {}) => {
   return `${endpoint}_${paramString}`;
 };
 
-const setCache = (key, data, ttl = ANALYTICS_CONSTANTS.CACHE_TTL.MEDIUM) => {
+const setCache = (key, data, ttl = 5 * 60 * 1000) => {
   analyticsCache.set(key, {
     data,
     timestamp: Date.now(),
     ttl
   });
   
-  // Clear existing timeout if any
   if (cacheTimeouts.has(key)) {
     clearTimeout(cacheTimeouts.get(key));
   }
   
-  // Set new timeout for auto-cleanup
   const timeout = setTimeout(() => {
     analyticsCache.delete(key);
     cacheTimeouts.delete(key);
@@ -132,7 +120,7 @@ const getCache = (key) => {
   return cached.data;
 };
 
-const clearCache = (pattern = null) => {
+const clearAnalyticsCache = (pattern = null) => {
   if (!pattern) {
     analyticsCache.clear();
     cacheTimeouts.forEach(timeout => clearTimeout(timeout));
@@ -153,27 +141,24 @@ const clearCache = (pattern = null) => {
 // ==================== ERROR HANDLER ====================
 
 const handleAnalyticsError = (error, defaultMessage = 'An analytics error occurred') => {
-  console.error('📊 Analytics API Error:', error);
+  console.error('📊 Analytics Error:', error);
   
   if (error.response) {
     const serverError = error.response.data;
     const status = error.response.status;
     
-    // Handle specific status codes
     switch (status) {
       case 400:
         return {
           success: false,
-          message: serverError.detail || serverError.message || 'Invalid analytics request',
-          errors: serverError.errors || serverError.details,
-          status: 400,
-          data: serverError
+          message: serverError.detail || serverError.message || 'Invalid request',
+          status: 400
         };
       
       case 401:
         return {
           success: false,
-          message: 'Authentication required to access analytics',
+          message: 'Authentication required',
           status: 401,
           requiresAuth: true
         };
@@ -181,130 +166,110 @@ const handleAnalyticsError = (error, defaultMessage = 'An analytics error occurr
       case 403:
         return {
           success: false,
-          message: 'You do not have permission to access these analytics',
+          message: 'Access denied',
           status: 403,
           forbidden: true
         };
       
-      case 429:
+      case 404:
         return {
           success: false,
-          message: 'Too many analytics requests. Please try again later.',
-          status: 429,
-          rateLimited: true
-        };
-      
-      case 503:
-        return {
-          success: false,
-          message: 'Analytics service is temporarily unavailable',
-          status: 503,
-          serviceUnavailable: true
+          message: 'Analytics endpoint not found',
+          status: 404,
+          notFound: true
         };
       
       default:
         return {
           success: false,
           message: serverError.detail || serverError.message || defaultMessage,
-          status: status,
-          data: serverError
+          status: status
         };
     }
-  } else if (error.request) {
+  }
+  
+  if (error.request) {
     return {
       success: false,
-      message: 'Unable to connect to analytics service. Please check your internet connection.',
+      message: 'Network error. Check your connection.',
       status: 0,
       networkError: true
     };
-  } else if (error.code === 'ECONNABORTED') {
+  }
+  
+  if (error.code === 'ECONNABORTED') {
     return {
       success: false,
-      message: 'Analytics request timed out. Please try again.',
+      message: 'Request timeout',
       status: -1,
       timeout: true
     };
-  } else {
-    return {
-      success: false,
-      message: error.message || defaultMessage,
-      status: -1
-    };
   }
+  
+  return {
+    success: false,
+    message: error.message || defaultMessage,
+    status: -1
+  };
 };
 
 // ==================== ANALYTICS API ====================
 
 export const analyticsAPI = {
+  
   // ==================== CACHE MANAGEMENT ====================
   
-  clearCache,
+  clearCache: clearAnalyticsCache,
   
   getCacheStats: () => {
     return {
       size: analyticsCache.size,
-      timeouts: cacheTimeouts.size,
-      keys: Array.from(analyticsCache.keys()),
       entries: Array.from(analyticsCache.entries()).map(([key, value]) => ({
         key,
         timestamp: new Date(value.timestamp).toISOString(),
-        age: Date.now() - value.timestamp,
-        ttl: value.ttl,
         expiresIn: value.ttl - (Date.now() - value.timestamp)
       }))
     };
   },
   
-  // ==================== DASHBOARD METRICS ====================
+  // ==================== DASHBOARD & OVERVIEW ====================
   
-  /**
-   * Get dashboard overview metrics
-   */
   getDashboardOverview: async (period = ANALYTICS_CONSTANTS.PERIOD.THIS_MONTH) => {
     const cacheKey = getCacheKey('dashboard_overview', { period });
     const cached = getCache(cacheKey);
     
     if (cached) {
-      console.log('📊 Serving dashboard overview from cache');
+      console.log('📊 Serving from cache:', cacheKey);
       return cached;
     }
     
     try {
-      console.log('📊 Fetching dashboard overview for period:', period);
-      
-      const response = await api.get('/analytics/dashboard/overview/', {
-        params: { period }
+      const response = await api.get('/analytics/analytics/', {
+        params: { period, view: 'dashboard' }
       });
       
       const result = {
         success: true,
         data: response.data,
         period,
-        timestamp: Date.now(),
-        fetchedAt: new Date().toISOString()
+        timestamp: Date.now()
       };
       
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.SHORT);
+      setCache(cacheKey, result, 60000); // 1 minute cache
       return result;
     } catch (error) {
-      console.error('❌ Error fetching dashboard overview:', error);
-      return handleAnalyticsError(error, 'Failed to fetch dashboard overview');
+      return handleAnalyticsError(error, 'Failed to fetch dashboard');
     }
   },
   
-  /**
-   * Get home page analytics (for homepage)
-   */
-  getHomeAnalytics: async () => {
-    const cacheKey = 'home_analytics';
+  getQuickStats: async () => {
+    const cacheKey = 'quick_stats';
     const cached = getCache(cacheKey);
     
-    if (cached) {
-      return cached;
-    }
+    if (cached) return cached;
     
     try {
-      const response = await api.get('/analytics/home/');
+      const response = await api.get('/analytics/quick-stats/');
       
       const result = {
         success: true,
@@ -312,85 +277,138 @@ export const analyticsAPI = {
         timestamp: Date.now()
       };
       
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.MEDIUM);
+      setCache(cacheKey, result, 30000); // 30 seconds cache
       return result;
     } catch (error) {
-      console.error('❌ Error fetching home analytics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch home analytics');
+      return handleAnalyticsError(error, 'Failed to fetch quick stats');
     }
   },
   
-  /**
-   * Get real-time metrics
-   */
-  getRealtimeMetrics: async () => {
-    // Never cache real-time data
+  getSystemHealth: async () => {
     try {
-      const response = await api.get('/analytics/realtime/', {
-        timeout: 10000 // 10 second timeout for real-time data
-      });
-      
+      const response = await api.get('/analytics/system-health/');
       return {
         success: true,
         data: response.data,
-        timestamp: Date.now(),
-        isRealtime: true
+        timestamp: Date.now()
       };
     } catch (error) {
-      console.error('❌ Error fetching real-time metrics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch real-time metrics');
+      return handleAnalyticsError(error, 'Failed to fetch system health');
     }
   },
   
-  /**
-   * Get KPIs (Key Performance Indicators)
-   */
-  getKPIs: async (kpiType = 'all', period = ANALYTICS_CONSTANTS.PERIOD.THIS_MONTH) => {
-    const cacheKey = getCacheKey('kpis', { kpiType, period });
+  // ==================== ROLE-SPECIFIC ANALYTICS ====================
+  
+  getTeacherAnalytics: async (teacherId = null) => {
+    const cacheKey = getCacheKey('teacher_analytics', { teacherId });
     const cached = getCache(cacheKey);
     
-    if (cached) {
-      return cached;
-    }
+    if (cached) return cached;
     
     try {
-      const response = await api.get('/analytics/kpis/', {
-        params: { type: kpiType, period }
+      const response = await api.get('/analytics/role/teacher/', {
+        params: { teacher_id: teacherId }
       });
       
       const result = {
         success: true,
         data: response.data,
-        kpiType,
-        period,
+        teacherId,
         timestamp: Date.now()
       };
       
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.SHORT);
+      setCache(cacheKey, result);
       return result;
     } catch (error) {
-      console.error('❌ Error fetching KPIs:', error);
-      return handleAnalyticsError(error, 'Failed to fetch KPIs');
+      return handleAnalyticsError(error, 'Failed to fetch teacher analytics');
+    }
+  },
+  
+  getStudentAnalytics: async (studentId = null) => {
+    const cacheKey = getCacheKey('student_analytics', { studentId });
+    const cached = getCache(cacheKey);
+    
+    if (cached) return cached;
+    
+    try {
+      const response = await api.get('/analytics/role/student/', {
+        params: { student_id: studentId }
+      });
+      
+      const result = {
+        success: true,
+        data: response.data,
+        studentId,
+        timestamp: Date.now()
+      };
+      
+      setCache(cacheKey, result);
+      return result;
+    } catch (error) {
+      return handleAnalyticsError(error, 'Failed to fetch student analytics');
+    }
+  },
+  
+  getParentAnalytics: async (parentId = null) => {
+    const cacheKey = getCacheKey('parent_analytics', { parentId });
+    const cached = getCache(cacheKey);
+    
+    if (cached) return cached;
+    
+    try {
+      const response = await api.get('/analytics/role/parent/', {
+        params: { parent_id: parentId }
+      });
+      
+      const result = {
+        success: true,
+        data: response.data,
+        parentId,
+        timestamp: Date.now()
+      };
+      
+      setCache(cacheKey, result);
+      return result;
+    } catch (error) {
+      return handleAnalyticsError(error, 'Failed to fetch parent analytics');
+    }
+  },
+  
+  getAdminAnalytics: async () => {
+    const cacheKey = 'admin_analytics';
+    const cached = getCache(cacheKey);
+    
+    if (cached) return cached;
+    
+    try {
+      const response = await api.get('/analytics/role/admin/');
+      
+      const result = {
+        success: true,
+        data: response.data,
+        timestamp: Date.now()
+      };
+      
+      setCache(cacheKey, result);
+      return result;
+    } catch (error) {
+      return handleAnalyticsError(error, 'Failed to fetch admin analytics');
     }
   },
   
   // ==================== ACADEMIC ANALYTICS ====================
   
-  /**
-   * Get academic performance analytics
-   */
   getAcademicPerformance: async (params = {}) => {
     const cacheKey = getCacheKey('academic_performance', params);
     const cached = getCache(cacheKey);
     
-    if (cached && !params.refresh) {
-      return cached;
-    }
+    if (cached && !params.refresh) return cached;
     
     try {
-      const response = await api.get('/analytics/academic/performance/', {
+      const response = await api.get('/analytics/analytics/', {
         params: {
-          period: ANALYTICS_CONSTANTS.PERIOD.THIS_YEAR,
+          category: 'academic',
+          type: 'performance',
           ...params
         }
       });
@@ -402,61 +420,27 @@ export const analyticsAPI = {
         timestamp: Date.now()
       };
       
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.MEDIUM);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching academic performance:', error);
-      return handleAnalyticsError(error, 'Failed to fetch academic performance analytics');
-    }
-  },
-  
-  /**
-   * Get grade distribution analytics
-   */
-  getGradeDistribution: async (classId = null, subjectId = null, period = ANALYTICS_CONSTANTS.PERIOD.THIS_TERM) => {
-    const cacheKey = getCacheKey('grade_distribution', { classId, subjectId, period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/academic/grades/distribution/', {
-        params: { class_id: classId, subject_id: subjectId, period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        classId,
-        subjectId,
-        period,
-        timestamp: Date.now()
-      };
-      
       setCache(cacheKey, result);
       return result;
     } catch (error) {
-      console.error('❌ Error fetching grade distribution:', error);
-      return handleAnalyticsError(error, 'Failed to fetch grade distribution');
+      return handleAnalyticsError(error, 'Failed to fetch academic performance');
     }
   },
   
-  /**
-   * Get student progress analytics
-   */
   getStudentProgress: async (studentId, period = ANALYTICS_CONSTANTS.PERIOD.LAST_30_DAYS) => {
     const cacheKey = getCacheKey('student_progress', { studentId, period });
     const cached = getCache(cacheKey);
     
-    if (cached) {
-      return cached;
-    }
+    if (cached) return cached;
     
     try {
-      const response = await api.get(`/analytics/students/${studentId}/progress/`, {
-        params: { period }
+      const response = await api.get('/analytics/analytics/', {
+        params: {
+          category: 'academic',
+          type: 'student_progress',
+          student_id: studentId,
+          period
+        }
       });
       
       const result = {
@@ -467,229 +451,33 @@ export const analyticsAPI = {
         timestamp: Date.now()
       };
       
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.SHORT);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching student progress:', error);
-      return handleAnalyticsError(error, 'Failed to fetch student progress analytics');
-    }
-  },
-  
-  /**
-   * Get teacher performance analytics
-   */
-  getTeacherPerformance: async (teacherId = null, period = ANALYTICS_CONSTANTS.PERIOD.THIS_YEAR) => {
-    const cacheKey = getCacheKey('teacher_performance', { teacherId, period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/teachers/performance/', {
-        params: { teacher_id: teacherId, period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        teacherId,
-        period,
-        timestamp: Date.now()
-      };
-      
       setCache(cacheKey, result);
       return result;
     } catch (error) {
-      console.error('❌ Error fetching teacher performance:', error);
-      return handleAnalyticsError(error, 'Failed to fetch teacher performance analytics');
+      return handleAnalyticsError(error, 'Failed to fetch student progress');
     }
   },
   
   // ==================== FINANCIAL ANALYTICS ====================
   
-  /**
-   * Get financial overview
-   */
   getFinancialOverview: async (period = ANALYTICS_CONSTANTS.PERIOD.THIS_MONTH) => {
     const cacheKey = getCacheKey('financial_overview', { period });
     const cached = getCache(cacheKey);
     
-    if (cached) {
-      return cached;
-    }
+    if (cached) return cached;
     
     try {
-      const response = await api.get('/analytics/financial/overview/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.SHORT);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching financial overview:', error);
-      return handleAnalyticsError(error, 'Failed to fetch financial overview');
-    }
-  },
-  
-  /**
-   * Get revenue analytics
-   */
-  getRevenueAnalytics: async (period = ANALYTICS_CONSTANTS.PERIOD.THIS_YEAR) => {
-    const cacheKey = getCacheKey('revenue_analytics', { period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/financial/revenue/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching revenue analytics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch revenue analytics');
-    }
-  },
-  
-  /**
-   * Get expense analytics
-   */
-  getExpenseAnalytics: async (period = ANALYTICS_CONSTANTS.PERIOD.THIS_MONTH) => {
-    const cacheKey = getCacheKey('expense_analytics', { period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/financial/expenses/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching expense analytics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch expense analytics');
-    }
-  },
-  
-  /**
-   * Get fee collection analytics
-   */
-  getFeeCollectionAnalytics: async (period = ANALYTICS_CONSTANTS.PERIOD.THIS_MONTH) => {
-    const cacheKey = getCacheKey('fee_collection', { period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/financial/fee-collection/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.SHORT);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching fee collection analytics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch fee collection analytics');
-    }
-  },
-  
-  // ==================== ATTENDANCE ANALYTICS ====================
-  
-  /**
-   * Get attendance analytics
-   */
-  getAttendanceAnalytics: async (params = {}) => {
-    const cacheKey = getCacheKey('attendance_analytics', params);
-    const cached = getCache(cacheKey);
-    
-    if (cached && !params.refresh) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/attendance/', {
+      const response = await api.get('/analytics/analytics/', {
         params: {
-          period: ANALYTICS_CONSTANTS.PERIOD.THIS_MONTH,
-          ...params
+          category: 'finance',
+          type: 'overview',
+          period
         }
       });
       
       const result = {
         success: true,
         data: response.data,
-        params,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.SHORT);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching attendance analytics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch attendance analytics');
-    }
-  },
-  
-  /**
-   * Get attendance trends
-   */
-  getAttendanceTrends: async (entityType = 'overall', entityId = null, period = ANALYTICS_CONSTANTS.PERIOD.LAST_30_DAYS) => {
-    const cacheKey = getCacheKey('attendance_trends', { entityType, entityId, period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/attendance/trends/', {
-        params: { entity_type: entityType, entity_id: entityId, period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        entityType,
-        entityId,
         period,
         timestamp: Date.now()
       };
@@ -697,277 +485,111 @@ export const analyticsAPI = {
       setCache(cacheKey, result);
       return result;
     } catch (error) {
-      console.error('❌ Error fetching attendance trends:', error);
-      return handleAnalyticsError(error, 'Failed to fetch attendance trends');
+      return handleAnalyticsError(error, 'Failed to fetch financial overview');
+    }
+  },
+  
+  getRevenueAnalytics: async (period = ANALYTICS_CONSTANTS.PERIOD.THIS_YEAR) => {
+    const cacheKey = getCacheKey('revenue_analytics', { period });
+    const cached = getCache(cacheKey);
+    
+    if (cached) return cached;
+    
+    try {
+      const response = await api.get('/analytics/analytics/', {
+        params: {
+          category: 'finance',
+          type: 'revenue',
+          period
+        }
+      });
+      
+      const result = {
+        success: true,
+        data: response.data,
+        period,
+        timestamp: Date.now()
+      };
+      
+      setCache(cacheKey, result);
+      return result;
+    } catch (error) {
+      return handleAnalyticsError(error, 'Failed to fetch revenue analytics');
     }
   },
   
   // ==================== USER ANALYTICS ====================
   
-  /**
-   * Get user engagement analytics
-   */
+  getUserAnalytics: async (period = ANALYTICS_CONSTANTS.PERIOD.LAST_30_DAYS) => {
+    const cacheKey = getCacheKey('user_analytics', { period });
+    const cached = getCache(cacheKey);
+    
+    if (cached) return cached;
+    
+    try {
+      const response = await api.get('/analytics/analytics/', {
+        params: {
+          category: 'user',
+          type: 'overview',
+          period
+        }
+      });
+      
+      const result = {
+        success: true,
+        data: response.data,
+        period,
+        timestamp: Date.now()
+      };
+      
+      setCache(cacheKey, result);
+      return result;
+    } catch (error) {
+      return handleAnalyticsError(error, 'Failed to fetch user analytics');
+    }
+  },
+  
   getUserEngagement: async (period = ANALYTICS_CONSTANTS.PERIOD.LAST_30_DAYS) => {
     const cacheKey = getCacheKey('user_engagement', { period });
     const cached = getCache(cacheKey);
     
-    if (cached) {
-      return cached;
-    }
+    if (cached) return cached;
     
     try {
-      const response = await api.get('/analytics/users/engagement/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching user engagement:', error);
-      return handleAnalyticsError(error, 'Failed to fetch user engagement analytics');
-    }
-  },
-  
-  /**
-   * Get user growth analytics
-   */
-  getUserGrowth: async (period = ANALYTICS_CONSTANTS.PERIOD.THIS_YEAR) => {
-    const cacheKey = getCacheKey('user_growth', { period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/users/growth/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching user growth:', error);
-      return handleAnalyticsError(error, 'Failed to fetch user growth analytics');
-    }
-  },
-  
-  /**
-   * Get active users analytics
-   */
-  getActiveUsers: async (period = ANALYTICS_CONSTANTS.PERIOD.LAST_7_DAYS) => {
-    const cacheKey = getCacheKey('active_users', { period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/users/active/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.SHORT);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching active users:', error);
-      return handleAnalyticsError(error, 'Failed to fetch active users analytics');
-    }
-  },
-  
-  // ==================== SYSTEM ANALYTICS ====================
-  
-  /**
-   * Get system performance analytics
-   */
-  getSystemPerformance: async (period = ANALYTICS_CONSTANTS.PERIOD.LAST_7_DAYS) => {
-    const cacheKey = getCacheKey('system_performance', { period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/system/performance/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.MEDIUM);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching system performance:', error);
-      return handleAnalyticsError(error, 'Failed to fetch system performance analytics');
-    }
-  },
-  
-  /**
-   * Get API usage analytics
-   */
-  getAPIUsage: async (period = ANALYTICS_CONSTANTS.PERIOD.LAST_30_DAYS) => {
-    const cacheKey = getCacheKey('api_usage', { period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/system/api-usage/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching API usage:', error);
-      return handleAnalyticsError(error, 'Failed to fetch API usage analytics');
-    }
-  },
-  
-  /**
-   * Get error analytics
-   */
-  getErrorAnalytics: async (period = ANALYTICS_CONSTANTS.PERIOD.LAST_7_DAYS) => {
-    const cacheKey = getCacheKey('error_analytics', { period });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/system/errors/', {
-        params: { period }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        period,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching error analytics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch error analytics');
-    }
-  },
-  
-  // ==================== CUSTOM ANALYTICS ====================
-  
-  /**
-   * Get custom analytics query
-   */
-  getCustomAnalytics: async (query, params = {}) => {
-    const cacheKey = getCacheKey('custom_analytics', { query, params });
-    const cached = getCache(cacheKey);
-    
-    if (cached && !params.refresh) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.post('/analytics/custom/', {
-        query,
-        params
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        query,
-        params,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching custom analytics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch custom analytics');
-    }
-  },
-  
-  /**
-   * Run ad-hoc analytics query
-   */
-  runAnalyticsQuery: async (query, format = 'json') => {
-    try {
-      const response = await api.post('/analytics/query/', {
-        query,
-        format
-      });
-      
-      return {
-        success: true,
-        data: response.data,
-        query,
-        format,
-        timestamp: Date.now()
-      };
-    } catch (error) {
-      console.error('❌ Error running analytics query:', error);
-      return handleAnalyticsError(error, 'Failed to run analytics query');
-    }
-  },
-  
-  // ==================== CHARTS & VISUALIZATIONS ====================
-  
-  /**
-   * Get chart data
-   */
-  getChartData: async (chartType, metric, params = {}) => {
-    const cacheKey = getCacheKey('chart_data', { chartType, metric, params });
-    const cached = getCache(cacheKey);
-    
-    if (cached && !params.refresh) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/charts/data/', {
+      const response = await api.get('/analytics/analytics/', {
         params: {
-          chart_type: chartType,
-          metric,
+          category: 'user',
+          type: 'engagement',
+          period
+        }
+      });
+      
+      const result = {
+        success: true,
+        data: response.data,
+        period,
+        timestamp: Date.now()
+      };
+      
+      setCache(cacheKey, result);
+      return result;
+    } catch (error) {
+      return handleAnalyticsError(error, 'Failed to fetch user engagement');
+    }
+  },
+  
+  // ==================== ATTENDANCE ANALYTICS ====================
+  
+  getAttendanceAnalytics: async (params = {}) => {
+    const cacheKey = getCacheKey('attendance_analytics', params);
+    const cached = getCache(cacheKey);
+    
+    if (cached && !params.refresh) return cached;
+    
+    try {
+      const response = await api.get('/analytics/analytics/', {
+        params: {
+          category: 'attendance',
           ...params
         }
       });
@@ -975,8 +597,6 @@ export const analyticsAPI = {
       const result = {
         success: true,
         data: response.data,
-        chartType,
-        metric,
         params,
         timestamp: Date.now()
       };
@@ -984,58 +604,19 @@ export const analyticsAPI = {
       setCache(cacheKey, result);
       return result;
     } catch (error) {
-      console.error('❌ Error fetching chart data:', error);
-      return handleAnalyticsError(error, 'Failed to fetch chart data');
+      return handleAnalyticsError(error, 'Failed to fetch attendance analytics');
     }
   },
   
-  /**
-   * Get pre-configured dashboard charts
-   */
-  getDashboardCharts: async (dashboardType = 'admin') => {
-    const cacheKey = getCacheKey('dashboard_charts', { dashboardType });
-    const cached = getCache(cacheKey);
-    
-    if (cached) {
-      return cached;
-    }
-    
-    try {
-      const response = await api.get('/analytics/charts/dashboard/', {
-        params: { dashboard_type: dashboardType }
-      });
-      
-      const result = {
-        success: true,
-        data: response.data,
-        dashboardType,
-        timestamp: Date.now()
-      };
-      
-      setCache(cacheKey, result, ANALYTICS_CONSTANTS.CACHE_TTL.SHORT);
-      return result;
-    } catch (error) {
-      console.error('❌ Error fetching dashboard charts:', error);
-      return handleAnalyticsError(error, 'Failed to fetch dashboard charts');
-    }
-  },
+  // ==================== EXPORT ENDPOINTS ====================
   
-  // ==================== EXPORT & DOWNLOAD ====================
-  
-  /**
-   * Export analytics data
-   */
   exportAnalytics: async (analyticsType, format = ANALYTICS_CONSTANTS.EXPORT_FORMAT.CSV, params = {}) => {
     try {
       const response = await api.get(`/analytics/export/${analyticsType}/`, {
-        params: {
-          format,
-          ...params
-        },
+        params: { format, ...params },
         responseType: format === 'json' ? 'json' : 'blob'
       });
       
-      // Create download link for non-JSON formats
       if (format !== 'json') {
         const blob = new Blob([response.data], { type: this.getMimeType(format) });
         const url = window.URL.createObjectURL(blob);
@@ -1050,72 +631,17 @@ export const analyticsAPI = {
       
       return {
         success: true,
-        message: `Analytics exported successfully as ${format}`,
+        message: `Exported as ${format}`,
         data: format === 'json' ? response.data : null,
-        format,
-        analyticsType,
-        timestamp: Date.now()
+        format
       };
     } catch (error) {
-      console.error('❌ Error exporting analytics:', error);
       return handleAnalyticsError(error, 'Failed to export analytics');
     }
   },
   
-  // ==================== PREDICTIVE ANALYTICS ====================
+  // ==================== UTILITIES ====================
   
-  /**
-   * Get predictive analytics
-   */
-  getPredictiveAnalytics: async (modelType, params = {}) => {
-    try {
-      const response = await api.post('/analytics/predictive/', {
-        model_type: modelType,
-        ...params
-      });
-      
-      return {
-        success: true,
-        data: response.data,
-        modelType,
-        params,
-        timestamp: Date.now(),
-        isPredictive: true
-      };
-    } catch (error) {
-      console.error('❌ Error fetching predictive analytics:', error);
-      return handleAnalyticsError(error, 'Failed to fetch predictive analytics');
-    }
-  },
-  
-  /**
-   * Get trends and forecasts
-   */
-  getTrendsForecast: async (metric, period = ANALYTICS_CONSTANTS.PERIOD.NEXT_QUARTER) => {
-    try {
-      const response = await api.get('/analytics/trends/forecast/', {
-        params: { metric, period }
-      });
-      
-      return {
-        success: true,
-        data: response.data,
-        metric,
-        period,
-        timestamp: Date.now(),
-        isForecast: true
-      };
-    } catch (error) {
-      console.error('❌ Error fetching trends forecast:', error);
-      return handleAnalyticsError(error, 'Failed to fetch trends forecast');
-    }
-  },
-  
-  // ==================== UTILITY FUNCTIONS ====================
-  
-  /**
-   * Get MIME type for export format
-   */
   getMimeType: (format) => {
     const mimeTypes = {
       [ANALYTICS_CONSTANTS.EXPORT_FORMAT.CSV]: 'text/csv',
@@ -1127,33 +653,8 @@ export const analyticsAPI = {
     return mimeTypes[format] || 'application/octet-stream';
   },
   
-  /**
-   * Format analytics data for display
-   */
-  formatAnalyticsData: (data, format = 'human') => {
-    if (!data) return null;
-    
-    if (format === 'human') {
-      return {
-        value: data.value,
-        formatted: this.formatNumber(data.value, data.format),
-        change: data.change ? `${data.change > 0 ? '+' : ''}${data.change}%` : null,
-        trend: data.trend || 'neutral',
-        comparison: data.comparison || null,
-        metadata: data.metadata || {}
-      };
-    }
-    
-    return data;
-  },
-  
-  /**
-   * Format number with appropriate suffix
-   */
   formatNumber: (num, format = 'default') => {
     if (num === null || num === undefined) return 'N/A';
-    
-    const absNum = Math.abs(num);
     
     if (format === 'currency') {
       return new Intl.NumberFormat('en-KE', {
@@ -1168,28 +669,13 @@ export const analyticsAPI = {
       return `${num.toFixed(1)}%`;
     }
     
-    if (absNum >= 1000000) {
-      return `${(num / 1000000).toFixed(1)}M`;
-    }
-    
-    if (absNum >= 1000) {
-      return `${(num / 1000).toFixed(1)}K`;
-    }
+    const absNum = Math.abs(num);
+    if (absNum >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+    if (absNum >= 1000) return `${(num / 1000).toFixed(1)}K`;
     
     return num.toLocaleString();
   },
   
-  /**
-   * Calculate growth percentage
-   */
-  calculateGrowth: (current, previous) => {
-    if (!previous || previous === 0) return 0;
-    return ((current - previous) / previous) * 100;
-  },
-  
-  /**
-   * Get analytics permissions for user role
-   */
   getAnalyticsPermissions: (userRole) => {
     const permissions = {
       [ANALYTICS_CONSTANTS.USER_ROLE.ADMIN]: {
@@ -1198,17 +684,7 @@ export const analyticsAPI = {
         canViewFinancial: true,
         canViewAcademic: true,
         canViewUser: true,
-        canViewSystem: true,
-        canRunCustomQueries: true
-      },
-      [ANALYTICS_CONSTANTS.USER_ROLE.HEAD_TEACHER]: {
-        canViewAll: false,
-        canExport: true,
-        canViewFinancial: false,
-        canViewAcademic: true,
-        canViewUser: true,
-        canViewSystem: false,
-        canRunCustomQueries: false
+        canViewSystem: true
       },
       [ANALYTICS_CONSTANTS.USER_ROLE.TEACHER]: {
         canViewAll: false,
@@ -1216,17 +692,7 @@ export const analyticsAPI = {
         canViewFinancial: false,
         canViewAcademic: true,
         canViewUser: true,
-        canViewSystem: false,
-        canRunCustomQueries: false
-      },
-      [ANALYTICS_CONSTANTS.USER_ROLE.ACCOUNTANT]: {
-        canViewAll: false,
-        canExport: true,
-        canViewFinancial: true,
-        canViewAcademic: false,
-        canViewUser: false,
-        canViewSystem: false,
-        canRunCustomQueries: false
+        canViewSystem: false
       },
       [ANALYTICS_CONSTANTS.USER_ROLE.STUDENT]: {
         canViewAll: false,
@@ -1234,139 +700,27 @@ export const analyticsAPI = {
         canViewFinancial: false,
         canViewAcademic: true,
         canViewUser: false,
-        canViewSystem: false,
-        canRunCustomQueries: false
-      },
-      [ANALYTICS_CONSTANTS.USER_ROLE.PARENT]: {
-        canViewAll: false,
-        canExport: false,
-        canViewFinancial: false,
-        canViewAcademic: true,
-        canViewUser: false,
-        canViewSystem: false,
-        canRunCustomQueries: false
+        canViewSystem: false
       }
     };
     
     return permissions[userRole] || permissions[ANALYTICS_CONSTANTS.USER_ROLE.STUDENT];
   },
   
-  /**
-   * Get recommended charts for user role
-   */
-  getRecommendedCharts: (userRole) => {
-    const recommendations = {
-      [ANALYTICS_CONSTANTS.USER_ROLE.ADMIN]: [
-        'revenue_trends',
-        'student_growth',
-        'attendance_overview',
-        'system_performance',
-        'fee_collection'
-      ],
-      [ANALYTICS_CONSTANTS.USER_ROLE.HEAD_TEACHER]: [
-        'academic_performance',
-        'teacher_workload',
-        'student_attendance',
-        'grade_distribution'
-      ],
-      [ANALYTICS_CONSTANTS.USER_ROLE.TEACHER]: [
-        'class_performance',
-        'student_progress',
-        'assignment_completion',
-        'attendance_trends'
-      ],
-      [ANALYTICS_CONSTANTS.USER_ROLE.ACCOUNTANT]: [
-        'revenue_breakdown',
-        'expense_categories',
-        'fee_collection_rate',
-        'outstanding_payments'
-      ]
-    };
-    
-    return recommendations[userRole] || [];
-  },
-  
-  // ==================== HEALTH & MONITORING ====================
-  
-  /**
-   * Check analytics service health
-   */
   healthCheck: async () => {
     try {
-      const startTime = Date.now();
-      const response = await api.get('/analytics/health/', {
-        timeout: 10000
-      });
-      const endTime = Date.now();
-      
+      const response = await api.get('/analytics/health/', { timeout: 5000 });
       return {
         success: true,
         status: 'healthy',
-        responseTime: endTime - startTime,
-        data: response.data,
-        timestamp: Date.now()
+        data: response.data
       };
     } catch (error) {
       return {
         success: false,
         status: 'unhealthy',
-        message: error.message,
-        timestamp: Date.now()
+        message: error.message
       };
-    }
-  },
-  
-  /**
-   * Get analytics service status
-   */
-  getServiceStatus: async () => {
-    try {
-      const response = await api.get('/analytics/status/');
-      
-      return {
-        success: true,
-        data: response.data,
-        timestamp: Date.now()
-      };
-    } catch (error) {
-      return {
-        success: false,
-        status: 'offline',
-        message: error.message,
-        timestamp: Date.now()
-      };
-    }
-  },
-  
-  /**
-   * Track analytics event (for user behavior tracking)
-   */
-  trackEvent: async (eventName, eventData = {}) => {
-    try {
-      // Use beacon API for better performance if available
-      if (navigator.sendBeacon) {
-        const data = new FormData();
-        data.append('event_name', eventName);
-        data.append('event_data', JSON.stringify(eventData));
-        data.append('timestamp', Date.now());
-        data.append('user_agent', navigator.userAgent);
-        
-        navigator.sendBeacon('/api/v1/analytics/track-event/', data);
-        return { success: true, method: 'beacon' };
-      }
-      
-      // Fallback to regular API call
-      await api.post('/analytics/track-event/', {
-        event_name: eventName,
-        event_data: eventData,
-        timestamp: Date.now(),
-        user_agent: navigator.userAgent
-      });
-      
-      return { success: true, method: 'api' };
-    } catch (error) {
-      console.error('❌ Error tracking analytics event:', error);
-      return { success: false, error: error.message };
     }
   }
 };

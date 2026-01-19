@@ -29,7 +29,7 @@ class StudentProfileAdmin(admin.ModelAdmin):
         'cbc_pathway',
         'conduct_rating',
         'is_active',
-        'current_class__grade_level',
+        'current_class',
     )
     
     search_fields = (
@@ -329,7 +329,7 @@ class StudentEnrollmentAdmin(admin.ModelAdmin):
         'status',
         'fee_status',
         'academic_year',
-        'class_enrolled__grade_level',
+        'class_enrolled',
         'house',
         'cbc_pathway_selection',
     )

@@ -1,5 +1,3 @@
-
-
 from pathlib import Path
 from datetime import timedelta
 import os
@@ -16,9 +14,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(os.path.join(BASE_DIR, 'apps'))
 
 # ==================== CORE SETTINGS ====================
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-fallback-key-for-dev')
-DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,delvok.ac.ke').split(',')
+SECRET_KEY = os.getenv('SECRET_KEY')
+DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
 # ==================== APPLICATION DEFINITION ====================
 INSTALLED_APPS = [
@@ -44,11 +42,12 @@ INSTALLED_APPS = [
     'health_check.storage',
     'debug_toolbar',
     'import_export',
+    'dirtyfields',
     'django_object_actions',
     
     # Local apps
     'admin_panel',
-    'accounts',
+    'accounts.apps.AccountsConfig',
     'academics',
     'students',
     'teachers',
@@ -58,12 +57,12 @@ INSTALLED_APPS = [
     'timetable',
     "notes",
     'library',
+    "analytics",
     'events',
     'communications',
     'finance',
     'administration',
     'sis',
-    'core',
     'assignments',
     'notifications',
     'examination',
@@ -72,19 +71,14 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    # Security and CORS
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
-    
-    # Django core
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    
-    # Debug toolbar
     'debug_toolbar.middleware.DebugToolbarMiddleware',
 ]
 
@@ -112,9 +106,9 @@ WSGI_APPLICATION = 'school_backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.getenv('DB_NAME', 'delvok_academy_school'),
-        'USER': os.getenv('DB_USER', 'root'),
-        'PASSWORD': os.getenv('DB_PASSWORD', ''),
+        'NAME': os.getenv('DB_NAME'),
+        'USER': os.getenv('DB_USER'),
+        'PASSWORD': os.getenv('DB_PASSWORD'),
         'HOST': os.getenv('DB_HOST', 'localhost'),
         'PORT': os.getenv('DB_PORT', '3306'),
         'OPTIONS': {
@@ -135,13 +129,11 @@ DATABASES = {
 
 # ==================== AUTHENTICATION & SECURITY ====================
 AUTH_USER_MODEL = 'accounts.User'
-
 AUTHENTICATION_BACKENDS = [
     'accounts.backends.EmailBackend',
     'django.contrib.auth.backends.ModelBackend',
 ]
 
-# Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -158,7 +150,6 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# Password hashing
 PASSWORD_HASHERS = [
     'django.contrib.auth.hashers.Argon2PasswordHasher',
     'django.contrib.auth.hashers.PBKDF2PasswordHasher',
@@ -167,8 +158,8 @@ PASSWORD_HASHERS = [
 ]
 
 # ==================== INTERNATIONALIZATION ====================
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'Africa/Nairobi'
+LANGUAGE_CODE = os.getenv('LANGUAGE_CODE', 'en-us')
+TIME_ZONE = os.getenv('TIME_ZONE', 'UTC')
 USE_I18N = True
 USE_L10N = True
 USE_TZ = True
@@ -194,7 +185,7 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.SessionAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.AllowAny',  # Allow access to authentication endpoints
+        'rest_framework.permissions.AllowAny',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
@@ -205,6 +196,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
     ],
     'DEFAULT_PARSER_CLASSES': [
         'rest_framework.parsers.JSONParser',
@@ -220,6 +212,7 @@ REST_FRAMEWORK = {
         'user': '1000/hour',
     },
     'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler',
+    'UNAUTHENTICATED_USER': None,
 }
 
 # ==================== JWT SETTINGS ====================
@@ -229,28 +222,35 @@ SIMPLE_JWT = {
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': True,
-    
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
     'VERIFYING_KEY': None,
-    
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
-    
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
     'TOKEN_TYPE_CLAIM': 'token_type',
 }
 
-# ==================== CORS & SECURITY HEADERS ====================
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5177",
-    "http://127.0.0.1:5177",
-    "https://delvok.ac.ke",
-]
+# OTP Configuration
+OTP_VALIDITY_SECONDS = 300  # 5 minutes
+OTP_LOGIN_REQUIRED_FOR_ALL = True  # Require OTP for all users
+OTP_BYPASS_ROLES = ['admin']  # Roles that can bypass OTP (optional)
+
+# 2FA Configuration
+TWO_FACTOR_AUTH_METHODS = {
+    'authenticator': True,
+    'email': True,
+    'sms': True,
+}
+
+# Security settings
+ACCOUNT_LOGIN_ATTEMPTS_LIMIT = 5
+ACCOUNT_LOGIN_ATTEMPTS_TIMEOUT = 1800  # 30 minutes
+
+# ==================== CORS & SECURITY ====================
+CORS_ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_METHODS = [
@@ -262,42 +262,43 @@ CORS_ALLOW_HEADERS = [
     'dnt', 'origin', 'user-agent', 'x-csrftoken', 'x-requested-with', 'x-request-id',
 ]
 
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:5177",
-    "http://127.0.0.1:5177",
-    "https://delvok.ac.ke",
-]
+CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',')
+
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SECURE = False
+CSRF_USE_SESSIONS = False
+CSRF_COOKIE_NAME = 'csrftoken'
+CSRF_COOKIE_AGE = 60 * 60 * 24 * 7
 
 # ==================== EMAIL CONFIGURATION ====================
-EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
-EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = os.getenv('EMAIL_HOST')
 EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'delvokacademy@gmail.com')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Delvok Academy <delvokacademy@gmail.com>')
-SERVER_EMAIL = os.getenv('SERVER_EMAIL', 'Delvok Academy Server <delvokacademy@gmail.com>')
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
+SERVER_EMAIL = os.getenv('SERVER_EMAIL', DEFAULT_FROM_EMAIL)
 EMAIL_TIMEOUT = 30
 
 # ==================== SCHOOL INFORMATION ====================
-SCHOOL_NAME = 'Delvok Academy'
-SCHOOL_MOTTO = 'Excellence in Education'
-SCHOOL_LOCATION = 'Kenya'
-SCHOOL_PHONE = '+254-700-000-000'
-SCHOOL_EMAIL = 'info@delvok.ac.ke'
-SCHOOL_WEBSITE = 'https://delvok.ac.ke'
-SCHOOL_SUPPORT_EMAIL = 'delvokacademy@gmail.com'
+SCHOOL_NAME = os.getenv('SCHOOL_NAME', 'Delvok Academy')
+SCHOOL_MOTTO = os.getenv('SCHOOL_MOTTO', 'Excellence in Education')
+SCHOOL_LOCATION = os.getenv('SCHOOL_LOCATION', 'Kenya')
+SCHOOL_PHONE = os.getenv('SCHOOL_PHONE', '+254-700-000-000')
+SCHOOL_EMAIL = os.getenv('SCHOOL_EMAIL', 'info@delvok.ac.ke')
+SCHOOL_WEBSITE = os.getenv('SCHOOL_WEBSITE', 'https://delvok.ac.ke')
+SCHOOL_SUPPORT_EMAIL = os.getenv('SCHOOL_SUPPORT_EMAIL', 'delvokacademy@gmail.com')
 
-# Frontend URLs
-FRONTEND_URL = 'http://localhost:5177'
-BACKEND_URL = 'http://localhost:8000'
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5177')
+BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:8000')
 
 # ==================== SECURITY SETTINGS ====================
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
 
-# Enhanced security for production
 if not DEBUG:
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 31536000
@@ -311,48 +312,59 @@ if not DEBUG:
 
 # ==================== SESSION & CACHE CONFIGURATION ====================
 SESSION_ENGINE = 'django.contrib.sessions.backends.cached_db'
-SESSION_COOKIE_AGE = 1209600  # 2 weeks
+SESSION_COOKIE_AGE = 1209600
 SESSION_COOKIE_NAME = 'delvok_sessionid'
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 
+
+REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
+
+# Make sure we're using the right database (0 or 1)
 CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/1",
+        "LOCATION": REDIS_URL,  
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             "COMPRESSOR": "django_redis.compressors.zlib.ZlibCompressor",
             "IGNORE_EXCEPTIONS": True,
+            "SOCKET_CONNECT_TIMEOUT": 5,  # seconds
+            "SOCKET_TIMEOUT": 5,  # seconds
+            "CONNECTION_POOL_KWARGS": {
+                "max_connections": 50,
+                "retry_on_timeout": True
+            },
         },
-        "KEY_PREFIX": "delvok"
+        "KEY_PREFIX": "delvok",
+        "TIMEOUT": 600,  # 5 minutes default
     }
 }
 
-# ==================== 2FA SECURITY SETTINGS ====================
-# 2FA Requirements for different user roles
-REQUIRE_2FA_FOR_STAFF = True  # Teachers, Admin, Staff must have 2FA
-REQUIRE_2FA_FOR_STUDENTS = False  # Optional for students
-REQUIRE_2FA_FOR_PARENTS = True  # Parents handling payments need 2FA
+# Also add SESSION_CACHE_ALIAS
+SESSION_CACHE_ALIAS = "default"
 
-# OTP Settings
+
+# ==================== 2FA SECURITY SETTINGS ====================
+REQUIRE_2FA_FOR_STAFF = os.getenv('REQUIRE_2FA_FOR_STAFF', 'True').lower() == 'true'
+REQUIRE_2FA_FOR_STUDENTS = os.getenv('REQUIRE_2FA_FOR_STUDENTS', 'False').lower() == 'true'
+REQUIRE_2FA_FOR_PARENTS = os.getenv('REQUIRE_2FA_FOR_PARENTS', 'True').lower() == 'true'
+
 OTP_VALIDITY_MINUTES = 10
 OTP_LENGTH = 6
 MAX_OTP_ATTEMPTS = 3
 
-# Login Security
 LOGIN_ATTEMPT_LIMIT = 5
 LOGIN_TIMEOUT_MINUTES = 15
-ACCOUNT_LOCKOUT_DURATION = 30  # minutes
+ACCOUNT_LOCKOUT_DURATION = 30
 
-# Password Policy
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
 PASSWORD_COMPLEXITY = {
-    'UPPER': 1,      # At least 1 uppercase letter
-    'LOWER': 1,      # At least 1 lowercase letter  
-    'DIGITS': 1,     # At least 1 digit
-    'SPECIAL': 1,    # At least 1 special character
+    'UPPER': 1,
+    'LOWER': 1,
+    'DIGITS': 1,
+    'SPECIAL': 1,
 }
 
 # ==================== TWILIO CONFIGURATION ====================
@@ -360,13 +372,10 @@ TWILIO_ENABLED = os.getenv('TWILIO_ENABLED', 'True').lower() == 'true'
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
 TWILIO_VERIFY_SERVICE_SID = os.getenv('TWILIO_VERIFY_SERVICE_SID', '')
-TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '+15005550006')  # Twilio test number
+TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '+15005550006')
 
 # ==================== DEBUG TOOLBAR ====================
-
-
 if DEBUG:
-    # Fix Django Debug Toolbar callback to prevent admin errors
     DEBUG_TOOLBAR_CONFIG = {
         'SHOW_TOOLBAR_CALLBACK': lambda request: (
             request.META.get('REMOTE_ADDR') in INTERNAL_IPS and
@@ -380,7 +389,7 @@ if DEBUG:
         },
         'RESULTS_CACHE_SIZE': 10,
         'SHOW_COLLAPSED': True,
-        'RENDER_PANELS': False,  # Disable auto-rendering
+        'RENDER_PANELS': False,
     }
     
     INTERNAL_IPS = ['127.0.0.1', 'localhost', '::1']
@@ -490,7 +499,5 @@ DELVOK_SETTINGS = {
 APP_VERSION = '1.0.0'
 
 # Create required directories
-os.makedirs(BASE_DIR / 'static', exist_ok=True)
-os.makedirs(BASE_DIR / 'media', exist_ok=True)
-os.makedirs(BASE_DIR / 'logs', exist_ok=True)
-os.makedirs(BASE_DIR / 'templates/emails', exist_ok=True)
+for dir_name in ['static', 'media', 'logs', 'templates/emails']:
+    os.makedirs(BASE_DIR / dir_name, exist_ok=True)

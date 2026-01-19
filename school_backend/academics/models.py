@@ -1,5536 +1,3725 @@
-"""
-academics/models.py
-Enhanced academic models for comprehensive school management system.
-Supports multiple curricula including CBC, 8-4-4, IGCSE, IB, and more.
-"""
+# academic/models.py
 
 import uuid
-import logging
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from django.apps import apps
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator, MaxValueValidator
-from django.core.cache import cache
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
-from django.db.models import Q, F
-from django.db.models.signals import post_save, pre_save, m2m_changed
-from django.dispatch import receiver
+from django.db.models import Avg, Count, Max, Min, Q, Sum
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from accounts.models import User
-from students.models import StudentEnrollment
-from teachers.models import TeacherProfile
-
-logger = logging.getLogger(__name__)
+from accounts.models import BaseModel, User
 
 
 # ============================================================================
-# CONSTANTS AND CHOICES
+# CONSTANTS AND ENUMS
 # ============================================================================
 
-# House Choices
-HOUSE_CHOICES = [
-    ('unity', 'Unity House'),
-    ('courage', 'Courage House'),
-    ('wisdom', 'Wisdom House'),
-    ('success', 'Success House'),
-    ('excellence', 'Excellence House'),
-    ('integrity', 'Integrity House'),
-    ('bravery', 'Bravery House'),
-    ('honor', 'Honor House'),
-]
+class AcademicLevel(models.TextChoices):
+    """Academic level choices"""
+    PRESCHOOL = 'preschool', _('Preschool')
+    PRIMARY = 'primary', _('Primary School')
+    JUNIOR_SECONDARY = 'junior_secondary', _('Junior Secondary School')
+    SENIOR_SECONDARY = 'senior_secondary', _('Senior Secondary School')
+    TERTIARY = 'tertiary', _('Tertiary/College')
 
-# Grade Level Choices
-GRADE_LEVEL_CHOICES = (
-    ('pre_primary_1', 'Pre-Primary 1 (PP1)'),
-    ('pre_primary_2', 'Pre-Primary 2 (PP2)'),
-    ('grade_1', 'Grade 1'),
-    ('grade_2', 'Grade 2'),
-    ('grade_3', 'Grade 3'),
-    ('grade_4', 'Grade 4'),
-    ('grade_5', 'Grade 5'),
-    ('grade_6', 'Grade 6'),
-    ('grade_7', 'Grade 7'),
-    ('grade_8', 'Grade 8'),
-    ('grade_9', 'Grade 9'),
-    ('grade_10', 'Grade 10 (Senior 1)'),
-    ('grade_11', 'Grade 11 (Senior 2)'),
-    ('grade_12', 'Grade 12 (Senior 3)'),
-)
 
-# Stream Choices
-STREAM_CHOICES = (
-    ('general', 'General (G4-9)'),
-    ('stem', 'STEM Pathway'),
-    ('social_sciences', 'Social Sciences Pathway'),
-    ('arts_sports', 'Arts & Sports Pathway'),
-    ('pure_science', 'Pure Science (STEM)'),
-    ('applied_science', 'Applied Science (STEM)'),
-    ('technical', 'Technical & Engineering (STEM)'),
-)
+class GradeScale(models.TextChoices):
+    """Grading scale choices"""
+    PERCENTAGE = 'percentage', _('Percentage (0-100)')
+    LETTER_GRADE = 'letter_grade', _('Letter Grade (A-F)')
+    GPA = 'gpa', _('GPA (0-4.0)')
+    POINTS = 'points', _('Points System')
+    COMPETENCY = 'competency', _('Competency Based')
 
-# Education Level Choices
-EDUCATION_LEVELS = (
-    ('early_years', 'Early Years (Pre-primary - Grade 3)'),
-    ('middle_school', 'Middle School (Grade 4 - Grade 9)'),
-    ('senior_school', 'Senior School (Grade 10 - Grade 12)'),
-    ('foundation', 'Foundation Level'),
-    ('intermediate', 'Intermediate Level'),
-    ('advanced', 'Advanced Level'),
-)
 
-# CBC Pathway Choices
-CBC_PATHWAY_CHOICES = (
-    ('stem', 'Science, Technology, Engineering & Mathematics'),
-    ('social_sciences', 'Social Sciences'),
-    ('arts_sports', 'Arts and Sports'),
-)
+class AssessmentType(models.TextChoices):
+    """Assessment type choices"""
+    EXAM = 'exam', _('Exam')
+    TEST = 'test', _('Test')
+    QUIZ = 'quiz', _('Quiz')
+    ASSIGNMENT = 'assignment', _('Assignment')
+    PROJECT = 'project', _('Project')
+    PRACTICAL = 'practical', _('Practical')
+    ORAL = 'oral', _('Oral Exam')
+    PARTICIPATION = 'participation', _('Participation')
+    HOMEWORK = 'homework', _('Homework')
+    CONTINUOUS_ASSESSMENT = 'continuous_assessment', _('Continuous Assessment')
 
-# Senior School Track Choices
-SENIOR_SCHOOL_TRACKS = (
-    ('stem_science', 'STEM - Pure Sciences'),
-    ('stem_technical', 'STEM - Technical & Engineering'),
-    ('stem_applied', 'STEM - Applied Sciences'),
-    ('social_sciences_general', 'Social Sciences - General'),
-    ('social_sciences_business', 'Social Sciences - Business'),
-    ('social_sciences_humanities', 'Social Sciences - Humanities'),
-    ('arts_performing', 'Arts - Performing Arts'),
-    ('arts_visual', 'Arts - Visual & Creative Arts'),
-    ('sports_performance', 'Sports - Performance'),
-    ('sports_management', 'Sports - Management'),
-)
 
-# Subject Category Choices
-SUBJECT_CATEGORIES = (
-    ('core', 'Core'),
-    ('elective', 'Elective'),
-    ('cbc_core', 'CBC Core Competency'),
-    ('cbc_optional', 'CBC Optional'),
-    ('pathway_core', 'Pathway Core'),
-    ('pathway_elective', 'Pathway Elective'),
-    ('technical', 'Technical'),
-    ('languages', 'Languages'),
-    ('arts', 'Creative Arts'),
-    ('sciences', 'Sciences'),
-    ('humanities', 'Humanities'),
-    ('physical', 'Physical Education'),
-    ('religious', 'Religious Education'),
-)
+class AttendanceStatus(models.TextChoices):
+    """Attendance status choices"""
+    PRESENT = 'present', _('Present')
+    ABSENT = 'absent', _('Absent')
+    LATE = 'late', _('Late')
+    EXCUSED = 'excused', _('Excused')
+    HALF_DAY = 'half_day', _('Half Day')
+    SICK_LEAVE = 'sick_leave', _('Sick Leave')
+    OTHER = 'other', _('Other')
 
-# Assessment Type Choices
-ASSESSMENT_TYPES = (
-    ('knec', 'KNEC National Exams'),
-    ('school_based', 'School-Based Assessment'),
-    ('portfolio', 'Portfolio Assessment'),
-    ('practical', 'Practical Assessment'),
-    ('project', 'Project Work'),
-    ('cat', 'Continuous Assessment Test (CAT)'),
-    ('assignment', 'Assignment'),
-    ('oral', 'Oral Assessment'),
-    ('demonstration', 'Skill Demonstration'),
-)
 
-# Curriculum Choices
-CURRICULUM_CHOICES = (
-    ('cbc', 'Competency Based Curriculum (CBC)'),
-    ('8-4-4', '8-4-4 System'),
-    ('icse', 'ICSE'),
-    ('igcse', 'IGCSE'),
-    ('american', 'American'),
-    ('combined', 'Combined'),
-    ('ib', 'International Baccalaureate'),
-    ('montessori', 'Montessori'),
-)
+class DayOfWeek(models.TextChoices):
+    """Day of week choices"""
+    MONDAY = 'monday', _('Monday')
+    TUESDAY = 'tuesday', _('Tuesday')
+    WEDNESDAY = 'wednesday', _('Wednesday')
+    THURSDAY = 'thursday', _('Thursday')
+    FRIDAY = 'friday', _('Friday')
+    SATURDAY = 'saturday', _('Saturday')
+    SUNDAY = 'sunday', _('Sunday')
 
-# Difficulty Level Choices
-DIFFICULTY_LEVELS = (
-    ('basic', 'Basic'),
-    ('intermediate', 'Intermediate'),
-    ('advanced', 'Advanced'),
-    ('honors', 'Honors'),
-)
 
-# Term Choices
-TERM_CHOICES = (
-    ('term_1', 'Term 1'),
-    ('term_2', 'Term 2'),
-    ('term_3', 'Term 3'),
-    ('semester_1', 'Semester 1'),
-    ('semester_2', 'Semester 2'),
-    ('trimester_1', 'Trimester 1'),
-    ('trimester_2', 'Trimester 2'),
-    ('trimester_3', 'Trimester 3'),
-)
+class TermType(models.TextChoices):
+    """Academic term type choices"""
+    FIRST_TERM = 'first_term', _('First Term')
+    SECOND_TERM = 'second_term', _('Second Term')
+    THIRD_TERM = 'third_term', _('Third Term')
+    SUMMER_TERM = 'summer_term', _('Summer Term')
+    SPECIAL_TERM = 'special_term', _('Special Term')
 
-# Event Type Choices
-EVENT_TYPE_CHOICES = (
-    ('exam', 'Examination'),
-    ('assessment', 'Assessment'),
-    ('holiday', 'Holiday'),
-    ('sports', 'Sports Event'),
-    ('cultural', 'Cultural Event'),
-    ('meeting', 'Staff Meeting'),
-    ('parent_meeting', 'Parent-Teacher Meeting'),
-    ('workshop', 'Workshop'),
-    ('ceremony', 'Ceremony'),
-    ('field_trip', 'Field Trip'),
-)
 
-# Priority Choices
-PRIORITY_CHOICES = (
-    ('low', 'Low Priority'),
-    ('medium', 'Medium Priority'),
-    ('high', 'High Priority'),
-    ('critical', 'Critical'),
-)
-
-# Enrollment Status Choices
-ENROLLMENT_STATUS = (
-    ('active', 'Active'),
-    ('transferred', 'Transferred'),
-    ('graduated', 'Graduated'),
-    ('withdrawn', 'Withdrawn'),
-    ('suspended', 'Suspended'),
-)
+class AcademicStatus(models.TextChoices):
+    """Student academic status"""
+    ACTIVE = 'active', _('Active')
+    PROBATION = 'probation', _('Academic Probation')
+    WARNING = 'warning', _('Academic Warning')
+    SUSPENDED = 'suspended', _('Suspended')
+    GRADUATED = 'graduated', _('Graduated')
+    DROPPED = 'dropped', _('Dropped Out')
+    TRANSFERRED = 'transferred', _('Transferred')
 
 
 # ============================================================================
-# BASE MODEL
+# BASE CLASSES AND MIXINS
 # ============================================================================
 
-class BaseAcademicModel(models.Model):
-    """
-    Enhanced abstract base model for all academic models with audit trail.
-    """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    is_active = models.BooleanField(default=True)
+class AcademicMixin(models.Model):
+    """Mixin for academic year and term tracking"""
     
-    # Audit fields
-    created_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='created_%(class)s_entries',
-        verbose_name=_("Created By")
+    academic_year = models.CharField(
+        max_length=20,
+        verbose_name=_("Academic Year"),
+        help_text=_("Format: YYYY-YYYY")
     )
-    updated_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='updated_%(class)s_entries',
-        verbose_name=_("Updated By")
+    term = models.CharField(
+        max_length=20,
+        choices=TermType.choices,
+        verbose_name=_("Term")
     )
     
     class Meta:
         abstract = True
-        ordering = ['-created_at']
+    
+    def clean(self):
+        """Validate academic year format"""
+        if self.academic_year:
+            try:
+                years = self.academic_year.split('-')
+                if len(years) != 2:
+                    raise ValidationError(_("Academic year must be in format YYYY-YYYY"))
+                int(years[0])
+                int(years[1])
+                if int(years[1]) != int(years[0]) + 1:
+                    raise ValidationError(_("Second year must be one greater than first year"))
+            except (ValueError, IndexError):
+                raise ValidationError(_("Invalid academic year format"))
 
-    def get_audit_info(self):
-        """
-        Get audit information for the model.
-        
-        Returns:
-            dict: Audit information including created/updated dates and users.
-        """
-        return {
-            'created_at': self.created_at,
-            'updated_at': self.updated_at,
-            'created_by': self.created_by.get_full_name() if self.created_by else 'System',
-            'updated_by': self.updated_by.get_full_name() if self.updated_by else 'System'
-        }
 
+# ============================================================================
+# ACADEMIC STRUCTURE MODELS
+# ============================================================================
+
+class AcademicYear(BaseModel, AcademicMixin):
+    """Academic year configuration"""
+    
+    name = models.CharField(
+        max_length=100,
+        verbose_name=_("Academic Year Name"),
+        help_text=_("e.g., 2023-2024 Academic Year")
+    )
+    start_date = models.DateField(verbose_name=_("Start Date"))
+    end_date = models.DateField(verbose_name=_("End Date"))
+    is_current = models.BooleanField(
+        default=False,
+        verbose_name=_("Current Academic Year")
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    
+    # Term dates
+    first_term_start = models.DateField(verbose_name=_("First Term Start"))
+    first_term_end = models.DateField(verbose_name=_("First Term End"))
+    second_term_start = models.DateField(verbose_name=_("Second Term Start"))
+    second_term_end = models.DateField(verbose_name=_("Second Term End"))
+    third_term_start = models.DateField(verbose_name=_("Third Term Start"), null=True, blank=True)
+    third_term_end = models.DateField(verbose_name=_("Third Term End"), null=True, blank=True)
+    
+    # Configuration
+    min_attendance_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=75.00,
+        verbose_name=_("Minimum Attendance Percentage"),
+        help_text=_("Minimum attendance required to pass")
+    )
+    passing_grade = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=40.00,
+        verbose_name=_("Passing Grade"),
+        help_text=_("Minimum grade to pass")
+    )
+    max_absent_days = models.PositiveIntegerField(
+        default=30,
+        verbose_name=_("Maximum Absent Days"),
+        help_text=_("Maximum days a student can be absent")
+    )
+    
+    class Meta:
+        verbose_name = _("Academic Year")
+        verbose_name_plural = _("Academic Years")
+        ordering = ['-start_date']
+        unique_together = ['academic_year', 'term']
+        indexes = [
+            models.Index(fields=['academic_year', 'term']),
+            models.Index(fields=['is_current']),
+            models.Index(fields=['start_date', 'end_date']),
+        ]
+    
+    def __str__(self):
+        return f"{self.name} ({self.academic_year} - {self.get_term_display()})"
+    
     def save(self, *args, **kwargs):
-        """
-        Auto-set audit fields if user is available in request.
-        """
-        from django.contrib.auth.models import AnonymousUser
-        request = getattr(settings, 'CURRENT_REQUEST', None)
+        """Ensure only one current academic year"""
+        if self.is_current:
+            AcademicYear.objects.filter(is_current=True).update(is_current=False)
+        super().save(*args, **kwargs)
+    
+    def get_term_dates(self, term):
+        """Get start and end dates for a specific term"""
+        term_dates = {
+            TermType.FIRST_TERM: (self.first_term_start, self.first_term_end),
+            TermType.SECOND_TERM: (self.second_term_start, self.second_term_end),
+            TermType.THIRD_TERM: (self.third_term_start, self.third_term_end),
+        }
+        return term_dates.get(term, (None, None))
+    
+    def is_date_in_term(self, check_date, term=None):
+        """Check if a date falls within this academic term"""
+        if term:
+            start_date, end_date = self.get_term_dates(term)
+            return start_date <= check_date <= end_date
+        else:
+            return self.start_date <= check_date <= self.end_date
+    
+    def get_current_term(self):
+        """Get current term based on today's date"""
+        today = date.today()
         
-        if request and hasattr(request, 'user') and not isinstance(request.user, AnonymousUser):
-            if not self.pk and not self.created_by:
-                self.created_by = request.user
-            if not self.updated_by:
-                self.updated_by = request.user
+        if self.first_term_start <= today <= self.first_term_end:
+            return TermType.FIRST_TERM
+        elif self.second_term_start <= today <= self.second_term_end:
+            return TermType.SECOND_TERM
+        elif self.third_term_start and self.third_term_end:
+            if self.third_term_start <= today <= self.third_term_end:
+                return TermType.THIRD_TERM
+        return None
+    
+    def get_days_in_term(self, term=None):
+        """Get number of school days in term"""
+        if term:
+            start_date, end_date = self.get_term_dates(term)
+        else:
+            start_date, end_date = self.start_date, self.end_date
+        
+        if not start_date or not end_date:
+            return 0
+        
+        days = (end_date - start_date).days + 1
+        # Remove weekends (assuming Saturday and Sunday)
+        weekend_days = 0
+        current_date = start_date
+        while current_date <= end_date:
+            if current_date.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+                weekend_days += 1
+            current_date += timedelta(days=1)
+        
+        return days - weekend_days
+    
+    @classmethod
+    def get_current_academic_year(cls):
+        """Get current academic year"""
+        try:
+            return cls.objects.get(is_current=True)
+        except cls.DoesNotExist:
+            return None
+
+
+class AcademicTerm(BaseModel):
+    """Academic term model for detailed term management"""
+    TERM_TYPE_CHOICES = [
+        ('term1', 'Term 1'),
+        ('term2', 'Term 2'), 
+        ('term3', 'Term 3'),
+    ]
+
+    ACADEMIC_STATUS_CHOICES = [
+       ('active', 'Active'),
+       ('inactive', 'Inactive'),
+    ]
+    academic_year = models.ForeignKey(
+        AcademicYear,
+        on_delete=models.CASCADE,
+        related_name='academic_terms',
+        verbose_name=_("Academic Year")
+    )
+    name = models.CharField(
+        max_length=100,
+        verbose_name=_("Term Name"),
+        help_text=_("e.g., First Term 2023-2024")
+    )
+    term_type = models.CharField(
+        max_length=20,
+        choices=TermType.choices,
+        verbose_name=_("Term Type")
+    )
+    start_date = models.DateField(verbose_name=_("Start Date"))
+    end_date = models.DateField(verbose_name=_("End Date"))
+    is_current = models.BooleanField(
+        default=False,
+        verbose_name=_("Current Term")
+    )
+    
+    # Term-specific configurations
+    registration_deadline = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Registration Deadline")
+    )
+    fee_payment_deadline = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Fee Payment Deadline")
+    )
+    examination_start = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Examination Start Date")
+    )
+    examination_end = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Examination End Date")
+    )
+    closing_date = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Closing Date")
+    )
+    next_term_starts = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Next Term Starts")
+    )
+    
+    # Term statistics
+    total_instructional_days = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Total Instructional Days")
+    )
+    total_holidays = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Total Holidays")
+    )
+    minimum_attendance_days = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Minimum Attendance Days"),
+        help_text=_("Minimum days required for promotion")
+    )
+    
+    # Academic requirements
+    minimum_pass_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=40.00,
+        verbose_name=_("Minimum Pass Percentage")
+    )
+    assessment_weight = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_("Assessment Weight Distribution"),
+        help_text=_("Weight distribution for different assessment types")
+    )
+    
+    # Fee structure reference - IMPORTANT: Use string reference to avoid circular import
+    fee_structure = models.ForeignKey(
+        'finance.FeeStructure',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_("Fee Structure")
+    )
+    
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    
+    class Meta:
+        verbose_name = _("Academic Term")
+        verbose_name_plural = _("Academic Terms")
+        ordering = ['academic_year', 'start_date']
+        unique_together = ['academic_year', 'term_type']
+        indexes = [
+            models.Index(fields=['academic_year', 'term_type']),
+            models.Index(fields=['is_current']),
+            models.Index(fields=['start_date', 'end_date']),
+        ]
+    
+    def __str__(self):
+        return f"{self.name} - {self.academic_year.academic_year}"
+    
+    def clean(self):
+        """Validate term dates"""
+        if self.start_date >= self.end_date:
+            raise ValidationError(_("End date must be after start date"))
+        
+        # Validate term is within academic year
+        if not (self.academic_year.start_date <= self.start_date <= self.academic_year.end_date):
+            raise ValidationError(_("Term start date must be within academic year"))
+        
+        if not (self.academic_year.start_date <= self.end_date <= self.academic_year.end_date):
+            raise ValidationError(_("Term end date must be within academic year"))
+        
+        # Validate term doesn't overlap with other terms in same academic year
+        overlapping_terms = AcademicTerm.objects.filter(
+            academic_year=self.academic_year
+        ).exclude(pk=self.pk if self.pk else None)
+        
+        for term in overlapping_terms:
+            if (self.start_date <= term.end_date and self.end_date >= term.start_date):
+                raise ValidationError(
+                    _("Term dates overlap with existing term: {}").format(term.name)
+                )
+        
+        # Validate registration and fee deadlines
+        if self.registration_deadline and self.registration_deadline > self.start_date:
+            raise ValidationError(_("Registration deadline must be before term start date"))
+        
+        if self.fee_payment_deadline and self.fee_payment_deadline > self.start_date:
+            raise ValidationError(_("Fee payment deadline must be before term start date"))
+    
+    def save(self, *args, **kwargs):
+        """Ensure only one current term per academic year"""
+        if self.is_current:
+            AcademicTerm.objects.filter(
+                academic_year=self.academic_year,
+                is_current=True
+            ).exclude(pk=self.pk if self.pk else None).update(is_current=False)
+        
+        # Set default assessment weights if not provided
+        if not self.assessment_weight:
+            self.assessment_weight = {
+                'exam': 40.0,
+                'test': 30.0,
+                'assignment': 15.0,
+                'participation': 15.0,
+            }
         
         super().save(*args, **kwargs)
-
-
-# ============================================================================
-# MANAGER CLASSES
-# ============================================================================
-
-class AcademicYearManager(models.Manager):
-    """Custom manager for AcademicYear with caching support."""
     
-    def get_current(self):
-        """Get current academic year with caching."""
-        cache_key = 'current_academic_year'
-        current_year = cache.get(cache_key)
+    @property
+    def duration_days(self):
+        """Get term duration in days"""
+        return (self.end_date - self.start_date).days + 1
+    
+    @property
+    def is_active(self):
+        """Check if term is currently active"""
+        today = date.today()
+        return self.start_date <= today <= self.end_date
+    
+    @property
+    def days_remaining(self):
+        """Get days remaining in term"""
+        today = date.today()
+        if today < self.start_date:
+            return (self.start_date - today).days
+        elif self.start_date <= today <= self.end_date:
+            return (self.end_date - today).days
+        else:
+            return 0
+    
+    def get_instructional_days(self, include_weekends=False):
+        """Calculate instructional days in term"""
+        days = self.duration_days
+        if not include_weekends:
+            # Remove weekends
+            weekend_days = 0
+            current_date = self.start_date
+            while current_date <= self.end_date:
+                if current_date.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+                    weekend_days += 1
+                current_date += timedelta(days=1)
+            days -= weekend_days
         
-        if current_year is None:
-            current_year = self.filter(is_current=True).first()
-            if current_year:
-                cache.set(cache_key, current_year, 3600)
-        return current_year
+        # Subtract holidays
+        holidays = self.academic_events.filter(event_type='holiday', is_holiday=True)
+        holiday_days = 0
+        for holiday in holidays:
+            if holiday.start_date <= self.end_date and holiday.end_date >= self.start_date:
+                # Calculate overlapping days
+                overlap_start = max(self.start_date, holiday.start_date)
+                overlap_end = min(self.end_date, holiday.end_date)
+                holiday_days += (overlap_end - overlap_start).days + 1
+        
+        days -= holiday_days
+        return max(0, days)
     
-    def get_active_years(self):
-        """Get all active academic years (based on date)."""
-        today = timezone.now().date()
-        return self.filter(
-            start_date__lte=today,
-            end_date__gte=today,
-            is_active=True
+    def update_statistics(self):
+        """Update term statistics"""
+        from .models import Attendance, Enrollment
+        
+        # Calculate instructional days
+        self.total_instructional_days = self.get_instructional_days()
+        
+        # Calculate holiday count
+        holidays = self.academic_events.filter(event_type='holiday', is_holiday=True)
+        holiday_days = 0
+        for holiday in holidays:
+            if holiday.start_date <= self.end_date and holiday.end_date >= self.start_date:
+                overlap_start = max(self.start_date, holiday.start_date)
+                overlap_end = min(self.end_date, holiday.end_date)
+                holiday_days += (overlap_end - overlap_start).days + 1
+        self.total_holidays = holiday_days
+        
+        self.save()
+    
+    def get_enrollment_count(self):
+        """Get number of students enrolled in this term"""
+        from .models import Enrollment
+        return Enrollment.objects.filter(
+            academic_year=self.academic_year.academic_year,
+            term=self.term_type
+        ).count()
+    
+    def get_attendance_summary(self):
+        """Get attendance summary for this term"""
+        from .models import Attendance
+        attendance = Attendance.objects.filter(
+            academic_year=self.academic_year.academic_year,
+            term=self.term_type,
+            date__range=[self.start_date, self.end_date]
         )
-    
-    def get_upcoming_years(self):
-        """Get upcoming academic years."""
-        today = timezone.now().date()
-        return self.filter(
-            start_date__gt=today,
-            is_active=True
-        ).order_by('start_date')
-
-
-class AcademicTermManager(models.Manager):
-    """Custom manager for AcademicTerm."""
-    
-    def get_current(self):
-        """Get current academic term."""
-        today = timezone.now().date()
-        return self.filter(
-            start_date__lte=today,
-            end_date__gte=today,
-            is_active=True
-        ).first()
-    
-    def get_by_academic_year(self, academic_year):
-        """Get all terms for a specific academic year."""
-        return self.filter(academic_year=academic_year, is_active=True)
-
-
-class SubjectManager(models.Manager):
-    """Custom manager for Subject model."""
-    
-    def get_by_curriculum(self, curriculum):
-        """Get subjects by curriculum."""
-        return self.filter(curriculum=curriculum, is_active=True)
-    
-    def get_by_grade_level(self, grade_level):
-        """Get subjects by grade level."""
-        return self.filter(
-            grade_levels__contains=[grade_level],
-            is_active=True
+        
+        summary = attendance.aggregate(
+            total_records=Count('id'),
+            present=Count('id', filter=Q(status=AttendanceStatus.PRESENT)),
+            absent=Count('id', filter=Q(status=AttendanceStatus.ABSENT)),
+            late=Count('id', filter=Q(status=AttendanceStatus.LATE))
         )
+        
+        return {
+            'total_records': summary['total_records'] or 0,
+            'present': summary['present'] or 0,
+            'absent': summary['absent'] or 0,
+            'late': summary['late'] or 0,
+            'attendance_rate': (summary['present'] / summary['total_records'] * 100) if summary['total_records'] > 0 else 0,
+        }
     
-    def core_subjects(self):
-        """Get all core subjects."""
-        return self.filter(category='core', is_active=True)
+    def get_performance_summary(self):
+        """Get academic performance summary for this term"""
+        from .models import Grade
+        grades = Grade.objects.filter(
+            assessment__academic_year=self.academic_year.academic_year,
+            assessment__term=self.term_type
+        )
+        
+        summary = grades.aggregate(
+            average_score=Avg('score'),
+            total_assessments=Count('assessment', distinct=True),
+            total_students=Count('student', distinct=True),
+            highest_score=Max('score'),
+            lowest_score=Min('score')
+        )
+        
+        return {
+            'average_score': summary['average_score'] or 0,
+            'total_assessments': summary['total_assessments'] or 0,
+            'total_students': summary['total_students'] or 0,
+            'highest_score': summary['highest_score'] or 0,
+            'lowest_score': summary['lowest_score'] or 0,
+        }
     
-    def elective_subjects(self):
-        """Get all elective subjects."""
-        return self.filter(category='elective', is_active=True)
+    def get_upcoming_events(self, days=30):
+        """Get upcoming events for this term"""
+        today = date.today()
+        future_date = today + timedelta(days=days)
+        
+        return self.academic_events.filter(
+            start_date__gte=today,
+            start_date__lte=future_date
+        ).order_by('start_date', 'start_time')
+    
+    @classmethod
+    def get_current_term(cls):
+        """Get current academic term"""
+        try:
+            return cls.objects.get(is_current=True)
+        except cls.DoesNotExist:
+            return None
+    
+    @classmethod
+    def get_upcoming_terms(cls, count=3):
+        """Get upcoming academic terms"""
+        today = date.today()
+        return cls.objects.filter(
+            start_date__gte=today
+        ).order_by('start_date')[:count]
 
 
-class ClassManager(models.Manager):
-    """Custom manager for Class model."""
+class GradeLevel(BaseModel):
+    """Grade/Class level structure"""
     
-    def get_by_grade_level(self, grade_level, academic_year=None):
-        """Get classes by grade level."""
-        queryset = self.filter(grade_level=grade_level, is_active=True)
-        if academic_year:
-            queryset = queryset.filter(academic_year=academic_year)
-        return queryset
-    
-    def get_available_classes(self, academic_year=None):
-        """Get classes with available seats."""
-        from .models import AcademicYear
-        if not academic_year:
-            current_year = AcademicYear.objects.get_current()
-            if current_year:
-                academic_year = current_year
-        if academic_year:
-            return self.filter(
-                academic_year=academic_year,
-                is_active=True
-            ).annotate(
-                available_seats=models.F('capacity') - models.F('current_strength')
-            ).filter(available_seats__gt=0)
-        return self.none()
-    
-    def get_by_class_teacher(self, teacher):
-        """Get classes taught by a specific teacher."""
-        return self.filter(class_teacher=teacher, is_active=True)
-
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def get_student_model(model_name):
-    """
-    Safely get student model without circular imports.
-    
-    Args:
-        model_name (str): Name of the model to retrieve.
-    
-    Returns:
-        Model or None: The model class if found, None otherwise.
-    """
-    try:
-        return apps.get_model('students', model_name)
-    except LookupError:
-        return None
-
-
-# ============================================================================
-# MAIN MODELS
-# ============================================================================
-
-class Subject(BaseAcademicModel):
-    """Enhanced Subject management with comprehensive curriculum support."""
-    
-    # Basic Information
-    name = models.CharField(max_length=100, verbose_name=_("Subject Name"))
-    code = models.CharField(max_length=20, unique=True, verbose_name=_("Subject Code"))
-    description = models.TextField(blank=True, null=True, verbose_name=_("Description"))
-    
-    # Academic Information
-    category = models.CharField(
-        max_length=20, 
-        choices=SUBJECT_CATEGORIES, 
-        default='core',
-        verbose_name=_("Category")
+    name = models.CharField(
+        max_length=100,
+        verbose_name=_("Grade Level Name"),
+        help_text=_("e.g., Grade 1, Form 1, Year 1")
     )
-    
-    curriculum = models.CharField(
+    code = models.CharField(
         max_length=20,
-        choices=CURRICULUM_CHOICES,
-        default='cbc',
+        unique=True,
+        verbose_name=_("Grade Code"),
+        help_text=_("Short code, e.g., G1, F1")
+    )
+    level = models.CharField(
+        max_length=20,
+        choices=AcademicLevel.choices,
+        verbose_name=_("Academic Level")
+    )
+    order = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Order"),
+        help_text=_("Order for sorting grades")
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    age_range_min = models.PositiveIntegerField(
+        verbose_name=_("Minimum Age"),
+        help_text=_("Minimum age for this grade")
+    )
+    age_range_max = models.PositiveIntegerField(
+        verbose_name=_("Maximum Age"),
+        help_text=_("Maximum age for this grade")
+    )
+    next_grade = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='previous_grades',
+        verbose_name=_("Next Grade Level")
+    )
+    curriculum = models.CharField(
+        max_length=50,
+        choices=settings.CURRICULUM_CHOICES if hasattr(settings, 'CURRICULUM_CHOICES') else [],
+        blank=True,
         verbose_name=_("Curriculum")
     )
-    
-    # CBC-Specific Fields
-    cbc_competency_area = models.CharField(
-        max_length=30,
-        choices=[
-            ('communication', 'Communication and Collaboration'),
-            ('critical_thinking', 'Critical Thinking and Problem Solving'),
-            ('creativity', 'Creativity and Imagination'),
-            ('citizenship', 'Citizenship'),
-            ('digital_literacy', 'Digital Literacy'),
-            ('learning_to_learn', 'Learning to Learn'),
-            ('self_efficacy', 'Self-efficacy'),
-        ],
-        blank=True,
-        null=True,
-        verbose_name=_("CBC Competency Area")
+    max_students = models.PositiveIntegerField(
+        default=40,
+        verbose_name=_("Maximum Students"),
+        help_text=_("Maximum number of students in this grade")
     )
     
-    cbc_pathway = models.CharField(
+    class Meta:
+        verbose_name = _("Grade Level")
+        verbose_name_plural = _("Grade Levels")
+        ordering = ['order', 'name']
+        indexes = [
+            models.Index(fields=['code']),
+            models.Index(fields=['level']),
+            models.Index(fields=['order']),
+        ]
+    
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+    
+    @property
+    def student_count(self):
+        """Get current number of students in this grade"""
+        return self.classes.filter(is_active=True).aggregate(
+            total=Sum('students_count')
+        )['total'] or 0
+    
+    @property
+    def available_slots(self):
+        """Calculate available student slots"""
+        return max(0, self.max_students - self.student_count)
+
+
+class Subject(BaseModel):
+    """Academic subject model"""
+    CATEGORY_CHOICES = [
+        ('core', 'Core Subject'),
+        ('elective', 'Elective Subject'),
+        ('extracurricular', 'Extracurricular'),
+        ('vocational', 'Vocational'),
+    ]
+    name = models.CharField(
+        max_length=200,
+        verbose_name=_("Subject Name")
+    )
+    code = models.CharField(
         max_length=20,
-        choices=CBC_PATHWAY_CHOICES,
-        blank=True,
-        null=True,
-        verbose_name=_("CBC Pathway")
+        unique=True,
+        verbose_name=_("Subject Code")
     )
-    
-    is_cbc_core = models.BooleanField(default=False, verbose_name=_("Is CBC Core Subject"))
-    is_compulsory = models.BooleanField(default=True, verbose_name=_("Is Compulsory"))
-    
-    # Grade Levels
-    grade_levels = models.JSONField(
-        default=list,
-        help_text=_("Grade levels where this subject is taught"),
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    grade_levels = models.ManyToManyField(
+        GradeLevel,
+        related_name='subjects',
+        blank=True,
         verbose_name=_("Grade Levels")
     )
-    
-    # Academic Requirements
-    credits = models.DecimalField(
-        max_digits=4,
-        decimal_places=1,
+    is_core = models.BooleanField(
+        default=True,
+        verbose_name=_("Core Subject"),
+        help_text=_("Is this a core/compulsory subject?")
+    )
+    category = models.CharField(
+        max_length=50,
+        blank=True,
+        verbose_name=_("Category"),
+        help_text=_("e.g., Sciences, Languages, Arts")
+    )
+    credit_hours = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
         default=1.0,
-        verbose_name=_("Credits")
+        verbose_name=_("Credit Hours")
     )
-    
-    periods_per_week = models.IntegerField(
-        default=5,
-        validators=[MinValueValidator(1), MaxValueValidator(20)],
-        verbose_name=_("Periods per Week")
+    passing_score = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=40.0,
+        verbose_name=_("Passing Score")
     )
-    
-    practical_weight = models.IntegerField(
-        default=0,
-        validators=[MinValueValidator(0), MaxValueValidator(100)],
-        verbose_name=_("Practical Weight (%)")
+    max_score = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=100.0,
+        verbose_name=_("Maximum Score")
     )
-    
-    # Assessment Information
-    assessment_methods = models.JSONField(
-        default=list,
+    department = models.CharField(
+        max_length=100,
         blank=True,
-        help_text=_("Recommended assessment methods"),
-        verbose_name=_("Assessment Methods")
+        verbose_name=_("Department")
     )
-    
-    project_based = models.BooleanField(
-        default=False,
-        verbose_name=_("Project Based")
-    )
-    
-    # Resources
-    resources_required = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Required resources for teaching this subject"),
-        verbose_name=_("Resources Required")
-    )
-    
-    recommended_books = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Recommended textbooks and references"),
-        verbose_name=_("Recommended Books")
-    )
-    
-    # Prerequisites
     prerequisites = models.ManyToManyField(
         'self',
         symmetrical=False,
         blank=True,
-        help_text=_("Prerequisite subjects"),
+        related_name='required_for',
         verbose_name=_("Prerequisites")
     )
-    
-    # Department Information
-    department = models.ForeignKey(
-        'core.Department',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='subjects',
-        verbose_name=_("Department")
-    )
-    
-    # Teacher Requirements
-    minimum_qualification = models.CharField(
-        max_length=50,
+    syllabus = models.FileField(
+        upload_to='syllabus/%Y/%m/%d/',
         blank=True,
         null=True,
-        verbose_name=_("Minimum Qualification")
+        verbose_name=_("Syllabus Document")
     )
     
-    # Status Flags
-    is_examined = models.BooleanField(default=True, verbose_name=_("Is Examined"))
-    is_elective = models.BooleanField(default=False, verbose_name=_("Is Elective"))
-    
-    # Additional Information
-    syllabus_link = models.URLField(
-        blank=True,
-        null=True,
-        verbose_name=_("Syllabus Link")
-    )
-    
-    notes = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Notes")
-    )
-
-    objects = SubjectManager()
-
     class Meta:
         verbose_name = _("Subject")
         verbose_name_plural = _("Subjects")
         ordering = ['code', 'name']
         indexes = [
             models.Index(fields=['code']),
+            models.Index(fields=['is_core']),
             models.Index(fields=['category']),
-            models.Index(fields=['curriculum']),
-            models.Index(fields=['is_cbc_core']),
-            models.Index(fields=['cbc_pathway']),
-            models.Index(fields=['department']),
         ]
-
-    def __str__(self):
-        return f"{self.code} - {self.name}"
-
-    def save(self, *args, **kwargs):
-        """Auto-generate code and set CBC flags."""
-        if not self.code and self.name:
-            # Generate code from name (first 3 letters uppercase)
-            self.code = ''.join(c for c in self.name[:3] if c.isalpha()).upper()
-            
-            # Ensure uniqueness
-            count = Subject.objects.filter(code=self.code).exclude(pk=self.pk).count()
-            if count > 0:
-                self.code = f"{self.code}{count + 1}"
-        
-        # Auto-set CBC flags
-        if self.curriculum == 'cbc' and self.category in ['cbc_core', 'pathway_core']:
-            self.is_cbc_core = True
-        
-        super().save(*args, **kwargs)
-
-    def clean(self):
-        """Validate subject data."""
-        errors = {}
-        
-        if self.practical_weight < 0 or self.practical_weight > 100:
-            errors['practical_weight'] = _("Practical weight must be between 0 and 100")
-        
-        if self.periods_per_week < 1 or self.periods_per_week > 20:
-            errors['periods_per_week'] = _("Periods per week must be between 1 and 20")
-        
-        if errors:
-            raise ValidationError(errors)
-
-    @property
-    def weekly_hours(self):
-        """Calculate weekly hours (assuming 40-minute periods)."""
-        return round(self.periods_per_week * 40 / 60, 1)
-
-    @property
-    def is_cbc_subject(self):
-        """Check if this is a CBC subject."""
-        return self.curriculum == 'cbc'
-
-    @property
-    def subject_info(self):
-        """Get comprehensive subject information."""
-        return {
-            'name': self.name,
-            'code': self.code,
-            'category': self.get_category_display(),
-            'curriculum': self.get_curriculum_display(),
-            'is_cbc': self.is_cbc_subject,
-            'is_core': self.is_cbc_core,
-            'is_compulsory': self.is_compulsory,
-            'weekly_hours': self.weekly_hours,
-            'credits': float(self.credits),
-            'practical_weight': self.practical_weight,
-            'project_based': self.project_based,
-        }
-
-# academics/models.py
-class School(models.Model):
-    """Model for school information"""
-    name = models.CharField(max_length=200)
-    code = models.CharField(max_length=50, unique=True)
-    motto = models.CharField(max_length=255, blank=True)
-    address = models.TextField()
-    phone = models.CharField(max_length=20)
-    email = models.EmailField()
-    website = models.URLField(blank=True)
-    logo = models.ImageField(upload_to='school/logos/', blank=True, null=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
     
     def __str__(self):
-        return self.name
-
-class AcademicYear(BaseAcademicModel):
-    """Enhanced Academic year management with comprehensive curriculum support."""
+        return f"{self.name} ({self.code})"
     
-    # Curriculum System Choices
-    CURRICULUM_SYSTEMS = [
-        ('cbc_kenya', 'Kenya CBC (Competency Based Curriculum)'),
-        ('8-4-4_kenya', 'Kenya 8-4-4 System'),
-        ('igcse', 'Cambridge IGCSE'),
+    def get_teachers(self, academic_year=None):
+        """Get teachers teaching this subject"""
+        from .models import TeacherAssignment
+        assignments = TeacherAssignment.objects.filter(subject=self)
+        if academic_year:
+            assignments = assignments.filter(academic_year=academic_year)
+        return assignments.values_list('teacher', flat=True).distinct()
+    
+    def get_student_count(self, academic_year=None):
+        """Get number of students enrolled in this subject"""
+        from .models import Enrollment
+        enrollments = Enrollment.objects.filter(subject=self)
+        if academic_year:
+            enrollments = enrollments.filter(academic_year=academic_year)
+        return enrollments.count()
+    
+    def get_average_score(self, academic_year=None):
+        """Get average score for this subject"""
+        from .models import Grade
+        grades = Grade.objects.filter(subject=self)
+        if academic_year:
+            grades = grades.filter(academic_year=academic_year)
+        avg = grades.aggregate(Avg('score'))['score__avg']
+        return avg if avg else 0
+
+
+# ============================================================================
+# COMPETENCY-BASED EDUCATION MODELS (For CBC curriculum)
+# ============================================================================
+
+class CompetencyArea(BaseModel):
+    """Competency/learning area for competency-based curricula (CBC)"""
+    CURRICULUM_CHOICES = [
+        ('cbc', 'Competency Based Curriculum'),
+        ('8-4-4', '8-4-4 System'),
+        ('igcse', 'IGCSE'),
         ('ib', 'International Baccalaureate'),
-        ('american', 'American Common Core'),
-        ('british', 'British National Curriculum'),
-        ('indian', 'Indian CBSE/ICSE'),
-        ('nigeria_bec', 'Nigeria BEC'),
-        ('south_africa_caps', 'South Africa CAPS'),
-        ('uganda_competency', 'Uganda Competency Based'),
-        ('tanzania_competency', 'Tanzania Competency Based'),
-        ('custom', 'Custom/Institutional'),
-        ('mixed', 'Mixed/Combined'),
     ]
-    
-    # Academic Structure Choices
-    ACADEMIC_STRUCTURES = [
-        ('cbc_2_6_3_3', 'CBC 2-6-3-3 (Kenya)'),
-        ('8_4_4', '8-4-4 System (Kenya)'),
-        ('6_3_3_4', '6-3-3-4 (Nigeria)'),
-        ('7_5', '7-5 (Uganda/Tanzania)'),
-        ('5_3_4', '5-3-4 (American)'),
-        ('ib_pyp_myp_dp', 'IB PYP-MYP-DP'),
-        ('igcse_a_level', 'IGCSE + A-Levels'),
-        ('custom_structure', 'Custom Structure'),
-    ]
-    
-    # Grading System Choices
-    GRADING_SYSTEMS = [
-        ('cbc_competency', 'CBC Competency-Based'),
-        ('cbc_points', 'CBC Points System'),
-        ('8_4_4_grading', '8-4-4 Grading'),
-        ('percentage', 'Percentage System'),
-        ('letter_grade', 'Letter Grades (A-F)'),
-        ('ib_1_7', 'IB 1-7 Scale'),
-        ('igcse_a_star_g', 'IGCSE A*-G'),
-        ('gpa_4_0', 'GPA 4.0 Scale'),
-        ('gpa_5_0', 'GPA 5.0 Scale'),
-        ('descriptive', 'Descriptive Assessment'),
-        ('mixed', 'Mixed System'),
-    ]
-    
-    # Term Structure Choices
-    TERM_STRUCTURES = [
-        ('three_terms', '3 Terms (Trimester)'),
-        ('two_terms', '2 Terms (Semester)'),
-        ('four_terms', '4 Terms (Quarter)'),
-        ('six_terms', '6 Terms (Hexamester)'),
-        ('american_quarters', 'American 4 Quarters'),
-        ('ib_sessions', 'IB Sessions'),
-        ('continuous', 'Continuous Assessment'),
-    ]
-    
-    # Language Mode Choices
-    LANGUAGE_MODE = [
-        ('english', 'English Medium'),
-        ('bilingual', 'Bilingual'),
-        ('vernacular', 'Vernacular Medium'),
-        ('french', 'French Medium'),
-        ('arabic', 'Arabic Medium'),
-        ('multilingual', 'Multilingual'),
-    ]
-    
-    # Assessment Model Choices
-    ASSESSMENT_MODELS = [
-        ('cbc_continuous', 'CBC Continuous Assessment'),
-        ('exam_focused', 'Exam-Focused'),
-        ('portfolio_based', 'Portfolio-Based'),
-        ('project_based', 'Project-Based'),
-        ('competency_based', 'Competency-Based'),
-        ('mixed_assessment', 'Mixed Assessment'),
-    ]
-    
-    # External Exam Choices
-    EXTERNAL_EXAMS = [
-        ('kpsea_kjsea_kcse', 'KPSEA + KJSEA + KCSE (Kenya CBC)'),
-        ('knec_8_4_4', 'KCPE + KCSE (Kenya 8-4-4)'),
-        ('igcse_exams', 'Cambridge IGCSE Exams'),
-        ('ib_exams', 'IB Examinations'),
-        ('wassce', 'WASSCE (West Africa)'),
-        ('neco', 'NECO (Nigeria)'),
-        ('psle', 'PSLE (Tanzania)'),
-        ('uce_uce', 'UCE + UACE (Uganda)'),
-        ('sat_act', 'SAT/ACT (American)'),
-        ('none', 'No External Exams'),
-        ('custom', 'Custom Exam Schedule'),
-    ]
-    
-    # Basic Information
-    name = models.CharField(max_length=100, unique=True, verbose_name=_("Academic Year Name"))
-    code = models.CharField(max_length=20, unique=True, verbose_name=_("Year Code"))
-    start_date = models.DateField(verbose_name=_("Start Date"))
-    end_date = models.DateField(verbose_name=_("End Date"))
-    is_current = models.BooleanField(default=False, verbose_name=_("Current Year"))
-    description = models.TextField(blank=True, null=True, verbose_name=_("Description"))
-    
-    # Curriculum System Configuration
-    curriculum_system = models.CharField(
-        max_length=30,
-        choices=CURRICULUM_SYSTEMS,
-        default='cbc_kenya',
-        verbose_name=_("Curriculum System")
-    )
-    
-    # Academic Structure Configuration
-    academic_structure = models.CharField(
-        max_length=30,
-        choices=ACADEMIC_STRUCTURES,
-        default='cbc_2_6_3_3',
-        verbose_name=_("Academic Structure")
-    )
-    
-    # Grading System Configuration
-    grading_system = models.CharField(
-        max_length=30,
-        choices=GRADING_SYSTEMS,
-        default='cbc_competency',
-        verbose_name=_("Grading System")
-    )
-    
-    # Term Structure
-    term_structure = models.CharField(
-        max_length=30,
-        choices=TERM_STRUCTURES,
-        default='three_terms',
-        verbose_name=_("Term Structure")
-    )
-    
-    total_terms = models.IntegerField(
-        default=3,
-        validators=[MinValueValidator(1), MaxValueValidator(6)],
-        help_text=_("Total number of terms in this academic year"),
-        verbose_name=_("Total Terms")
-    )
-    
-    # Language Configuration
-    language_mode = models.CharField(
-        max_length=20,
-        choices=LANGUAGE_MODE,
-        default='english',
-        verbose_name=_("Language of Instruction")
-    )
-    
-    additional_languages = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Additional languages taught"),
-        verbose_name=_("Additional Languages")
-    )
-    
-    # Assessment Configuration
-    assessment_model = models.CharField(
-        max_length=30,
-        choices=ASSESSMENT_MODELS,
-        default='cbc_continuous',
-        verbose_name=_("Assessment Model")
-    )
-    
-    # National/External Exam Configuration
-    external_exams = models.CharField(
-        max_length=30,
-        choices=EXTERNAL_EXAMS,
-        default='kpsea_kjsea_kcse',
-        verbose_name=_("External Examinations")
-    )
-    
-    # Financial Configuration
-    fee_structure = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Fee structure configuration for this academic year"),
-        verbose_name=_("Fee Structure")
-    )
-    
-    currency = models.CharField(
-        max_length=3,
-        default='KES',
-        help_text=_("Currency code (ISO 4217)"),
-        verbose_name=_("Currency")
-    )
-    
-    # Academic Calendar Configuration
-    important_dates = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Important academic dates and deadlines"),
-        verbose_name=_("Important Dates")
-    )
-    
-    holiday_calendar = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Holiday calendar configuration"),
-        verbose_name=_("Holiday Calendar")
-    )
-    
-    # CBC-Specific Configuration
-    cbc_configuration = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("CBC-specific configuration"),
-        verbose_name=_("CBC Configuration")
-    )
-    
-    # IB/IGCSE Specific Configuration
-    international_config = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("International curriculum configuration"),
-        verbose_name=_("International Config")
-    )
-    
-    # Reporting Configuration
-    report_config = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Report card and transcript configuration"),
-        verbose_name=_("Report Configuration")
-    )
-    
-    # Metadata
-    metadata = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Additional metadata for the academic year"),
-        verbose_name=_("Metadata")
-    )
-    
-    # Status Flags
-    is_configured = models.BooleanField(default=False, verbose_name=_("Is Configured"))
-    is_locked = models.BooleanField(default=False, verbose_name=_("Is Locked"))
-    allow_admissions = models.BooleanField(default=True, verbose_name=_("Allow Admissions"))
-    allow_assessments = models.BooleanField(default=True, verbose_name=_("Allow Assessments"))
-    allow_transcripts = models.BooleanField(default=True, verbose_name=_("Allow Transcripts"))
 
-    objects = AcademicYearManager()
-
-    class Meta:
-        verbose_name = _("Academic Year")
-        verbose_name_plural = _("Academic Years")
-        ordering = ['-start_date']
-        indexes = [
-            models.Index(fields=['is_current']),
-            models.Index(fields=['start_date', 'end_date']),
-            models.Index(fields=['code']),
-            models.Index(fields=['curriculum_system']),
-            models.Index(fields=['academic_structure']),
-            models.Index(fields=['is_configured']),
-            models.Index(fields=['is_locked']),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=['is_current'],
-                condition=Q(is_current=True),
-                name='unique_current_academic_year'
-            ),
-            models.CheckConstraint(
-                check=Q(end_date__gt=F('start_date')),
-                name='end_date_after_start_date'
-            ),
-        ]
-
-    def __str__(self):
-        return f"{self.name} ({self.code}) - {self.get_curriculum_system_display()}"
-
-    def save(self, *args, **kwargs):
-        """Ensure only one academic year is marked as current and generate code."""
-        if self.is_current:
-            AcademicYear.objects.filter(is_current=True).exclude(pk=self.pk).update(is_current=False)
-            cache.delete('current_academic_year')
-        
-        if not self.code and self.name:
-            year_part = ''.join(filter(str.isdigit, self.name))
-            self.code = f"AY{year_part}" if year_part else f"AY{self.start_date.year}"
-        
-        # Auto-configure based on curriculum system
-        if not self.is_configured:
-            self.auto_configure_curriculum()
-        
-        self.clean()
-        super().save(*args, **kwargs)
-
-    def clean(self):
-        """Validate academic year dates and configuration."""
-        errors = {}
-        
-        # Date validation
-        if self.start_date >= self.end_date:
-            errors['end_date'] = _("End date must be after start date")
-        
-        # Date range validation (reasonable academic year)
-        if (self.end_date - self.start_date).days > 400:
-            errors['end_date'] = _("Academic year duration should not exceed 400 days")
-        
-        if (self.end_date - self.start_date).days < 180:
-            errors['end_date'] = _("Academic year should be at least 180 days")
-        
-        # Check for overlapping academic years
-        overlapping_years = AcademicYear.objects.filter(
-            Q(start_date__lte=self.end_date, end_date__gte=self.start_date)
-        ).exclude(pk=self.pk)
-        
-        if overlapping_years.exists():
-            errors['start_date'] = _("Academic year dates overlap with existing academic year")
-            errors['end_date'] = _("Academic year dates overlap with existing academic year")
-        
-        # Curriculum-specific validation
-        if self.curriculum_system == 'cbc_kenya' and not self.cbc_configuration:
-            errors['cbc_configuration'] = _("CBC configuration is required for Kenya CBC system")
-        
-        if errors:
-            raise ValidationError(errors)
-
-    def auto_configure_curriculum(self):
-        """Auto-configure settings based on selected curriculum system."""
-        config_map = {
-            'cbc_kenya': {
-                'academic_structure': 'cbc_2_6_3_3',
-                'grading_system': 'cbc_competency',
-                'term_structure': 'three_terms',
-                'assessment_model': 'cbc_continuous',
-                'external_exams': 'kpsea_kjsea_kcse',
-                'cbc_configuration': self.get_default_cbc_config(),
-            },
-            '8-4-4_kenya': {
-                'academic_structure': '8_4_4',
-                'grading_system': '8_4_4_grading',
-                'term_structure': 'three_terms',
-                'assessment_model': 'exam_focused',
-                'external_exams': 'knec_8_4_4',
-            },
-            'igcse': {
-                'academic_structure': 'igcse_a_level',
-                'grading_system': 'igcse_a_star_g',
-                'term_structure': 'two_terms',
-                'assessment_model': 'exam_focused',
-                'external_exams': 'igcse_exams',
-                'international_config': self.get_default_igcse_config(),
-            },
-            'ib': {
-                'academic_structure': 'ib_pyp_myp_dp',
-                'grading_system': 'ib_1_7',
-                'term_structure': 'ib_sessions',
-                'assessment_model': 'portfolio_based',
-                'external_exams': 'ib_exams',
-                'international_config': self.get_default_ib_config(),
-            },
-            'american': {
-                'academic_structure': '5_3_4',
-                'grading_system': 'gpa_4_0',
-                'term_structure': 'american_quarters',
-                'assessment_model': 'mixed_assessment',
-                'external_exams': 'sat_act',
-            },
-            'nigeria_bec': {
-                'academic_structure': '6_3_3_4',
-                'grading_system': 'percentage',
-                'term_structure': 'three_terms',
-                'assessment_model': 'exam_focused',
-                'external_exams': 'wassce',
-            },
-        }
-        
-        if self.curriculum_system in config_map:
-            config = config_map[self.curriculum_system]
-            for key, value in config.items():
-                if hasattr(self, key) and not getattr(self, key):
-                    setattr(self, key, value)
-            
-            self.is_configured = True
-
-    def get_default_cbc_config(self):
-        """Get default CBC configuration."""
-        return {
-            'pathways': ['stem', 'social_sciences', 'arts_sports'],
-            'assessment_windows': {
-                'kpsea': {'grade': 6, 'month': 'November'},
-                'kjsea': {'grade': 9, 'month': 'October'},
-                'kcse': {'grade': 12, 'month': 'November'},
-            },
-            'competency_areas': [
-                'communication',
-                'critical_thinking',
-                'creativity',
-                'citizenship',
-                'digital_literacy',
-                'learning_to_learn',
-                'self_efficacy',
-            ],
-            'portfolio_required': True,
-            'community_service_hours': 40,
-            'parental_engagement_required': True,
-        }
-
-    def get_default_igcse_config(self):
-        """Get default IGCSE configuration."""
-        return {
-            'exam_series': ['march', 'june', 'november'],
-            'core_subjects': ['english', 'mathematics', 'sciences'],
-            'extended_subjects': [],
-            'grading_scale': 'A*-G',
-            'coursework_percentage': 20,
-            'practical_percentage': 30,
-        }
-
-    def get_default_ib_config(self):
-        """Get default IB configuration."""
-        return {
-            'programme': 'diploma',
-            'core_components': ['tok', 'ee', 'cas'],
-            'subject_groups': 6,
-            'minimum_hl': 3,
-            'cas_hours': 150,
-            'grading_scale': '1-7',
-        }
-
-    # ============ PROPERTIES ============
-
-    @property
-    def is_cbc(self):
-        """Check if this academic year uses CBC system."""
-        return self.curriculum_system == 'cbc_kenya'
-
-    @property
-    def is_international(self):
-        """Check if this academic year uses international curriculum."""
-        international_curriculums = ['igcse', 'ib', 'american', 'british']
-        return self.curriculum_system in international_curriculums
-
-    @property
-    def is_african(self):
-        """Check if this academic year uses African curriculum."""
-        african_curriculums = [
-            'cbc_kenya', '8-4-4_kenya', 'nigeria_bec', 
-            'south_africa_caps', 'uganda_competency', 'tanzania_competency'
-        ]
-        return self.curriculum_system in african_curriculums
-
-    @property
-    def is_currently_active(self):
-        """Check if current date is within academic year."""
-        if not self.start_date or not self.end_date:
-            return False
-        
-        try:
-            today = timezone.now().date()
-            return self.start_date <= today <= self.end_date
-        except (TypeError, AttributeError):
-            return False
-
-    @property
-    def duration_days(self):
-        """Calculate academic year duration in days."""
-        if self.start_date and self.end_date:
-            try:
-                return (self.end_date - self.start_date).days + 1
-            except (TypeError, AttributeError):
-                return 0
-        return 0
-
-    @property
-    def progress_percentage(self):
-        """Calculate progress through the academic year."""
-        if not self.start_date or not self.end_date:
-            return 0
-        
-        try:
-            today = timezone.now().date()
-            
-            if not self.is_currently_active:
-                return 100 if today > self.end_date else 0
-            
-            total_days = self.duration_days
-            if total_days == 0:
-                return 0
-            
-            days_passed = (today - self.start_date).days
-            return min(100, max(0, (days_passed / total_days) * 100))
-        except (TypeError, AttributeError):
-            return 0
-
-    @property
-    def status(self):
-        """Get academic year status."""
-        if not self.start_date or not self.end_date:
-            return "upcoming"
-        
-        try:
-            today = timezone.now().date()
-            if self.is_current:
-                return "current"
-            elif today < self.start_date:
-                return "upcoming"
-            elif self.start_date <= today <= self.end_date:
-                return "active"
-            else:
-                return "completed"
-        except (TypeError, AttributeError):
-            return "upcoming"
-
-    @property
-    def curriculum_info(self):
-        """Get comprehensive curriculum information."""
-        return {
-            'system': self.get_curriculum_system_display(),
-            'structure': self.get_academic_structure_display(),
-            'grading': self.get_grading_system_display(),
-            'terms': self.get_term_structure_display(),
-            'assessment': self.get_assessment_model_display(),
-            'exams': self.get_external_exams_display(),
-            'language': self.get_language_mode_display(),
-            'is_cbc': self.is_cbc,
-            'is_international': self.is_international,
-            'is_african': self.is_african,
-        }
-
-    # ============ METHODS ============
-
-    def get_statistics(self):
-        """Get academic year statistics."""
-        try:
-            stats = {
-                'total_students': StudentEnrollment.objects.filter(
-                    academic_year=self,
-                    status='active'
-                ).count(),
-                'total_teachers': TeacherProfile.objects.filter(is_active=True).count(),
-                'total_classes': self.classes.count(),
-                'total_subjects': Subject.objects.filter(is_active=True).count(),
-            }
-            
-            # Add curriculum-specific statistics
-            if self.is_cbc:
-                stats.update({
-                    'cbc_pathways': len(self.cbc_configuration.get('pathways', [])),
-                    'portfolio_students': self._get_portfolio_students_count(),
-                })
-            
-            return stats
-        except Exception as e:
-            logger.error(f"Error getting statistics: {e}")
-            return {}
-
-    def _get_portfolio_students_count(self):
-        """Get count of students with portfolios (for CBC)."""
-        try:
-            from .models import CBCPortfolio
-            return CBCPortfolio.objects.filter(
-                academic_year=self,
-                is_complete=True
-            ).values('student').distinct().count()
-        except Exception:
-            return 0
-
-    def get_current_term(self):
-        """Get the current active term for this academic year."""
-        return self.terms.filter(
-            start_date__lte=timezone.now().date(),
-            end_date__gte=timezone.now().date(),
-            is_active=True
-        ).first()
-
-    def generate_academic_calendar(self):
-        """Generate academic calendar for the year."""
-        calendar = {
-            'academic_year': self.name,
-            'curriculum': self.curriculum_info,
-            'dates': {
-                'start': self.start_date,
-                'end': self.end_date,
-                'duration_days': self.duration_days,
-            },
-            'terms': [],
-            'important_dates': self.important_dates,
-            'holidays': self.holiday_calendar,
-        }
-        
-        for term in self.terms.all():
-            term_data = {
-                'name': term.get_name_display(),
-                'start_date': term.start_date,
-                'end_date': term.end_date,
-                'duration_weeks': term.teaching_weeks,
-                'holidays': term.holidays,
-                'assessment_periods': term.assessment_periods
-            }
-            calendar['terms'].append(term_data)
-        
-        # Add curriculum-specific events
-        if self.is_cbc:
-            calendar['cbc_assessment_windows'] = self.cbc_configuration.get('assessment_windows', {})
-        
-        return calendar
-
-    def get_curriculum_requirements(self):
-        """Get curriculum-specific requirements."""
-        requirements = {
-            'general': {
-                'attendance_rate': 80,
-                'passing_grade': 40,
-                'min_subjects': 8,
-                'max_subjects': 14,
-            }
-        }
-        
-        if self.is_cbc:
-            requirements['cbc'] = {
-                'portfolio_completion': True,
-                'community_service_hours': 40,
-                'practical_assessment_weight': 40,
-                'parent_engagement_required': True,
-            }
-        elif self.curriculum_system == 'ib':
-            requirements['ib'] = {
-                'cas_hours': 150,
-                'tok_essay': True,
-                'extended_essay': True,
-                'hl_subjects': 3,
-                'sl_subjects': 3,
-            }
-        elif self.curriculum_system == 'igcse':
-            requirements['igcse'] = {
-                'core_subjects': 3,
-                'extended_subjects': 4,
-                'coursework_percentage': 20,
-                'practical_percentage': 30,
-            }
-        
-        return requirements
-
-    def validate_configuration(self):
-        """Validate the academic year configuration."""
-        errors = []
-        
-        if not self.start_date or not self.end_date:
-            errors.append("Start and end dates are required")
-        
-        if self.curriculum_system == 'cbc_kenya' and not self.cbc_configuration:
-            errors.append("CBC configuration is required for Kenya CBC system")
-        
-        if self.curriculum_system in ['igcse', 'ib'] and not self.international_config:
-            errors.append(f"Configuration required for {self.get_curriculum_system_display()}")
-        
-        return {
-            'is_valid': len(errors) == 0,
-            'errors': errors,
-            'warnings': self.get_configuration_warnings(),
-        }
-
-    def get_configuration_warnings(self):
-        """Get configuration warnings."""
-        warnings = []
-        
-        if self.duration_days < 200:
-            warnings.append("Academic year duration is less than 200 days")
-        
-        if not self.important_dates:
-            warnings.append("No important dates configured")
-        
-        if self.allow_admissions and self.is_locked:
-            warnings.append("Admissions allowed but academic year is locked")
-        
-        return warnings
-
-    def lock_academic_year(self):
-        """Lock the academic year to prevent changes."""
-        if not self.is_locked:
-            self.is_locked = True
-            self.save()
-            return True
-        return False
-
-    def unlock_academic_year(self):
-        """Unlock the academic year for changes."""
-        if self.is_locked:
-            self.is_locked = False
-            self.save()
-            return True
-        return False
-
-    def get_term_structure_info(self):
-        """Get detailed term structure information."""
-        term_info = {
-            'structure': self.get_term_structure_display(),
-            'total_terms': self.total_terms,
-            'estimated_weeks_per_term': self.duration_days // (7 * self.total_terms) if self.total_terms > 0 else 0,
-        }
-        
-        if self.term_structure == 'three_terms':
-            term_info['term_names'] = ['Term 1', 'Term 2', 'Term 3']
-        elif self.term_structure == 'two_terms':
-            term_info['term_names'] = ['Semester 1', 'Semester 2']
-        elif self.term_structure == 'four_terms':
-            term_info['term_names'] = ['Quarter 1', 'Quarter 2', 'Quarter 3', 'Quarter 4']
-        
-        return term_info
-
-    def get_assessment_schedule(self):
-        """Get assessment schedule for the academic year."""
-        schedule = {
-            'internal_assessments': [],
-            'external_exams': [],
-        }
-        
-        if self.external_exams != 'none':
-            schedule['external_exams'] = self.get_external_exam_schedule()
-        
-        # Add term assessments
-        for term in self.terms.all():
-            if term.assessment_periods:
-                schedule['internal_assessments'].extend(term.assessment_periods)
-        
-        return schedule
-
-    def get_external_exam_schedule(self):
-        """Get external exam schedule based on curriculum."""
-        exam_schedules = {
-            'kpsea_kjsea_kcse': [
-                {'exam': 'KPSEA', 'grade': 6, 'month': 'November'},
-                {'exam': 'KJSEA', 'grade': 9, 'month': 'October'},
-                {'exam': 'KCSE', 'grade': 12, 'month': 'November'},
-            ],
-            'knec_8_4_4': [
-                {'exam': 'KCPE', 'grade': 8, 'month': 'November'},
-                {'exam': 'KCSE', 'grade': 12, 'month': 'November'},
-            ],
-            'igcse_exams': [
-                {'exam': 'IGCSE', 'months': ['May/June', 'October/November']},
-            ],
-            'wassce': [
-                {'exam': 'WASSCE', 'month': 'May/June'},
-            ],
-        }
-        
-        return exam_schedules.get(self.external_exams, [])
-
-
-class AcademicTerm(BaseAcademicModel):
-    """Enhanced Academic term management within an academic year."""
-    
-    academic_year = models.ForeignKey(
-        AcademicYear, 
-        on_delete=models.CASCADE, 
-        related_name='terms',
-        verbose_name=_("Academic Year")
-    )
     name = models.CharField(
-        max_length=20, 
-        choices=TERM_CHOICES,
-        verbose_name=_("Term Name")
+        max_length=200,
+        verbose_name=_("Competency Area Name"),
+        help_text=_("e.g., Communication and Collaboration, Critical Thinking, Creativity")
     )
-    start_date = models.DateField(verbose_name=_("Start Date"))
-    end_date = models.DateField(verbose_name=_("End Date"))
-    is_current = models.BooleanField(default=False, verbose_name=_("Current Term"))
-    
-    # Term configuration
-    term_order = models.IntegerField(
-        validators=[MinValueValidator(1), MaxValueValidator(4)],
-        help_text=_("Order of term within academic year"),
-        verbose_name=_("Term Order")
-    )
-    
-    # Academic periods
-    assessment_periods = models.JSONField(
-        default=list, 
-        help_text=_("Assessment periods within the term"),
-        verbose_name=_("Assessment Periods")
-    )
-    holidays = models.JSONField(
-        default=list, 
-        help_text=_("Holidays and breaks during the term"),
-        verbose_name=_("Holidays")
-    )
-    important_dates = models.JSONField(
-        default=list,
-        help_text=_("Important academic dates and deadlines"),
-        verbose_name=_("Important Dates")
-    )
-    
-    # Financial information
-    term_fees = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Term-specific fee structure"),
-        verbose_name=_("Term Fees")
-    )
-
-    objects = AcademicTermManager()
-
-    class Meta:
-        verbose_name = _("Academic Term")
-        verbose_name_plural = _("Academic Terms")
-        unique_together = ['academic_year', 'name']
-        ordering = ['academic_year', 'term_order']
-        indexes = [
-            models.Index(fields=['academic_year', 'name']),
-            models.Index(fields=['is_current']),
-            models.Index(fields=['start_date', 'end_date']),
-            models.Index(fields=['term_order']),
-        ]
-
-    def __str__(self):
-        return f"{self.academic_year.name} - {self.get_name_display()}"
-
-    def save(self, *args, **kwargs):
-        """Ensure only one term is marked as current per academic year."""
-        if self.is_current:
-            AcademicTerm.objects.filter(
-                academic_year=self.academic_year, 
-                is_current=True
-            ).exclude(pk=self.pk).update(is_current=False)
-        
-        self.clean()
-        super().save(*args, **kwargs)
-
-    def clean(self):
-        """Validate term dates."""
-        errors = {}
-        
-        if self.start_date and self.end_date and self.start_date >= self.end_date:
-            errors['end_date'] = _("End date must be after start date")
-        
-        if self.academic_year and self.start_date and self.end_date:
-            if (self.start_date < self.academic_year.start_date or 
-                self.end_date > self.academic_year.end_date):
-                errors['start_date'] = _("Term dates must be within the academic year dates")
-                errors['end_date'] = _("Term dates must be within the academic year dates")
-        
-        if self.academic_year and self.start_date and self.end_date:
-            overlapping_terms = AcademicTerm.objects.filter(
-                academic_year=self.academic_year
-            ).filter(
-                Q(start_date__lte=self.end_date, end_date__gte=self.start_date)
-            ).exclude(pk=self.pk)
-            
-            if overlapping_terms.exists():
-                errors['start_date'] = _("Term dates overlap with another term in the same academic year")
-                errors['end_date'] = _("Term dates overlap with another term in the same academic year")
-        
-        if errors:
-            raise ValidationError(errors)
-
-    # ============ PROPERTIES ============
-
-    @property
-    def duration_days(self):
-        """Calculate term duration in days."""
-        if not self.start_date or not self.end_date:
-            return 0
-        try:
-            return (self.end_date - self.start_date).days + 1
-        except (TypeError, AttributeError):
-            return 0
-
-    @property
-    def is_currently_active(self):
-        """Check if term is currently active."""
-        if not self.start_date or not self.end_date:
-            return False
-        today = timezone.now().date()
-        return self.start_date <= today <= self.end_date
-    
-    @property
-    def teaching_weeks(self):
-        """Calculate actual teaching weeks excluding holidays."""
-        if not self.start_date or not self.end_date:
-            return 0
-        
-        total_days = self.duration_days
-        if total_days == 0:
-            return 0
-            
-        total_weeks = total_days // 7
-        holiday_weeks = len(self.holidays) if self.holidays else 0
-        return max(0, total_weeks - holiday_weeks)
-
-    @property
-    def progress_percentage(self):
-        """Calculate progress through the term."""
-        if not self.start_date or not self.end_date:
-            return 0
-            
-        if not self.is_currently_active:
-            if self.end_date and timezone.now().date() > self.end_date:
-                return 100
-            return 0
-        
-        total_days = self.duration_days
-        if total_days == 0:
-            return 0
-        
-        try:
-            days_passed = (timezone.now().date() - self.start_date).days
-            return min(100, max(0, (days_passed / total_days) * 100))
-        except (TypeError, AttributeError):
-            return 0
-
-    @property
-    def status(self):
-        """Get term status."""
-        if not self.start_date or not self.end_date:
-            return "upcoming"
-        
-        today = timezone.now().date()
-        if self.is_current:
-            return "current"
-        elif today < self.start_date:
-            return "upcoming"
-        elif self.start_date <= today <= self.end_date:
-            return "active"
-        else:
-            return "completed"
-
-    # ============ METHODS ============
-
-    def get_academic_events(self):
-        """Get all academic events for this term."""
-        return self.academic_events.filter(is_active=True)
-
-    def get_holidays_list(self):
-        """Get formatted holidays list."""
-        return self.holidays if self.holidays else []
-
-
-class SubTopic(BaseAcademicModel):
-    """Enhanced sub-topic model for detailed curriculum breakdown with CBC alignment."""
-    
-    # Basic Information
-    topic = models.CharField(max_length=200, verbose_name=_("Main Topic"))
-    name = models.CharField(max_length=200, verbose_name=_("Sub Topic Name"))
-    subject = models.ForeignKey('Subject', on_delete=models.CASCADE)
-    
-    # Academic Information
     code = models.CharField(
-        max_length=50, 
-        unique=True, 
-        blank=True, 
-        null=True,
-        verbose_name=_("Sub Topic Code")
-    )
-    description = models.TextField(blank=True, null=True, verbose_name=_("Description"))
-    order = models.PositiveIntegerField(default=0, verbose_name=_("Order"))
-    
-    # CBC Alignment
-    competency_alignment = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Specific competencies developed in this sub-topic"),
-        verbose_name=_("Competency Alignment")
-    )
-    
-    # Content Details
-    learning_objectives = models.JSONField(
-        default=list, 
-        help_text=_("Specific learning objectives for this sub-topic"),
-        verbose_name=_("Learning Objectives")
-    )
-    key_concepts = models.JSONField(
-        default=list,
-        help_text=_("Key concepts covered in this sub-topic"),
-        verbose_name=_("Key Concepts")
-    )
-    skills_developed = models.JSONField(
-        default=list,
-        help_text=_("Skills developed through this sub-topic"),
-        verbose_name=_("Skills Developed")
-    )
-    
-    # Time Allocation
-    estimated_hours = models.DecimalField(
-        max_digits=4,
-        decimal_places=1,
-        default=2.0,
-        help_text=_("Estimated teaching hours required"),
-        verbose_name=_("Estimated Hours")
-    )
-    priority = models.CharField(
-        max_length=15,
-        choices=[
-            ('high', 'High Priority'),
-            ('medium', 'Medium Priority'),
-            ('low', 'Low Priority'),
-            ('core', 'Core Competency'),
-            ('extension', 'Extension Activity'),
-        ],
-        default='medium',
-        verbose_name=_("Priority")
-    )
-    
-    # Resources
-    teaching_resources = models.JSONField(
-        default=list,
-        help_text=_("Required teaching resources"),
-        verbose_name=_("Teaching Resources")
-    )
-    assessment_methods = models.JSONField(
-        default=list,
-        help_text=_("Recommended assessment methods"),
-        verbose_name=_("Assessment Methods")
-    )
-    
-    # Differentiated Instruction
-    differentiation_strategies = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Strategies for different learner types"),
-        verbose_name=_("Differentiation Strategies")
-    )
-    
-    # Project Integration
-    project_connections = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Potential project connections"),
-        verbose_name=_("Project Connections")
-    )
-    
-    # Status and Tracking
-    is_completed = models.BooleanField(default=False, verbose_name=_("Is Completed"))
-    completion_date = models.DateField(null=True, blank=True, verbose_name=_("Completion Date"))
-    
-    # Prerequisites
-    prerequisite_topics = models.ManyToManyField(
-        'self',
-        symmetrical=False,
-        blank=True,
-        help_text=_("Prerequisite sub-topics"),
-        verbose_name=_("Prerequisite Topics")
-    )
-
-    class Meta:
-        verbose_name = _("Sub Topic")
-        verbose_name_plural = _("Sub Topics")
-        ordering = ['subject', 'topic', 'order', 'name']
-        indexes = [
-            models.Index(fields=['subject', 'topic']),
-            models.Index(fields=['code']),
-            models.Index(fields=['is_completed']),
-            models.Index(fields=['priority']),
-            models.Index(fields=['subject', 'order']),
-        ]
-
-    def __str__(self):
-        return f"{self.topic}: {self.name}"
-
-    def save(self, *args, **kwargs):
-        """Generate code if not provided and auto-align competencies."""
-        if not self.code and self.name:
-            # Generate a code from subject code and sub-topic name
-            subject_code = self.subject.code if self.subject else 'GEN'
-            clean_name = ''.join(c for c in self.name if c.isalnum()).upper()
-            self.code = f"{subject_code}-{clean_name[:10]}" if clean_name else f"{subject_code}-ST{self.id}"
-        
-        # Auto-align competencies for CBC subjects
-        if self.subject.is_cbc_subject and not self.competency_alignment:
-            if self.subject.cbc_competency_area:
-                self.competency_alignment = [self.subject.cbc_competency_area]
-        
-        super().save(*args, **kwargs)
-
-    # ============ PROPERTIES ============
-
-    @property
-    def full_name(self):
-        """Get full display name."""
-        return f"{self.topic}: {self.name}"
-
-    @property
-    def estimated_periods(self):
-        """Convert estimated hours to periods (assuming 40-minute periods)."""
-        return int(self.estimated_hours * 60 / 40)
-
-    @property
-    def is_cbc_aligned(self):
-        """Check if sub-topic is CBC aligned."""
-        return bool(self.competency_alignment) or self.subject.is_cbc_subject
-
-    @property
-    def difficulty_assessment(self):
-        """Assess difficulty based on various factors."""
-        difficulty_score = 0
-        
-        if self.priority == 'high':
-            difficulty_score += 2
-        elif self.priority == 'core':
-            difficulty_score += 3
-        
-        if self.estimated_hours > 3:
-            difficulty_score += 1
-        
-        if self.project_connections:
-            difficulty_score += 1
-        
-        # Map score to difficulty level
-        if difficulty_score >= 3:
-            return "Challenging"
-        elif difficulty_score >= 2:
-            return "Moderate"
-        else:
-            return "Basic"
-
-    # ============ METHODS ============
-
-    def get_related_lesson_plans(self):
-        """Get lesson plans related to this sub-topic."""
-        from .models import LessonPlan
-        return LessonPlan.objects.filter(sub_topic=self)
-
-    def mark_completed(self):
-        """Mark sub-topic as completed."""
-        self.is_completed = True
-        self.completion_date = timezone.now().date()
-        self.save()
-
-    def get_competency_details(self):
-        """Get detailed competency information."""
-        if not self.competency_alignment:
-            return None
-        
-        details = []
-        for competency in self.competency_alignment:
-            try:
-                display_name = dict(self._meta.get_field('competency_alignment').choices).get(competency, competency)
-                details.append({
-                    'code': competency,
-                    'name': display_name,
-                    'description': self._get_competency_description(competency),
-                })
-            except (KeyError, ValueError):
-                details.append({'code': competency, 'name': competency})
-        
-        return details
-
-    def _get_competency_description(self, competency_code):
-        """Get description for a competency code."""
-        competency_descriptions = {
-            'communication': "Ability to express ideas clearly and collaborate effectively",
-            'critical_thinking': "Capacity to analyze, evaluate, and solve problems",
-            'creativity': "Ability to generate innovative ideas and solutions",
-            'citizenship': "Understanding of civic responsibilities and community engagement",
-            'digital_literacy': "Proficiency in using digital tools and technologies",
-            'learning_to_learn': "Skills for self-directed and lifelong learning",
-            'self_efficacy': "Confidence in one's ability to accomplish tasks",
-        }
-        return competency_descriptions.get(competency_code, "")
-
-    def get_differentiation_options(self, learner_type):
-        """Get differentiation strategies for specific learner types."""
-        strategies = self.differentiation_strategies.get(learner_type, [])
-        
-        if not strategies and self.subject.is_cbc_subject:
-            # Provide default strategies for CBC
-            default_strategies = {
-                'slow_learner': [
-                    "Break into smaller steps",
-                    "Provide additional examples",
-                    "Use visual aids",
-                    "Allow extra time",
-                ],
-                'fast_learner': [
-                    "Extension activities",
-                    "Independent projects",
-                    "Peer teaching opportunities",
-                    "Advanced challenges",
-                ],
-                'special_needs': [
-                    "Adapted materials",
-                    "Assistive technology",
-                    "Modified assessments",
-                    "Individual support",
-                ],
-            }
-            strategies = default_strategies.get(learner_type, [])
-        
-        return strategies
-
-    def validate_prerequisites(self, student):
-        """Check if student has completed prerequisite topics."""
-        if not self.prerequisite_topics.exists():
-            return True
-        
-        # Check if student has completed all prerequisites
-        completed_topics = student.completed_subtopics.filter(
-            sub_topic__in=self.prerequisite_topics.all()
-        )
-        return completed_topics.count() == self.prerequisite_topics.count()
-
-    def get_resource_summary(self):
-        """Get summary of required resources."""
-        summary = {
-            'total_resources': len(self.teaching_resources),
-            'digital_resources': sum(1 for r in self.teaching_resources if r.get('type') == 'digital'),
-            'physical_resources': sum(1 for r in self.teaching_resources if r.get('type') == 'physical'),
-            'special_equipment': any(r.get('special') for r in self.teaching_resources),
-        }
-        return summary
-
-    def create_lesson_template(self):
-        """Create a lesson template based on this sub-topic."""
-        template = {
-            'topic': self.topic,
-            'sub_topic': self.name,
-            'duration_hours': float(self.estimated_hours),
-            'learning_objectives': self.learning_objectives,
-            'key_concepts': self.key_concepts,
-            'activities': self._suggest_activities(),
-            'assessment_methods': self.assessment_methods,
-            'differentiation': self.differentiation_strategies,
-            'resources': self.teaching_resources,
-        }
-        
-        if self.project_connections:
-            template['project_ideas'] = self.project_connections
-        
-        return template
-
-    def _suggest_activities(self):
-        """Suggest activities based on sub-topic content."""
-        activities = []
-        
-        # Add competency-based activities for CBC
-        if self.competency_alignment:
-            for competency in self.competency_alignment:
-                activity = {
-                    'type': 'competency_development',
-                    'competency': competency,
-                    'description': f"Activity to develop {self._get_competency_description(competency)}",
-                    'duration': '30 minutes',
-                }
-                activities.append(activity)
-        
-        # Add project-based activities
-        if self.project_connections:
-            activities.append({
-                'type': 'project_work',
-                'description': "Hands-on project work",
-                'duration': f"{int(self.estimated_hours * 0.5)} hours",
-            })
-        
-        # Add discussion/reflection activity
-        activities.append({
-            'type': 'discussion',
-            'description': "Group discussion and reflection",
-            'duration': '20 minutes',
-        })
-        
-        return activities
-
-
-class Class(BaseAcademicModel):
-    """Enhanced Class management with comprehensive academic configuration and CBC support."""
-    
-    # Basic Information
-    name = models.CharField(max_length=100, verbose_name=_("Class Name"))
-    grade_level = models.CharField(
-        max_length=20, 
-        choices=GRADE_LEVEL_CHOICES,
-        verbose_name=_("Grade Level")
-    )
-    section = models.CharField(
-        max_length=10, 
-        blank=True, 
-        null=True,
-        verbose_name=_("Section")
-    )
-    stream = models.CharField(
-        max_length=15, 
-        choices=STREAM_CHOICES, 
-        blank=True, 
-        null=True,
-        verbose_name=_("Stream")
-    )
-    room_number = models.CharField(
-        max_length=20, 
-        blank=True, 
-        null=True,
-        verbose_name=_("Room Number")
-    )
-    
-    # Academic Context
-    academic_year = models.ForeignKey(
-        AcademicYear, 
-        on_delete=models.CASCADE, 
-        related_name='classes',
-        verbose_name=_("Academic Year")
-    )
-    
-    class_teacher = models.ForeignKey(
-        'teachers.TeacherProfile', 
-        on_delete=models.SET_NULL, 
-        null=True, 
-        blank=True, 
-        related_name='assigned_classes',
-        verbose_name=_("Class Teacher")
-    )
-    
-    # CBC-Specific Fields
-    education_level = models.CharField(
         max_length=20,
-        choices=EDUCATION_LEVELS,
-        default='middle_school',
-        verbose_name=_("Education Level")
+        unique=True,
+        verbose_name=_("Competency Code")
     )
-    
-    cbc_pathway = models.CharField(
-        max_length=20,
-        choices=CBC_PATHWAY_CHOICES,
-        blank=True,
-        null=True,
-        verbose_name=_("CBC Pathway")
-    )
-    
-    senior_track = models.CharField(
-        max_length=30,
-        choices=SENIOR_SCHOOL_TRACKS,
-        blank=True,
-        null=True,
-        verbose_name=_("Senior School Track")
-    )
-    
-    # Curriculum Information
-    primary_curriculum = models.CharField(
-        max_length=20,
-        choices=CURRICULUM_CHOICES,
-        verbose_name=_("Primary Curriculum")
-    )
-    additional_curriculums = models.JSONField(
-        default=list, 
-        blank=True,
-        verbose_name=_("Additional Curriculums")
-    )
-    
-    # Class Configuration
-    capacity = models.IntegerField(
-        default=30,
-        validators=[MinValueValidator(1), MaxValueValidator(100)],
-        verbose_name=_("Capacity")
-    )
-    current_strength = models.IntegerField(
-        default=0,
-        validators=[MinValueValidator(0)],
-        verbose_name=_("Current Strength")
-    )
-    
-    # Schedule Information
-    schedule = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Class timetable/schedule"),
-        verbose_name=_("Schedule")
-    )
-    
-    # CBC Assessment Configuration
-    portfolio_required = models.BooleanField(
-        default=False,
-        verbose_name=_("Portfolio Required"),
-        help_text=_("Whether students need to maintain portfolios")
-    )
-    
-    project_work_required = models.BooleanField(
-        default=False,
-        verbose_name=_("Project Work Required"),
-        help_text=_("Whether project work is mandatory")
-    )
-    
-    community_service_hours = models.IntegerField(
-        default=0,
-        validators=[MinValueValidator(0), MaxValueValidator(200)],
-        help_text=_("Required community service hours per term"),
-        verbose_name=_("Community Service Hours")
-    )
-    
-    # Academic Configuration
-    assessment_config = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Class-specific assessment configuration"),
-        verbose_name=_("Assessment Configuration")
-    )
-    
-    # Additional Information
     description = models.TextField(
-        blank=True, 
-        null=True,
+        blank=True,
         verbose_name=_("Description")
     )
-    class_rules = models.JSONField(
-        default=list, 
-        blank=True, 
-        help_text=_("Class rules and expectations"),
-        verbose_name=_("Class Rules")
+    curriculum = models.CharField(
+        max_length=50,
+        choices=settings.CURRICULUM_CHOICES if hasattr(settings, 'CURRICULUM_CHOICES') else [],
+        default='cbc',
+        verbose_name=_("Curriculum"),
+        help_text=_("Curriculum this competency area belongs to")
     )
-    class_color = models.CharField(
-        max_length=7, 
-        default='#3B82F6',
-        help_text=_("Color code for class identification"),
-        verbose_name=_("Class Color")
+    grade_levels = models.ManyToManyField(
+        GradeLevel,
+        related_name='competency_areas',
+        blank=True,
+        verbose_name=_("Grade Levels"),
+        help_text=_("Grade levels where this competency is assessed")
+    )
+    subjects = models.ManyToManyField(
+        Subject,
+        related_name='competency_areas',
+        blank=True,
+        verbose_name=_("Subjects"),
+        help_text=_("Subjects that contribute to this competency")
     )
     
-    # Facilities Information
+    # Assessment parameters
+    assessment_method = models.CharField(
+        max_length=50,
+        choices=[
+            ('observation', _('Observation')),
+            ('portfolio', _('Portfolio Assessment')),
+            ('rubric', _('Rubric Assessment')),
+            ('project', _('Project Work')),
+            ('practical', _('Practical Assessment')),
+            ('self_assessment', _('Self-Assessment')),
+            ('peer_assessment', _('Peer Assessment')),
+        ],
+        default='rubric',
+        verbose_name=_("Assessment Method")
+    )
+    
+    # Competency levels
+    levels = models.JSONField(
+        default=list,
+        verbose_name=_("Competency Levels"),
+        help_text=_("List of competency levels with descriptions")
+    )
+    
+    parent_area = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='child_areas',
+        verbose_name=_("Parent Competency Area")
+    )
+    
+    is_core = models.BooleanField(
+        default=True,
+        verbose_name=_("Core Competency"),
+        help_text=_("Is this a core competency area?")
+    )
+    
+    order = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Order"),
+        help_text=_("Order for display and sorting")
+    )
+    
+    class Meta:
+        verbose_name = _("Competency Area")
+        verbose_name_plural = _("Competency Areas")
+        ordering = ['curriculum', 'order', 'name']
+        indexes = [
+            models.Index(fields=['code']),
+            models.Index(fields=['curriculum']),
+            models.Index(fields=['is_core']),
+        ]
+    
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+    
+    def get_competency_levels(self):
+        """Get structured competency levels"""
+        if not self.levels:
+            # Default levels for CBC
+            self.levels = [
+                {
+                    'level': 1,
+                    'name': _('Beginning'),
+                    'description': _('Student is beginning to demonstrate the competency'),
+                    'min_score': 0,
+                    'max_score': 40,
+                },
+                {
+                    'level': 2,
+                    'name': _('Developing'),
+                    'description': _('Student is developing the competency'),
+                    'min_score': 41,
+                    'max_score': 60,
+                },
+                {
+                    'level': 3,
+                    'name': _('Competent'),
+                    'description': _('Student demonstrates the competency'),
+                    'min_score': 61,
+                    'max_score': 80,
+                },
+                {
+                    'level': 4,
+                    'name': _('Exceeding'),
+                    'description': _('Student exceeds expectations for the competency'),
+                    'min_score': 81,
+                    'max_score': 100,
+                },
+            ]
+            self.save()
+        
+        return self.levels
+    
+    def get_level_for_score(self, score):
+        """Get competency level for a given score"""
+        levels = self.get_competency_levels()
+        for level in levels:
+            if level['min_score'] <= score <= level['max_score']:
+                return level
+        return None
+    
+    @property
+    def student_count(self):
+        """Get number of students assessed in this competency area"""
+        return self.competency_assessments.count()
+    
+    def get_related_skills(self):
+        """Get related skills for this competency area"""
+        # You might want to create a Skill model related to CompetencyArea
+        return []
+
+
+class CompetencyAssessment(BaseModel):
+    """Student competency assessment record"""
+    LEVEL_CHOICES = [
+        ('beginning', 'Beginning'),
+        ('developing', 'Developing'),
+        ('achieved', 'Achieved'),
+        ('exceeded', 'Exceeded'),
+        ('excellent', 'Excellent'),
+    ]
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={'role': 'student'},
+        related_name='competency_assessments',
+        verbose_name=_("Student")
+    )
+    competency_area = models.ForeignKey(
+        CompetencyArea,
+        on_delete=models.CASCADE,
+        related_name='competency_assessments',
+        verbose_name=_("Competency Area")
+    )
+    academic_year = models.CharField(
+        max_length=20,
+        verbose_name=_("Academic Year")
+    )
+    term = models.CharField(
+        max_length=20,
+        choices=TermType.choices,
+        verbose_name=_("Term")
+    )
+    grade_level = models.ForeignKey(
+        GradeLevel,
+        on_delete=models.CASCADE,
+        related_name='competency_assessments',
+        verbose_name=_("Grade Level")
+    )
+    
+    # Assessment details
+    score = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        verbose_name=_("Score")
+    )
+    level = models.CharField(
+        max_length=50,
+        verbose_name=_("Competency Level")
+    )
+    assessed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='conducted_competency_assessments',
+        verbose_name=_("Assessed By")
+    )
+    assessment_date = models.DateField(
+        default=date.today,
+        verbose_name=_("Assessment Date")
+    )
+    
+    # Evidence and documentation
+    evidence = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_("Assessment Evidence"),
+        help_text=_("List of evidence supporting the assessment")
+    )
+    comments = models.TextField(
+        blank=True,
+        verbose_name=_("Comments")
+    )
+    
+    # Status
+    is_verified = models.BooleanField(
+        default=False,
+        verbose_name=_("Verified")
+    )
+    verified_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='verified_competency_assessments',
+        verbose_name=_("Verified By")
+    )
+    verified_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Verified Date")
+    )
+    
+    class Meta:
+        verbose_name = _("Competency Assessment")
+        verbose_name_plural = _("Competency Assessments")
+        unique_together = ['student', 'competency_area', 'academic_year', 'term']
+        ordering = ['academic_year', 'term', 'competency_area']
+        indexes = [
+            models.Index(fields=['student', 'competency_area']),
+            models.Index(fields=['academic_year', 'term']),
+            models.Index(fields=['grade_level', 'level']),
+        ]
+    
+    def __str__(self):
+        return f"{self.student.get_full_name()} - {self.competency_area.name}: {self.score}"
+    
+    def save(self, *args, **kwargs):
+        """Set competency level based on score"""
+        if self.score is not None:
+            level_data = self.competency_area.get_level_for_score(float(self.score))
+            if level_data:
+                self.level = level_data['name']
+        super().save(*args, **kwargs)
+
+
+# ============================================================================
+# PHYSICAL INFRASTRUCTURE MODELS
+# ============================================================================
+
+class Classroom(BaseModel):
+    """Physical classroom model"""
+    
+    room_number = models.CharField(
+        max_length=50,
+        verbose_name=_("Room Number")
+    )
+    name = models.CharField(
+        max_length=100,
+        blank=True,
+        verbose_name=_("Room Name")
+    )
+    building = models.CharField(
+        max_length=100,
+        blank=True,
+        verbose_name=_("Building")
+    )
+    floor = models.IntegerField(
+        default=1,
+        verbose_name=_("Floor")
+    )
+    capacity = models.PositiveIntegerField(
+        default=40,
+        verbose_name=_("Capacity"),
+        help_text=_("Maximum number of students")
+    )
     facilities = models.JSONField(
         default=list,
         blank=True,
-        help_text=_("Available facilities for this class"),
-        verbose_name=_("Facilities")
+        verbose_name=_("Facilities"),
+        help_text=_("List of available facilities")
+    )
+    is_special = models.BooleanField(
+        default=False,
+        verbose_name=_("Special Room"),
+        help_text=_("e.g., Laboratory, Computer Lab, Music Room")
+    )
+    special_type = models.CharField(
+        max_length=50,
+        blank=True,
+        verbose_name=_("Special Room Type")
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    is_available = models.BooleanField(
+        default=True,
+        verbose_name=_("Available")
     )
     
-    # Academic Performance Tracking
-    average_performance = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
+    class Meta:
+        verbose_name = _("Classroom")
+        verbose_name_plural = _("Classrooms")
+        ordering = ['building', 'floor', 'room_number']
+        indexes = [
+            models.Index(fields=['room_number']),
+            models.Index(fields=['building']),
+            models.Index(fields=['is_available']),
+        ]
+    
+    def __str__(self):
+        if self.name:
+            return f"{self.name} ({self.room_number})"
+        return f"Room {self.room_number}"
+    
+    @property
+    def current_class(self):
+        """Get current class using this room"""
+        from .models import Class
+        now = timezone.now()
+        return Class.objects.filter(
+            classroom=self,
+            schedule__start_time__lte=now,
+            schedule__end_time__gte=now
+        ).first()
+    
+    def get_schedule(self, date=None):
+        """Get schedule for this classroom"""
+        from .models import Schedule
+        if not date:
+            date = timezone.now().date()
+        
+        return Schedule.objects.filter(
+            classroom=self,
+            date=date
+        ).order_by('start_time')
+
+
+# ============================================================================
+# CLASS AND GROUPING MODELS
+# ============================================================================
+
+class Class(BaseModel, AcademicMixin):
+    """Class/Stream model - grouping of students in same grade"""
+    
+    name = models.CharField(
+        max_length=100,
+        verbose_name=_("Class Name"),
+        help_text=_("e.g., Form 1A, Grade 3B")
+    )
+    code = models.CharField(
+        max_length=20,
+        unique=True,
+        verbose_name=_("Class Code")
+    )
+    grade_level = models.ForeignKey(
+        GradeLevel,
+        on_delete=models.CASCADE,
+        related_name='classes',
+        verbose_name=_("Grade Level")
+    )
+    classroom = models.ForeignKey(
+        Classroom,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        validators=[MinValueValidator(0), MaxValueValidator(100)],
-        verbose_name=_("Average Performance")
+        related_name='classes',
+        verbose_name=_("Assigned Classroom")
     )
-    attendance_rate = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
+    form_teacher = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        validators=[MinValueValidator(0), MaxValueValidator(100)],
-        verbose_name=_("Attendance Rate")
+        limit_choices_to={'role': 'teacher'},
+        related_name='form_classes',
+        verbose_name=_("Form Teacher")
     )
-    
-    # Parent Engagement
-    parent_engagement_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('low', 'Low Engagement'),
-            ('medium', 'Medium Engagement'),
-            ('high', 'High Engagement'),
-            ('structured', 'Structured Program'),
-        ],
-        default='medium',
-        verbose_name=_("Parent Engagement Level")
-    )
-    
-    # Technology Integration
-    technology_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('basic', 'Basic Technology'),
-            ('intermediate', 'Intermediate Technology'),
-            ('advanced', 'Advanced Technology'),
-            ('digital_classroom', 'Digital Classroom'),
-        ],
-        default='basic',
-        verbose_name=_("Technology Level")
-    )
-    
-    # Special Programs
-    special_programs = models.JSONField(
-        default=list,
+    assistant_teacher = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
         blank=True,
-        help_text=_("Special programs for this class"),
-        verbose_name=_("Special Programs")
+        limit_choices_to={'role': 'teacher'},
+        related_name='assistant_classes',
+        verbose_name=_("Assistant Teacher")
+    )
+    max_students = models.PositiveIntegerField(
+        default=40,
+        verbose_name=_("Maximum Students")
+    )
+    students_count = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Current Student Count")
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
     )
     
-    # Metadata
-    metadata = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Additional metadata for the class"),
-        verbose_name=_("Metadata")
-    )
-
-    objects = ClassManager()
-
     class Meta:
         verbose_name = _("Class")
         verbose_name_plural = _("Classes")
-        unique_together = ['name', 'academic_year', 'section']
-        ordering = ['academic_year', 'grade_level', 'section']
+        ordering = ['grade_level__order', 'name']
+        unique_together = ['academic_year', 'term', 'code']
         indexes = [
-            models.Index(fields=['academic_year', 'grade_level']),
-            models.Index(fields=['is_active']),
-            models.Index(fields=['stream']),
-            models.Index(fields=['class_teacher']),
-            models.Index(fields=['grade_level', 'section']),
-            models.Index(fields=['education_level']),
-            models.Index(fields=['cbc_pathway']),
-            models.Index(fields=['senior_track']),
+            models.Index(fields=['code']),
+            models.Index(fields=['grade_level']),
+            models.Index(fields=['form_teacher']),
+            models.Index(fields=['academic_year', 'term']),
         ]
-
+    
     def __str__(self):
-        return self.display_name
-
+        return f"{self.name} - {self.academic_year} {self.get_term_display()}"
+    
     def save(self, *args, **kwargs):
-        """Update current strength and auto-configure CBC settings."""
-        # Update current strength based on enrollments
+        """Update student count on save"""
         if self.pk:
-            try:
-                from students.models import StudentEnrollment
-                self.current_strength = StudentEnrollment.objects.filter(
-                    class_enrolled=self, 
-                    status='active'
-                ).count()
-            except ImportError:
-                pass
-        
-        # Auto-configure CBC settings
-        if not self.education_level:
-            self.education_level = self._auto_determine_education_level()
-        
-        if self.academic_year.is_cbc and not self.portfolio_required:
-            # Set portfolio requirements based on education level
-            if self.education_level in ['middle_school', 'senior_school']:
-                self.portfolio_required = True
-        
-        # Auto-set primary curriculum from academic year
-        if not self.primary_curriculum:
-            if self.academic_year.curriculum_system == 'cbc_kenya':
-                self.primary_curriculum = 'cbc'
-            elif self.academic_year.curriculum_system == '8-4-4_kenya':
-                self.primary_curriculum = '8-4-4'
-        
-        self.clean()
-        super().save(*args, **kwargs)
-
-    def _auto_determine_education_level(self):
-        """Auto-determine education level based on grade level."""
-        grade_map = {
-            'pre_primary_1': 'early_years',
-            'pre_primary_2': 'early_years',
-            'grade_1': 'early_years',
-            'grade_2': 'early_years',
-            'grade_3': 'early_years',
-            'grade_4': 'middle_school',
-            'grade_5': 'middle_school',
-            'grade_6': 'middle_school',
-            'grade_7': 'middle_school',
-            'grade_8': 'middle_school',
-            'grade_9': 'middle_school',
-            'grade_10': 'senior_school',
-            'grade_11': 'senior_school',
-            'grade_12': 'senior_school',
-        }
-        return grade_map.get(self.grade_level, 'middle_school')
-
-    def clean(self):
-        """Validate class data."""
-        errors = {}
-        
-        # Section validation
-        if self.section and not self.section.isalnum():
-            errors['section'] = _("Section must be alphanumeric")
-        
-        # Capacity validation
-        if self.current_strength > self.capacity:
-            errors['current_strength'] = _("Current strength cannot exceed capacity")
-        
-        # CBC-specific validation
-        if self.academic_year.is_cbc:
-            # Validate pathway for senior school
-            if self.education_level == 'senior_school' and not self.cbc_pathway:
-                errors['cbc_pathway'] = _("CBC pathway is required for Senior School classes")
-            
-            # Validate senior track for pathways
-            if self.cbc_pathway and not self.senior_track:
-                errors['senior_track'] = _("Senior track is required when pathway is specified")
-        
-        # Grade level validation for senior tracks
-        if self.senior_track and self.education_level != 'senior_school':
-            errors['senior_track'] = _("Senior tracks are only applicable to Senior School classes")
-        
-        if errors:
-            raise ValidationError(errors)
-
-    # ============ PROPERTIES ============
-
-    @property
-    def display_name(self):
-        """Get formatted class name with section and stream."""
-        parts = [self.name]
-        if self.section:
-            parts.append(f"Section {self.section}")
-        if self.stream:
-            parts.append(f"({self.get_stream_display()})")
-        
-        # Add CBC pathway if available
-        if self.cbc_pathway:
-            parts.append(f"- {self.get_cbc_pathway_display()}")
-        
-        return ' '.join(parts)
-
-    @property
-    def available_seats(self):
-        """Get number of available seats."""
-        return max(0, self.capacity - self.current_strength)
-
-    @property
-    def is_full(self):
-        """Check if class is full."""
-        return self.current_strength >= self.capacity
-
-    @property
-    def occupancy_rate(self):
-        """Calculate class occupancy rate."""
-        if self.capacity == 0:
-            return 0
-        return round((self.current_strength / self.capacity) * 100, 2)
-
-    @property
-    def is_cbc_class(self):
-        """Check if this is a CBC class."""
-        return self.academic_year.is_cbc or self.primary_curriculum == 'cbc'
-
-    @property
-    def cbc_info(self):
-        """Get CBC-specific information for this class."""
-        info = {
-            'education_level': self.get_education_level_display(),
-            'is_senior_school': self.education_level == 'senior_school',
-            'requires_portfolio': self.portfolio_required,
-            'requires_project': self.project_work_required,
-            'community_service_hours': self.community_service_hours,
-        }
-        
-        if self.cbc_pathway:
-            info['pathway'] = self.get_cbc_pathway_display()
-        if self.senior_track:
-            info['senior_track'] = self.get_senior_track_display()
-            
-        return info
-
-    @property
-    def class_code(self):
-        """Generate class code."""
-        year_code = self.academic_year.code[:4] if self.academic_year.code else 'AY'
-        grade_code = self.grade_level.split('_')[-1].upper() if '_' in self.grade_level else self.grade_level[:3].upper()
-        section_code = self.section.upper() if self.section else 'A'
-        return f"{year_code}{grade_code}{section_code}"
-
-    @property
-    def academic_info(self):
-        """Get comprehensive academic information."""
-        return {
-            'grade_level': self.get_grade_level_display(),
-            'education_level': self.get_education_level_display(),
-            'curriculum': self.get_primary_curriculum_display(),
-            'is_cbc': self.is_cbc_class,
-            'academic_year': self.academic_year.name,
-            'term': self.get_current_term_info(),
-        }
-
-    # ============ STUDENT RELATED METHODS ============
-
-    @property
-    def student_list(self):
-        """Get list of students in this class."""
-        try:
-            from students.models import StudentEnrollment
-            return StudentEnrollment.objects.filter(
-                class_enrolled=self,
-                status='active'
-            ).select_related('student__user').order_by('roll_number')
-        except ImportError:
-            return StudentEnrollment.objects.none()
-
-    def get_students_by_gender(self):
-        """Get student count by gender."""
-        try:
-            from students.models import StudentProfile
-            student_ids = self.student_list.values_list('student_id', flat=True)
-            return StudentProfile.objects.filter(
-                id__in=student_ids
-            ).values('gender').annotate(count=models.Count('id'))
-        except ImportError:
-            return []
-
-    def get_students_by_pathway(self):
-        """Get student distribution by CBC pathway (for Senior School)."""
-        if not self.is_cbc_class or self.education_level != 'senior_school':
-            return {}
-        
-        try:
-            from .models import PathwaySelection
-            student_ids = self.student_list.values_list('student_id', flat=True)
-            selections = PathwaySelection.objects.filter(
-                student_id__in=student_ids,
-                academic_year=self.academic_year,
-                is_approved=True
-            )
-            
-            distribution = {}
-            for selection in selections:
-                pathway = selection.get_preferred_pathway_display()
-                distribution[pathway] = distribution.get(pathway, 0) + 1
-            
-            return distribution
-        except ImportError:
-            return {}
-
-    def add_student(self, student, roll_number=None):
-        """Add a student to this class."""
-        try:
-            from students.models import StudentEnrollment
-            
-            if self.is_full:
-                raise ValidationError(_("Class is full. Cannot add more students."))
-            
-            enrollment, created = StudentEnrollment.objects.get_or_create(
-                student=student,
-                academic_year=self.academic_year,
-                defaults={
-                    'class_enrolled': self,
-                    'roll_number': roll_number or self._get_next_roll_number(),
-                    'status': 'active',
-                }
-            )
-            
-            if not created:
-                enrollment.class_enrolled = self
-                if roll_number:
-                    enrollment.roll_number = roll_number
-                enrollment.save()
-            
-            # Update current strength
-            self.current_strength = StudentEnrollment.objects.filter(
-                class_enrolled=self, 
-                status='active'
-            ).count()
-            self.save()
-            
-            return enrollment
-        except ImportError:
-            return None
-
-    def _get_next_roll_number(self):
-        """Get next available roll number."""
-        from students.models import StudentEnrollment
-        enrollments = StudentEnrollment.objects.filter(
-            class_enrolled=self,
-            academic_year=self.academic_year
-        ).exclude(roll_number=None).order_by('-roll_number')
-        
-        if enrollments.exists():
-            return enrollments.first().roll_number + 1
-        return 1
-
-    def remove_student(self, student):
-        """Remove a student from this class."""
-        try:
-            from students.models import StudentEnrollment
-            
-            enrollment = StudentEnrollment.objects.filter(
-                student=student,
-                class_enrolled=self,
-                academic_year=self.academic_year,
-                status='active'
-            ).first()
-            
-            if enrollment:
-                enrollment.status = 'transferred'
-                enrollment.save()
-                
-                # Update current strength
-                self.current_strength = StudentEnrollment.objects.filter(
-                    class_enrolled=self, 
-                    status='active'
-                ).count()
-                self.save()
-            
-            return enrollment
-        except ImportError:
-            return None
-
-    # ============ SUBJECT RELATED METHODS ============
-
-    def get_subjects(self):
-        """Get subjects taught in this class."""
-        assignments = self.subject_assignments.filter(is_active=True)
-        return Subject.objects.filter(
-            id__in=assignments.values('subject')
-        ).distinct()
-
-    def get_subjects_by_category(self):
-        """Get subjects grouped by category."""
-        subjects = self.get_subjects()
-        categories = {}
-        
-        for subject in subjects:
-            category = subject.get_category_display()
-            if category not in categories:
-                categories[category] = []
-            categories[category].append(subject)
-        
-        return categories
-
-    def get_cbc_core_subjects(self):
-        """Get CBC core subjects for this class."""
-        subjects = self.get_subjects()
-        return subjects.filter(is_cbc_core=True)
-
-    def get_subjects_by_pathway(self):
-        """Get subjects by CBC pathway alignment."""
-        if not self.cbc_pathway:
-            return {}
-        
-        subjects = self.get_subjects()
-        pathway_subjects = {
-            'core': subjects.filter(cbc_pathway=self.cbc_pathway, is_cbc_core=True),
-            'elective': subjects.filter(cbc_pathway=self.cbc_pathway, is_cbc_core=False),
-            'general': subjects.filter(cbc_pathway__isnull=True),
-        }
-        
-        return pathway_subjects
-
-    def assign_subject(self, subject, teacher, periods_per_week=5):
-        """Assign a subject to this class with a teacher."""
-        try:
-            from .models import SubjectAssignment
-            
-            assignment, created = SubjectAssignment.objects.get_or_create(
-                subject=subject,
-                teacher=teacher,
+            from .models import Enrollment
+            self.students_count = Enrollment.objects.filter(
                 class_assigned=self,
                 academic_year=self.academic_year,
-                defaults={
-                    'periods_per_week': periods_per_week,
-                }
-            )
-            
-            if not created:
-                assignment.periods_per_week = periods_per_week
-                assignment.save()
-            
-            return assignment
-        except ImportError:
-            return None
-
-    # ============ TEACHER RELATED METHODS ============
-
-    def get_teachers(self):
-        """Get teachers assigned to this class."""
-        try:
-            from teachers.models import TeacherProfile
-            assignments = self.subject_assignments.filter(is_active=True)
-            teacher_ids = assignments.values('teacher').distinct()
-            return TeacherProfile.objects.filter(id__in=teacher_ids).distinct()
-        except ImportError:
-            return TeacherProfile.objects.none()
-
-    def get_teachers_by_subject(self):
-        """Get teachers grouped by subject."""
-        teachers_by_subject = {}
-        
-        for assignment in self.subject_assignments.filter(is_active=True):
-            subject_name = assignment.subject.name
-            if subject_name not in teachers_by_subject:
-                teachers_by_subject[subject_name] = []
-            
-            teachers_by_subject[subject_name].append({
-                'teacher': assignment.teacher,
-                'periods_per_week': assignment.periods_per_week,
-                'is_class_teacher': assignment.is_class_teacher,
-            })
-        
-        return teachers_by_subject
-
-    def set_class_teacher(self, teacher):
-        """Set or update class teacher."""
-        try:
-            # Remove class teacher flag from all assignments
-            self.subject_assignments.filter(is_class_teacher=True).update(is_class_teacher=False)
-            
-            # Find or create assignment for this teacher
-            assignment = self.subject_assignments.filter(
-                teacher=teacher,
+                term=self.term,
                 is_active=True
-            ).first()
-            
-            if assignment:
-                assignment.is_class_teacher = True
-                assignment.save()
-            
-            self.class_teacher = teacher
-            self.save()
-            
-            return True
-        except Exception as e:
-            logger.error(f"Error setting class teacher: {e}")
-            return False
-
-    # ============ ASSESSMENT RELATED METHODS ============
-
-    def get_assessment_config(self):
-        """Get assessment configuration for this class."""
-        default_config = {
-            'continuous_assessment_weight': 40,
-            'term_exam_weight': 60,
-            'practical_weight': self._get_average_practical_weight(),
-            'project_required': self.project_work_required,
-            'portfolio_required': self.portfolio_required,
-        }
-        
-        if self.assessment_config:
-            default_config.update(self.assessment_config)
-        
-        return default_config
-
-    def _get_average_practical_weight(self):
-        """Calculate average practical weight for subjects in this class."""
-        subjects = self.get_subjects()
-        if not subjects.exists():
-            return 0
-        
-        total_weight = sum(subject.practical_weight for subject in subjects)
-        return total_weight / subjects.count()
-
-    def get_assessment_schedule(self, term=None):
-        """Get assessment schedule for this class."""
-        try:
-            from .models import AcademicTerm
-            current_term = term or AcademicTerm.objects.filter(
-                academic_year=self.academic_year,
-                is_current=True
-            ).first()
-            
-            if not current_term:
-                return []
-            
-            # Get assessments from the syllabus
-            schedule = []
-            for subject in self.get_subjects():
-                subject_assessments = subject.assessment_methods or []
-                for assessment in subject_assessments:
-                    schedule.append({
-                        'subject': subject.name,
-                        'type': assessment.get('type', 'assessment'),
-                        'description': assessment.get('description', ''),
-                        'weight': assessment.get('weight', 0),
-                        'due_date': assessment.get('due_date'),
-                    })
-            
-            return schedule
-        except ImportError:
-            return []
-
-    # ============ TIMETABLE/SCHEDULE METHODS ============
-
-    def get_timetable(self):
-        """Get class timetable."""
-        if self.schedule:
-            return self.schedule
-        
-        # Generate default timetable if not set
-        return self._generate_default_timetable()
-
-    def _generate_default_timetable(self):
-        """Generate default timetable based on grade level."""
-        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
-        periods = ['1', '2', '3', '4', '5', '6', '7', '8']
-        
-        timetable = {}
-        for day in days:
-            timetable[day] = {}
-            for period in periods:
-                timetable[day][period] = {
-                    'subject': None,
-                    'teacher': None,
-                    'room': self.room_number or 'TBD',
-                    'type': 'theory',
-                }
-        
-        return timetable
-
-    def update_schedule(self, day, period, subject, teacher, room=None, type='theory'):
-        """Update schedule for specific day and period."""
-        if not self.schedule:
-            self.schedule = self._generate_default_timetable()
-        
-        if day in self.schedule and period in self.schedule[day]:
-            self.schedule[day][period] = {
-                'subject': subject.name if hasattr(subject, 'name') else subject,
-                'teacher': teacher.full_name if hasattr(teacher, 'full_name') else teacher,
-                'room': room or self.room_number or 'TBD',
-                'type': type,
-            }
-            
-            self.save()
-            return True
-        
-        return False
-
-    # ============ PERFORMANCE TRACKING METHODS ============
-
-    def update_performance_metrics(self):
-        """Update performance metrics for this class."""
-        try:
-            from grading.models import Grade
-            
-            # Calculate average performance
-            grades = Grade.objects.filter(
-                enrollment__class_enrolled=self,
-                enrollment__status='active',
-                academic_year=self.academic_year,
-                is_active=True
-            )
-            
-            if grades.exists():
-                self.average_performance = grades.aggregate(
-                    avg_score=models.Avg('score')
-                )['avg_score']
-            
-            # Calculate attendance rate
-            from attendance.models import StudentAttendance
-            attendance_records = StudentAttendance.objects.filter(
-                enrollment__class_enrolled=self,
-                enrollment__status='active',
-                academic_year=self.academic_year
-            )
-            
-            if attendance_records.exists():
-                present_count = attendance_records.filter(status='present').count()
-                total_count = attendance_records.count()
-                self.attendance_rate = (present_count / total_count) * 100 if total_count > 0 else 0
-            
-            self.save()
-            return True
-        except ImportError:
-            return False
-
-    def get_performance_trend(self, term_count=3):
-        """Get performance trend over multiple terms."""
-        try:
-            from grading.models import Grade
-            from .models import AcademicTerm
-            
-            terms = AcademicTerm.objects.filter(
-                academic_year=self.academic_year
-            ).order_by('-term_order')[:term_count]
-            
-            trend_data = []
-            for term in terms:
-                grades = Grade.objects.filter(
-                    enrollment__class_enrolled=self,
-                    academic_year=self.academic_year,
-                    term=term,
-                    is_active=True
-                )
-                
-                if grades.exists():
-                    avg_score = grades.aggregate(avg=models.Avg('score'))['avg']
-                    trend_data.append({
-                        'term': term.get_name_display(),
-                        'average_score': avg_score,
-                        'term_order': term.term_order,
-                    })
-            
-            return sorted(trend_data, key=lambda x: x['term_order'])
-        except ImportError:
-            return []
-
-    # ============ CBC SPECIFIC METHODS ============
-
-    def get_cbc_requirements(self):
-        """Get CBC requirements for this class."""
-        if not self.is_cbc_class:
-            return None
-        
-        requirements = {
-            'education_level': self.education_level,
-            'portfolio_required': self.portfolio_required,
-            'project_work_required': self.project_work_required,
-            'community_service_hours': self.community_service_hours,
-            'parent_engagement_level': self.parent_engagement_level,
-        }
-        
-        if self.cbc_pathway:
-            requirements['pathway'] = self.cbc_pathway
-            requirements['pathway_display'] = self.get_cbc_pathway_display()
-        
-        if self.senior_track:
-            requirements['senior_track'] = self.senior_track
-            requirements['track_display'] = self.get_senior_track_display()
-        
-        return requirements
-
-    def get_competency_focus_areas(self):
-        """Get primary competency focus areas for this class."""
-        subjects = self.get_subjects()
-        competencies = {}
-        
-        for subject in subjects:
-            if subject.cbc_competency_area:
-                competency = subject.get_cbc_competency_area_display()
-                competencies[competency] = competencies.get(competency, 0) + 1
-        
-        # Sort by frequency
-        sorted_competencies = sorted(
-            competencies.items(), 
-            key=lambda x: x[1], 
-            reverse=True
+            ).count()
+        super().save(*args, **kwargs)
+    
+    @property
+    def available_slots(self):
+        """Calculate available student slots"""
+        return max(0, self.max_students - self.students_count)
+    
+    def get_students(self):
+        """Get all students in this class"""
+        from .models import Enrollment
+        return Enrollment.objects.filter(
+            class_assigned=self,
+            academic_year=self.academic_year,
+            term=self.term,
+            is_active=True
+        ).select_related('student')
+    
+    def get_subjects(self):
+        """Get subjects taught in this class"""
+        from .models import TeacherAssignment
+        assignments = TeacherAssignment.objects.filter(
+            class_assigned=self,
+            academic_year=self.academic_year,
+            term=self.term
+        ).select_related('subject')
+        return set(assignment.subject for assignment in assignments)
+    
+    def get_average_performance(self):
+        """Get class average performance"""
+        from .models import Grade
+        grades = Grade.objects.filter(
+            class_assigned=self,
+            academic_year=self.academic_year,
+            term=self.term
         )
         
-        return [comp[0] for comp in sorted_competencies[:3]]
-
-    def get_portfolio_stats(self):
-        """Get portfolio statistics for CBC classes."""
-        if not self.portfolio_required:
-            return None
+        result = grades.aggregate(
+            avg_score=Avg('score'),
+            highest_score=Max('score'),
+            lowest_score=Min('score'),
+            total_students=Count('student', distinct=True)
+        )
         
-        try:
-            from .models import CBCPortfolio
-            portfolios = CBCPortfolio.objects.filter(
-                student__enrollments__class_enrolled=self,
-                academic_year=self.academic_year,
-                is_active=True
-            )
-            
-            total_portfolios = portfolios.count()
-            completed_portfolios = portfolios.filter(is_complete=True).count()
-            
-            return {
-                'total_portfolios': total_portfolios,
-                'completed_portfolios': completed_portfolios,
-                'completion_rate': (completed_portfolios / total_portfolios * 100) if total_portfolios > 0 else 0,
-                'average_artifacts': portfolios.aggregate(avg=models.Avg('artifacts_count'))['avg'] or 0,
-            }
-        except ImportError:
-            return None
-
-    # ============ STATISTICS AND REPORTS ============
-
-    def get_class_statistics(self):
-        """Get comprehensive class statistics."""
-        try:
-            from students.models import StudentEnrollment
-            from attendance.models import StudentAttendance
-            
-            total_students = self.current_strength
-            active_enrollments = StudentEnrollment.objects.filter(
-                class_enrolled=self,
-                status='active'
-            )
-            
-            # Calculate attendance rate
-            attendance_stats = StudentAttendance.objects.filter(
-                enrollment__in=active_enrollments
-            ).aggregate(
-                total_days=models.Count('id'),
-                present_days=models.Count('id', filter=Q(status='present'))
-            )
-            
-            attendance_rate = 0
-            if attendance_stats['total_days'] and attendance_stats['total_days'] > 0:
-                attendance_rate = (attendance_stats['present_days'] / attendance_stats['total_days']) * 100
-            
-            stats = {
-                'total_students': total_students,
-                'attendance_rate': round(attendance_rate, 2),
-                'occupancy_rate': self.occupancy_rate,
-                'available_seats': self.available_seats,
-                'subjects_count': self.get_subjects().count(),
-                'teachers_count': self.get_teachers().count(),
-                'average_performance': self.average_performance or 0,
-            }
-            
-            # Add CBC-specific statistics
-            if self.is_cbc_class:
-                cbc_stats = {
-                    'cbc_pathway': self.get_cbc_pathway_display() if self.cbc_pathway else 'General',
-                    'portfolio_required': self.portfolio_required,
-                    'project_required': self.project_work_required,
-                    'competency_focus': self.get_competency_focus_areas(),
-                }
-                stats.update(cbc_stats)
-                
-                portfolio_stats = self.get_portfolio_stats()
-                if portfolio_stats:
-                    stats.update({'portfolio_stats': portfolio_stats})
-            
-            return stats
-        except ImportError:
-            return {}
-
-    def generate_class_report(self):
-        """Generate comprehensive class report."""
-        report = {
-            'basic_info': {
-                'class_name': self.display_name,
-                'class_code': self.class_code,
-                'grade_level': self.get_grade_level_display(),
-                'education_level': self.get_education_level_display(),
-                'academic_year': self.academic_year.name,
-                'room': self.room_number,
-            },
-            'academic_info': self.academic_info,
-            'statistics': self.get_class_statistics(),
-            'subjects': {
-                'total': self.get_subjects().count(),
-                'list': [subject.name for subject in self.get_subjects()],
-                'by_category': self.get_subjects_by_category(),
-            },
-            'teachers': {
-                'class_teacher': self.class_teacher.full_name if self.class_teacher else 'Not Assigned',
-                'total': self.get_teachers().count(),
-                'list': [teacher.full_name for teacher in self.get_teachers()],
-            },
-            'students': {
-                'total': self.current_strength,
-                'capacity': self.capacity,
-                'occupancy_rate': f"{self.occupancy_rate}%",
-            },
+        return {
+            'average_score': result['avg_score'] or 0,
+            'highest_score': result['highest_score'] or 0,
+            'lowest_score': result['lowest_score'] or 0,
+            'total_students': result['total_students'] or 0,
         }
-        
-        if self.is_cbc_class:
-            report['cbc_info'] = self.cbc_info
-            report['cbc_requirements'] = self.get_cbc_requirements()
-        
-        return report
-
-    def get_current_term_info(self):
-        """Get current term information."""
-        try:
-            from .models import AcademicTerm
-            current_term = AcademicTerm.objects.filter(
-                academic_year=self.academic_year,
-                is_current=True
-            ).first()
-            
-            if current_term:
-                return {
-                    'name': current_term.get_name_display(),
-                    'start_date': current_term.start_date,
-                    'end_date': current_term.end_date,
-                    'progress': current_term.progress_percentage,
-                    'weeks_completed': int(current_term.teaching_weeks * (current_term.progress_percentage / 100)),
-                }
-        except ImportError:
-            pass
-        
-        return None
-
-    # ============ HELPER METHODS ============
-
-    def is_eligible_for_pathway(self, pathway):
-        """Check if class is eligible for a specific CBC pathway."""
-        if not self.is_cbc_class or self.education_level != 'senior_school':
-            return False
-        
-        # Check if class has subjects in the pathway
-        pathway_subjects = self.get_subjects().filter(cbc_pathway=pathway)
-        return pathway_subjects.exists()
-
-    def can_accommodate_more_students(self, count=1):
-        """Check if class can accommodate more students."""
-        return self.available_seats >= count
-
-    def get_resource_requirements(self):
-        """Get resource requirements for this class."""
-        requirements = {
-            'facilities': self.facilities,
-            'technology_level': self.get_technology_level_display(),
-            'special_programs': self.special_programs,
-        }
-        
-        # Add subject-specific requirements
-        subject_requirements = []
-        for subject in self.get_subjects():
-            if subject.resources_required:
-                subject_requirements.extend(subject.resources_required)
-        
-        requirements['subject_resources'] = list(set(subject_requirements))
-        
-        return requirements
-
-    def clone_for_next_year(self, next_academic_year):
-        """Clone this class for the next academic year."""
-        try:
-            # Create new class with same configuration
-            new_class = Class.objects.create(
-                name=self.name,
-                grade_level=self._get_next_grade_level(),
-                section=self.section,
-                stream=self.stream,
-                room_number=self.room_number,
-                academic_year=next_academic_year,
-                education_level=self.education_level,
-                cbc_pathway=self.cbc_pathway,
-                senior_track=self.senior_track,
-                primary_curriculum=self.primary_curriculum,
-                additional_curriculums=self.additional_curriculums,
-                capacity=self.capacity,
-                portfolio_required=self.portfolio_required,
-                project_work_required=self.project_work_required,
-                community_service_hours=self.community_service_hours,
-                description=self.description,
-                class_rules=self.class_rules,
-                class_color=self.class_color,
-                facilities=self.facilities,
-                parent_engagement_level=self.parent_engagement_level,
-                technology_level=self.technology_level,
-                special_programs=self.special_programs,
-                created_by=self.created_by,
-            )
-            
-            # Clone subject assignments
-            for assignment in self.subject_assignments.filter(is_active=True):
-                SubjectAssignment.objects.create(
-                    subject=assignment.subject,
-                    teacher=assignment.teacher,
-                    class_assigned=new_class,
-                    academic_year=next_academic_year,
-                    periods_per_week=assignment.periods_per_week,
-                    is_class_teacher=assignment.is_class_teacher,
-                    created_by=assignment.created_by,
-                )
-            
-            return new_class
-        except Exception as e:
-            logger.error(f"Error cloning class: {e}")
-            return None
-
-    def _get_next_grade_level(self):
-        """Get next grade level."""
-        grade_order = [choice[0] for choice in GRADE_LEVEL_CHOICES]
-        try:
-            current_index = grade_order.index(self.grade_level)
-            if current_index < len(grade_order) - 1:
-                return grade_order[current_index + 1]
-        except (ValueError, IndexError):
-            pass
-        
-        return self.grade_level
-
-
-class SubjectAssignment(BaseAcademicModel):
-    """Enhanced Teacher subject assignments with teaching load management and CBC support."""
     
-    # Core Relationships
-    subject = models.ForeignKey(
-        Subject, 
-        on_delete=models.CASCADE, 
-        related_name='subject_assignments',
-        verbose_name=_("Subject")
-    )
-    teacher = models.ForeignKey(
-        'teachers.TeacherProfile', 
-        on_delete=models.CASCADE, 
-        related_name='subject_assignments',
-        verbose_name=_("Teacher")
+    def get_attendance_summary(self):
+        """Get class attendance summary"""
+        from .models import Attendance
+        attendance = Attendance.objects.filter(
+            class_assigned=self,
+            academic_year=self.academic_year,
+            term=self.term,
+            date__gte=date.today() - timedelta(days=30)
+        )
+        
+        total_records = attendance.count()
+        if total_records == 0:
+            return {
+                'present_percentage': 0,
+                'absent_percentage': 0,
+                'late_percentage': 0,
+            }
+        
+        present_count = attendance.filter(status=AttendanceStatus.PRESENT).count()
+        absent_count = attendance.filter(status=AttendanceStatus.ABSENT).count()
+        late_count = attendance.filter(status=AttendanceStatus.LATE).count()
+        
+        return {
+            'present_percentage': (present_count / total_records) * 100,
+            'absent_percentage': (absent_count / total_records) * 100,
+            'late_percentage': (late_count / total_records) * 100,
+            'total_records': total_records,
+        }
+
+
+# ============================================================================
+# ENROLLMENT AND STUDENT ACADEMIC RECORDS
+# ============================================================================
+
+class Enrollment(BaseModel, AcademicMixin):
+    """Student enrollment in a class"""
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('inactive', 'Inactive'),
+        ('suspended', 'Suspended'),
+        ('graduated', 'Graduated'),
+        ('withdrawn', 'Withdrawn'),
+        ('transferred', 'Transferred'),
+    ]
+    
+    ACADEMIC_STATUS_CHOICES = [
+        ('passing', 'Passing'),
+        ('failing', 'Failing'),
+        ('at_risk', 'At Risk'),
+        ('probation', 'Probation'),
+        ('honors', 'Honors'),
+    ]
+
+
+
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={'role': 'student'},
+        related_name='enrollments',
+        verbose_name=_("Student")
     )
     class_assigned = models.ForeignKey(
-        Class, 
-        on_delete=models.CASCADE, 
-        related_name='subject_assignments',
-        verbose_name=_("Class")
+        Class,
+        on_delete=models.CASCADE,
+        related_name='enrollments',
+        verbose_name=_("Assigned Class")
     )
-    academic_year = models.ForeignKey(
-        AcademicYear, 
-        on_delete=models.CASCADE, 
-        related_name='subject_assignments',
-        verbose_name=_("Academic Year")
+    enrollment_date = models.DateField(
+        default=date.today,
+        verbose_name=_("Enrollment Date")
     )
-    
-    # Teaching Configuration
-    periods_per_week = models.IntegerField(
-        default=5,
-        validators=[MinValueValidator(1), MaxValueValidator(20)],
-        verbose_name=_("Periods per Week")
-    )
-    
-    # Role and Responsibilities
-    is_class_teacher = models.BooleanField(
-        default=False, 
-        verbose_name=_("Is Class Teacher")
-    )
-    
-    role_type = models.CharField(
+    enrollment_type = models.CharField(
         max_length=20,
         choices=[
-            ('main_teacher', 'Main Teacher'),
-            ('assistant', 'Assistant Teacher'),
-            ('co_teacher', 'Co-Teacher'),
-            ('substitute', 'Substitute Teacher'),
-            ('specialist', 'Subject Specialist'),
+            ('new', _('New Student')),
+            ('transfer', _('Transfer Student')),
+            ('repeat', _('Repeating Student')),
+            ('promoted', _('Promoted Student')),
         ],
-        default='main_teacher',
-        verbose_name=_("Role Type")
+        default='new',
+        verbose_name=_("Enrollment Type")
     )
-    
-    # CBC-Specific Teaching Requirements
-    cbc_competency_focus = models.JSONField(
-        default=list,
+    enrollment_number = models.CharField(
+        max_length=50,
+        unique=True,
         blank=True,
-        help_text=_("Specific CBC competencies this teacher focuses on"),
-        verbose_name=_("CBC Competency Focus")
-    )
-    
-    project_supervision_required = models.BooleanField(
-        default=False,
-        verbose_name=_("Project Supervision Required")
-    )
-    
-    portfolio_assessment_duty = models.BooleanField(
-        default=False,
-        verbose_name=_("Portfolio Assessment Duty")
-    )
-    
-    # Schedule Information
-    teaching_schedule = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Specific teaching schedule for this assignment"),
-        verbose_name=_("Teaching Schedule")
-    )
-    
-    # Assessment Responsibilities
-    assessment_responsibilities = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Specific assessment responsibilities"),
-        verbose_name=_("Assessment Responsibilities")
-    )
-    
-    # Additional Information
-    additional_responsibilities = models.TextField(
-        blank=True, 
-        null=True, 
-        verbose_name=_("Additional Responsibilities")
-    )
-    
-    responsibility_allowance = models.DecimalField(
-        max_digits=8,
-        decimal_places=2,
-        default=0.00,
-        help_text=_("Additional allowance for responsibilities"),
-        verbose_name=_("Responsibility Allowance")
-    )
-    
-    # Status and Dates
-    assigned_date = models.DateField(
-        auto_now_add=True, 
-        verbose_name=_("Assigned Date")
-    )
-    effective_from = models.DateField(
-        default=timezone.now,
-        verbose_name=_("Effective From")
-    )
-    effective_until = models.DateField(
-        null=True, 
-        blank=True, 
-        verbose_name=_("Effective Until")
-    )
-    
-    # Performance Tracking
-    performance_rating = models.DecimalField(
-        max_digits=3,
-        decimal_places=1,
         null=True,
-        blank=True,
-        validators=[MinValueValidator(1), MaxValueValidator(5)],
-        verbose_name=_("Performance Rating")
+        verbose_name=_("Enrollment Number")
     )
-    
-    last_performance_review = models.DateField(
-        null=True,
-        blank=True,
-        verbose_name=_("Last Performance Review")
-    )
-    
-    # Status
-    assignment_status = models.CharField(
+    status = models.CharField(
         max_length=20,
         choices=[
-            ('active', 'Active'),
-            ('temporary', 'Temporary'),
-            ('substitute', 'Substitute'),
-            ('completed', 'Completed'),
-            ('terminated', 'Terminated'),
+            ('active', _('Active')),
+            ('inactive', _('Inactive')),
+            ('suspended', _('Suspended')),
+            ('graduated', _('Graduated')),
+            ('withdrawn', _('Withdrawn')),
+            ('transferred', _('Transferred')),
         ],
         default='active',
-        verbose_name=_("Assignment Status")
+        verbose_name=_("Enrollment Status")
+    )
+    academic_status = models.CharField(
+        max_length=20,
+        choices=AcademicStatus.choices,
+        default=AcademicStatus.ACTIVE,
+        verbose_name=_("Academic Status")
+    )
+    remarks = models.TextField(
+        blank=True,
+        verbose_name=_("Remarks")
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_enrollments',
+        verbose_name=_("Created By")
     )
     
-    # Metadata
-    notes = models.TextField(blank=True, null=True, verbose_name=_("Notes"))
-
     class Meta:
-        verbose_name = _("Subject Assignment")
-        verbose_name_plural = _("Subject Assignments")
-        unique_together = ['subject', 'teacher', 'class_assigned', 'academic_year']
-        ordering = ['class_assigned', 'subject']
+        verbose_name = _("Enrollment")
+        verbose_name_plural = _("Enrollments")
+        unique_together = ['student', 'academic_year', 'term']
+        ordering = ['-enrollment_date']
         indexes = [
-            models.Index(fields=['teacher', 'is_active']),
-            models.Index(fields=['class_assigned', 'subject']),
-            models.Index(fields=['is_class_teacher']),
-            models.Index(fields=['academic_year']),
-            models.Index(fields=['assignment_status']),
-            models.Index(fields=['role_type']),
-            models.Index(fields=['effective_from', 'effective_until']),
+            models.Index(fields=['student', 'academic_year', 'term']),
+            models.Index(fields=['enrollment_number']),
+            models.Index(fields=['status']),
+            models.Index(fields=['academic_status']),
         ]
-
+    
     def __str__(self):
-        return f"{self.teacher.full_name} - {self.subject.name} - {self.class_assigned.display_name}"
-
+        return f"{self.student.get_full_name()} - {self.class_assigned}"
+    
     def save(self, *args, **kwargs):
-        """Custom save with validation and auto-configuration."""
-        # Auto-set some CBC fields based on class
-        if self.class_assigned.is_cbc_class and not self.cbc_competency_focus:
-            if self.subject.cbc_competency_area:
-                self.cbc_competency_focus = [self.subject.cbc_competency_area]
+        """Generate enrollment number and update student's current class"""
+        if not self.enrollment_number:
+            self.enrollment_number = self.generate_enrollment_number()
         
-        # Set project supervision if class requires it
-        if self.class_assigned.project_work_required:
-            self.project_supervision_required = True
-        
-        # Set portfolio assessment if class requires it
-        if self.class_assigned.portfolio_required:
-            self.portfolio_assessment_duty = True
-        
-        self.clean()
+        is_new = self._state.adding
         super().save(*args, **kwargs)
-
-    def clean(self):
-        """Validate assignment data."""
-        errors = {}
         
-        # Check if teacher is not overloaded
-        current_assignments = SubjectAssignment.objects.filter(
-            teacher=self.teacher,
+        if is_new or self.status == 'active':
+            # Update student's current class in User model
+            self.student.current_class = self.class_assigned.name
+            self.student.grade_level = self.class_assigned.grade_level.name
+            self.student.academic_year = self.academic_year
+            self.student.save()
+            
+            # Update class student count
+            self.class_assigned.save()
+    
+    def generate_enrollment_number(self):
+        """Generate unique enrollment number"""
+        year = date.today().year
+        prefix = f"ENR-{year}-"
+        
+        last_enrollment = Enrollment.objects.filter(
+            enrollment_number__startswith=prefix
+        ).order_by('-enrollment_number').first()
+        
+        if last_enrollment and last_enrollment.enrollment_number:
+            try:
+                last_number = int(last_enrollment.enrollment_number.split('-')[-1])
+                new_number = last_number + 1
+            except (ValueError, IndexError):
+                new_number = 1
+        else:
+            new_number = 1
+        
+        return f"{prefix}{new_number:05d}"
+    
+    def get_academic_performance(self):
+        """Get academic performance for this enrollment"""
+        from .models import Grade
+        grades = Grade.objects.filter(
+            enrollment=self,
             academic_year=self.academic_year,
-            is_active=True,
-            assignment_status='active'
-        ).exclude(pk=self.pk)
+            term=self.term
+        )
         
-        total_periods = sum(assign.periods_per_week for assign in current_assignments) + self.periods_per_week
-        
-        # Maximum periods per week based on teacher's contract
-        max_periods = 40  # Default maximum
-        if self.teacher.employment_type == 'full_time':
-            max_periods = 40
-        elif self.teacher.employment_type == 'part_time':
-            max_periods = 20
-        
-        if total_periods > max_periods:
-            errors['periods_per_week'] = _(
-                f"Teacher would be overloaded. Maximum {max_periods} periods allowed. "
-                f"Currently assigned {total_periods - self.periods_per_week} periods."
-            )
-        
-        # Check for date validity
-        if self.effective_until and self.effective_from > self.effective_until:
-            errors['effective_until'] = _("Effective until date must be after effective from date")
-        
-        # Check for schedule conflicts
-        if self._has_schedule_conflict():
-            errors['teaching_schedule'] = _("Teaching schedule conflicts with existing assignments")
-        
-        if errors:
-            raise ValidationError(errors)
-
-    def _has_schedule_conflict(self):
-        """Check if there are schedule conflicts with other assignments."""
-        if not self.teaching_schedule:
-            return False
-        
-        # Get all other active assignments for this teacher
-        other_assignments = SubjectAssignment.objects.filter(
-            teacher=self.teacher,
-            academic_year=self.academic_year,
-            is_active=True,
-            assignment_status='active'
-        ).exclude(pk=self.pk)
-        
-        for assignment in other_assignments:
-            if assignment.teaching_schedule:
-                # Simple conflict detection (can be enhanced)
-                for slot in self.teaching_schedule:
-                    if slot in assignment.teaching_schedule:
-                        return True
-        
-        return False
-
-    # ============ PROPERTIES ============
-
-    @property
-    def teaching_load_hours(self):
-        """Calculate weekly teaching load in hours."""
-        return round(self.periods_per_week * 45 / 60, 1)  # Assuming 45-minute periods
-
-    @property
-    def is_current(self):
-        """Check if this assignment is currently effective."""
-        today = timezone.now().date()
-        
-        if today < self.effective_from:
-            return False
-        
-        if self.effective_until:
-            return today <= self.effective_until
-        
-        return True
-
-    @property
-    def assignment_duration_days(self):
-        """Calculate assignment duration in days."""
-        if not self.effective_from:
-            return 0
-        
-        end_date = self.effective_until or timezone.now().date()
-        return max(0, (end_date - self.effective_from).days)
-
-    @property
-    def is_cbc_assignment(self):
-        """Check if this is a CBC assignment."""
-        return self.class_assigned.is_cbc_class
-
-    @property
-    def competency_info(self):
-        """Get competency information for CBC assignments."""
-        if not self.is_cbc_assignment:
-            return None
+        performance = grades.aggregate(
+            average_score=Avg('score'),
+            total_subjects=Count('subject', distinct=True),
+            passed_subjects=Count('subject', distinct=True, filter=Q(score__gte=self.class_assigned.grade_level.passing_score) if hasattr(self.class_assigned.grade_level, 'passing_score') else Q(score__gte=40)),
+            highest_score=Max('score'),
+            lowest_score=Min('score')
+        )
         
         return {
-            'competency_focus': self.cbc_competency_focus,
-            'subject_competency': self.subject.cbc_competency_area,
-            'requires_project_supervision': self.project_supervision_required,
-            'requires_portfolio_assessment': self.portfolio_assessment_duty,
+            'average_score': performance['average_score'] or 0,
+            'total_subjects': performance['total_subjects'] or 0,
+            'passed_subjects': performance['passed_subjects'] or 0,
+            'highest_score': performance['highest_score'] or 0,
+            'lowest_score': performance['lowest_score'] or 0,
+            'pass_percentage': (performance['passed_subjects'] / performance['total_subjects'] * 100) if performance['total_subjects'] > 0 else 0,
         }
-
-    @property
-    def workload_score(self):
-        """Calculate workload score."""
-        base_score = self.periods_per_week / 40 * 100  # Base on periods
+    
+    def get_attendance_summary(self):
+        """Get attendance summary for this enrollment"""
+        from .models import Attendance
+        attendance = Attendance.objects.filter(
+            enrollment=self,
+            academic_year=self.academic_year,
+            term=self.term
+        )
         
-        # Adjust for additional responsibilities
-        if self.is_class_teacher:
-            base_score += 10
+        summary = attendance.aggregate(
+            total_days=Count('id'),
+            present_days=Count('id', filter=Q(status=AttendanceStatus.PRESENT)),
+            absent_days=Count('id', filter=Q(status=AttendanceStatus.ABSENT)),
+            late_days=Count('id', filter=Q(status=AttendanceStatus.LATE)),
+            excused_days=Count('id', filter=Q(status=AttendanceStatus.EXCUSED))
+        )
         
-        if self.additional_responsibilities:
-            base_score += 5
-        
-        if self.project_supervision_required:
-            base_score += 15
-        
-        if self.portfolio_assessment_duty:
-            base_score += 10
-        
-        return min(100, base_score)
-
-    # ============ METHODS ============
-
-    def get_assignment_summary(self):
-        """Get comprehensive assignment summary."""
-        summary = {
-            'teacher': self.teacher.full_name,
-            'subject': self.subject.name,
-            'class': self.class_assigned.display_name,
-            'periods_per_week': self.periods_per_week,
-            'teaching_hours': self.teaching_load_hours,
-            'is_class_teacher': self.is_class_teacher,
-            'role_type': self.get_role_type_display(),
-            'assignment_status': self.get_assignment_status_display(),
-            'is_current': self.is_current,
-            'duration_days': self.assignment_duration_days,
-        }
-        
-        if self.is_cbc_assignment:
-            summary['cbc_info'] = self.competency_info
-        
-        return summary
-
-    def calculate_workload_distribution(self):
-        """Calculate workload distribution across different responsibilities."""
-        workload = {
-            'teaching': self.periods_per_week * 45,  # minutes
-            'preparation': self.periods_per_week * 30,  # 30 min prep per period
-            'assessment': self.periods_per_week * 15,  # 15 min assessment per period
-            'additional': 0,
-        }
-        
-        # Add additional workload based on responsibilities
-        if self.is_class_teacher:
-            workload['additional'] += 300  # 5 hours for class teacher duties
-        
-        if self.project_supervision_required:
-            workload['additional'] += 120  # 2 hours for project supervision
-        
-        if self.portfolio_assessment_duty:
-            workload['additional'] += 180  # 3 hours for portfolio assessment
-        
-        # Convert to hours
-        for key in workload:
-            workload[key] = round(workload[key] / 60, 1)
-        
-        return workload
-
-    def update_performance_rating(self, rating, review_date=None):
-        """Update performance rating."""
-        if 1 <= rating <= 5:
-            self.performance_rating = rating
-            self.last_performance_review = review_date or timezone.now().date()
-            self.save()
-            return True
-        return False
-
-    def get_student_count(self):
-        """Get number of students in the assigned class."""
-        return self.class_assigned.current_strength
-
-    def get_assessment_responsibilities_summary(self):
-        """Get summary of assessment responsibilities."""
-        if not self.assessment_responsibilities:
+        total = summary['total_days'] or 0
+        if total > 0:
             return {
-                'total_assessments': 0,
-                'types': [],
-                'estimated_time': 0,
+                'total_days': total,
+                'present_days': summary['present_days'] or 0,
+                'absent_days': summary['absent_days'] or 0,
+                'late_days': summary['late_days'] or 0,
+                'excused_days': summary['excused_days'] or 0,
+                'attendance_percentage': (summary['present_days'] / total) * 100,
             }
         
-        types = set()
-        total_time = 0
-        
-        for responsibility in self.assessment_responsibilities:
-            if 'type' in responsibility:
-                types.add(responsibility['type'])
-            if 'estimated_time' in responsibility:
-                total_time += responsibility['estimated_time']
-        
         return {
-            'total_assessments': len(self.assessment_responsibilities),
-            'types': list(types),
-            'estimated_time': total_time,
+            'total_days': 0,
+            'present_days': 0,
+            'absent_days': 0,
+            'late_days': 0,
+            'excused_days': 0,
+            'attendance_percentage': 0,
         }
-
-    def extend_assignment(self, new_effective_until):
-        """Extend assignment end date."""
-        if new_effective_until > self.effective_from:
-            self.effective_until = new_effective_until
-            self.save()
-            return True
-        return False
-
-    def terminate_assignment(self, termination_date=None, reason=None):
-        """Terminate assignment."""
-        self.assignment_status = 'terminated'
-        self.effective_until = termination_date or timezone.now().date()
-        if reason:
-            self.notes = f"{self.notes or ''}\nTermination: {reason}"
-        self.save()
-        return True
-
-    def clone_for_next_year(self, next_academic_year):
-        """Clone assignment for next academic year."""
-        try:
-            new_assignment = SubjectAssignment.objects.create(
-                subject=self.subject,
-                teacher=self.teacher,
-                class_assigned=self.class_assigned.clone_for_next_year(next_academic_year),
-                academic_year=next_academic_year,
-                periods_per_week=self.periods_per_week,
-                is_class_teacher=self.is_class_teacher,
-                role_type=self.role_type,
-                cbc_competency_focus=self.cbc_competency_focus,
-                project_supervision_required=self.project_supervision_required,
-                portfolio_assessment_duty=self.portfolio_assessment_duty,
-                teaching_schedule=self.teaching_schedule,
-                assessment_responsibilities=self.assessment_responsibilities,
-                additional_responsibilities=self.additional_responsibilities,
-                responsibility_allowance=self.responsibility_allowance,
-                effective_from=next_academic_year.start_date,
-                created_by=self.created_by,
-            )
-            return new_assignment
-        except Exception as e:
-            logger.error(f"Error cloning subject assignment: {e}")
-            return None
-
-
-class LessonPlan(BaseAcademicModel):
-    """Model for teacher lesson plans."""
     
-    # Basic Information
-    title = models.CharField(max_length=200, verbose_name=_("Lesson Title"))
-    subject = models.ForeignKey(Subject, on_delete=models.CASCADE, verbose_name=_("Subject"))
-    sub_topic = models.ForeignKey(SubTopic, on_delete=models.CASCADE, verbose_name=_("Sub Topic"))
-    class_assigned = models.ForeignKey(Class, on_delete=models.CASCADE, verbose_name=_("Class"))
-    
-    # Teacher Information
-    teacher = models.ForeignKey(
-        'teachers.TeacherProfile',
+    def get_subject_enrollments(self):
+        """Get subject enrollments for this student"""
+        from .models import SubjectEnrollment
+        return SubjectEnrollment.objects.filter(
+            enrollment=self,
+            academic_year=self.academic_year,
+            term=self.term
+        ).select_related('subject')
+
+
+class SubjectEnrollment(BaseModel, AcademicMixin):
+    """Student enrollment in specific subjects"""
+    STATUS_CHOICES = [
+        ('enrolled', 'Enrolled'),
+        ('completed', 'Completed'),
+        ('withdrawn', 'Withdrawn'),
+        ('failed', 'Failed'),
+    ]
+    enrollment = models.ForeignKey(
+        Enrollment,
         on_delete=models.CASCADE,
-        verbose_name=_("Teacher")
+        related_name='subject_enrollments',
+        verbose_name=_("Enrollment")
     )
-    
-    # Lesson Details
-    date = models.DateField(verbose_name=_("Lesson Date"))
-    duration_minutes = models.IntegerField(
-        default=40,
-        validators=[MinValueValidator(5), MaxValueValidator(120)],
-        verbose_name=_("Duration (minutes)")
-    )
-    
-    # Lesson Components
-    learning_objectives = models.JSONField(
-        default=list,
-        verbose_name=_("Learning Objectives")
-    )
-    
-    materials_needed = models.JSONField(
-        default=list,
-        blank=True,
-        verbose_name=_("Materials Needed")
-    )
-    
-    introduction = models.TextField(verbose_name=_("Introduction"))
-    development = models.TextField(verbose_name=_("Development Activities"))
-    conclusion = models.TextField(verbose_name=_("Conclusion/Summary"))
-    
-    # Assessment
-    assessment_methods = models.JSONField(
-        default=list,
-        blank=True,
-        verbose_name=_("Assessment Methods")
-    )
-    
-    differentiation_strategies = models.JSONField(
-        default=list,
-        blank=True,
-        verbose_name=_("Differentiation Strategies")
-    )
-    
-    # Homework/Follow-up
-    homework_assignment = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Homework Assignment")
-    )
-    
-    next_lesson_preview = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Next Lesson Preview")
-    )
-    
-    # Status
-    is_completed = models.BooleanField(default=False, verbose_name=_("Is Completed"))
-    actual_duration_minutes = models.IntegerField(
-        null=True,
-        blank=True,
-        verbose_name=_("Actual Duration (minutes)")
-    )
-    
-    # Reflection
-    teacher_reflection = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Teacher Reflection")
-    )
-    
-    class Meta:
-        verbose_name = _("Lesson Plan")
-        verbose_name_plural = _("Lesson Plans")
-        ordering = ['-date', 'class_assigned']
-        indexes = [
-            models.Index(fields=['teacher', 'date']),
-            models.Index(fields=['subject', 'class_assigned']),
-            models.Index(fields=['is_completed']),
-        ]
-    
-    def __str__(self):
-        return f"{self.title} - {self.class_assigned.display_name} - {self.date}"
-    
-    @property
-    def lesson_duration_hours(self):
-        """Get lesson duration in hours."""
-        return round(self.duration_minutes / 60, 1)
-    
-    def mark_completed(self, actual_duration=None, reflection=None):
-        """Mark lesson plan as completed."""
-        self.is_completed = True
-        if actual_duration:
-            self.actual_duration_minutes = actual_duration
-        if reflection:
-            self.teacher_reflection = reflection
-        self.save()
-
-
-class Syllabus(BaseAcademicModel):
-    """Model for subject syllabus and curriculum standards."""
-    
-    # Basic Information
     subject = models.ForeignKey(
-        Subject, 
-        on_delete=models.CASCADE, 
-        related_name='syllabi',
+        Subject,
+        on_delete=models.CASCADE,
+        related_name='subject_enrollments',
         verbose_name=_("Subject")
     )
-    
-    academic_year = models.ForeignKey(
-        AcademicYear,
-        on_delete=models.CASCADE,
-        related_name='syllabi',
-        verbose_name=_("Academic Year")
-    )
-    
-    # Syllabus Details
-    title = models.CharField(max_length=200, verbose_name=_("Syllabus Title"))
-    version = models.CharField(max_length=20, default='1.0', verbose_name=_("Version"))
-    
-    # Curriculum Standards
-    curriculum_standards = models.JSONField(
-        default=list,
-        help_text=_("Curriculum standards and benchmarks"),
-        verbose_name=_("Curriculum Standards")
-    )
-    
-    # Content Outline
-    topics = models.JSONField(
-        default=list,
-        help_text=_("Topics and sub-topics with time allocation"),
-        verbose_name=_("Topics")
-    )
-    
-    # Learning Resources
-    recommended_books = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Recommended textbooks and references"),
-        verbose_name=_("Recommended Books")
-    )
-    
-    teaching_resources = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Teaching aids and resources"),
-        verbose_name=_("Teaching Resources")
-    )
-    
-    # Assessment Framework
-    assessment_framework = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Assessment types, weights, and schedule"),
-        verbose_name=_("Assessment Framework")
-    )
-    
-    # Competency Mapping
-    competency_mapping = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Mapping of topics to competencies"),
-        verbose_name=_("Competency Mapping")
-    )
-    
-    # CBC Specific Fields
-    cbc_competencies = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("CBC competencies addressed"),
-        verbose_name=_("CBC Competencies")
-    )
-    
-    project_requirements = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Project requirements for CBC"),
-        verbose_name=_("Project Requirements")
-    )
-    
-    # Additional Information
-    objectives = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Learning Objectives")
-    )
-    
-    methodology = models.TextField(
-        blank=True,
-        null=True,
-        help_text=_("Recommended teaching methodology"),
-        verbose_name=_("Teaching Methodology")
-    )
-    
-    # Status
-    is_approved = models.BooleanField(default=False, verbose_name=_("Is Approved"))
-    approved_by = models.ForeignKey(
+    teacher = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='approved_syllabi',
-        verbose_name=_("Approved By")
+        limit_choices_to={'role': 'teacher'},
+        related_name='teaching_subject_enrollments',
+        verbose_name=_("Assigned Teacher")
     )
-    
-    approval_date = models.DateField(
+    enrollment_date = models.DateField(
+        default=date.today,
+        verbose_name=_("Enrollment Date")
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('active', _('Active')),
+            ('completed', _('Completed')),
+            ('dropped', _('Dropped')),
+            ('failed', _('Failed')),
+        ],
+        default='active',
+        verbose_name=_("Status")
+    )
+    grade = models.CharField(
+        max_length=10,
+        blank=True,
+        verbose_name=_("Final Grade")
+    )
+    score = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
         null=True,
         blank=True,
-        verbose_name=_("Approval Date")
+        verbose_name=_("Final Score")
+    )
+    credits_earned = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0.0,
+        verbose_name=_("Credits Earned")
+    )
+    remarks = models.TextField(
+        blank=True,
+        verbose_name=_("Remarks")
     )
     
-    # Metadata
-    syllabus_file = models.FileField(
-        upload_to='syllabi/%Y/%m/',
-        null=True,
-        blank=True,
-        verbose_name=_("Syllabus File")
-    )
-    
-    notes = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Notes")
-    )
-
     class Meta:
-        verbose_name = _("Syllabus")
-        verbose_name_plural = _("Syllabi")
-        unique_together = ['subject', 'academic_year', 'version']
-        ordering = ['subject', 'academic_year', 'version']
+        verbose_name = _("Subject Enrollment")
+        verbose_name_plural = _("Subject Enrollments")
+        unique_together = ['enrollment', 'subject', 'academic_year', 'term']
+        ordering = ['subject__name']
         indexes = [
-            models.Index(fields=['subject', 'academic_year']),
-            models.Index(fields=['is_approved']),
+            models.Index(fields=['enrollment', 'subject']),
+            models.Index(fields=['status']),
+            models.Index(fields=['grade']),
         ]
-
+    
     def __str__(self):
-        return f"{self.subject.name} - {self.academic_year.name} - v{self.version}"
+        return f"{self.enrollment.student.get_full_name()} - {self.subject.name}"
+    
+    def calculate_final_grade(self):
+        """Calculate final grade based on assessments"""
+        from .models import Assessment, Grade
+        assessments = Assessment.objects.filter(
+            subject_enrollment=self,
+            academic_year=self.academic_year,
+            term=self.term
+        )
+        
+        if not assessments.exists():
+            return None
+        
+        # Calculate weighted average
+        total_weight = 0
+        weighted_score = 0
+        
+        for assessment in assessments:
+            weight = assessment.weight or 1
+            grade = Grade.objects.filter(
+                assessment=assessment,
+                student=self.enrollment.student
+            ).first()
+            
+            if grade and grade.score:
+                total_weight += weight
+                weighted_score += grade.score * weight
+        
+        if total_weight > 0:
+            final_score = weighted_score / total_weight
+            self.score = final_score
+            self.grade = self.convert_to_grade(final_score)
+            self.save()
+            
+            return final_score
+        
+        return None
+    
+    def convert_to_grade(self, score):
+        """Convert numerical score to letter grade"""
+        if score >= 90:
+            return 'A+'
+        elif score >= 80:
+            return 'A'
+        elif score >= 70:
+            return 'B+'
+        elif score >= 60:
+            return 'B'
+        elif score >= 50:
+            return 'C+'
+        elif score >= 40:
+            return 'C'
+        elif score >= 30:
+            return 'D'
+        else:
+            return 'F'
+    
+    def get_assessment_grades(self):
+        """Get all assessment grades for this subject enrollment"""
+        from .models import Assessment, Grade
+        assessments = Assessment.objects.filter(
+            subject_enrollment=self,
+            academic_year=self.academic_year,
+            term=self.term
+        )
+        
+        grades_data = []
+        for assessment in assessments:
+            grade = Grade.objects.filter(
+                assessment=assessment,
+                student=self.enrollment.student
+            ).first()
+            
+            if grade:
+                grades_data.append({
+                    'assessment': assessment.name,
+                    'type': assessment.get_assessment_type_display(),
+                    'score': grade.score,
+                    'grade': grade.grade,
+                    'weight': assessment.weight,
+                    'date': assessment.date,
+                })
+        
+        return grades_data
+
+
+# ============================================================================
+# ASSESSMENT AND GRADING MODELS
+# ============================================================================
+
+class Assessment(BaseModel, AcademicMixin):
+    """Assessment/exam model"""
+    ASSESSMENT_TYPE_CHOICES = [
+        ('formative', 'Formative'),
+        ('summative', 'Summative'),
+        ('practical', 'Practical'),
+        ('project', 'Project'),
+        ('portfolio', 'Portfolio'),
+        ('observation', 'Observation'),
+    ]
+    name = models.CharField(
+        max_length=200,
+        verbose_name=_("Assessment Name")
+    )
+    code = models.CharField(
+        max_length=50,
+        verbose_name=_("Assessment Code")
+    )
+    subject = models.ForeignKey(
+        Subject,
+        on_delete=models.CASCADE,
+        related_name='academic_assessments',
+        verbose_name=_("Subject")
+    )
+    class_assigned = models.ForeignKey(
+        Class,
+        on_delete=models.CASCADE,
+        related_name='academic_assessments',
+        verbose_name=_("Class")
+    )
+    assessment_type = models.CharField(
+        max_length=30,
+        choices=AssessmentType.choices,
+        verbose_name=_("Assessment Type")
+    )
+    date = models.DateField(verbose_name=_("Assessment Date"))
+    start_time = models.TimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Start Time")
+    )
+    end_time = models.TimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("End Time")
+    )
+    total_marks = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=100.0,
+        verbose_name=_("Total Marks")
+    )
+    passing_marks = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=40.0,
+        verbose_name=_("Passing Marks")
+    )
+    weight = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=1.0,
+        verbose_name=_("Weight"),
+        help_text=_("Weight in final grade calculation")
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    instructions = models.TextField(
+        blank=True,
+        verbose_name=_("Instructions")
+    )
+    is_published = models.BooleanField(
+        default=False,
+        verbose_name=_("Results Published")
+    )
+    published_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Published Date")
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_assessments_new',
+        verbose_name=_("Created By")
+    )
+    
+    class Meta:
+        verbose_name = _("Assessment")
+        verbose_name_plural = _("Assessments")
+        ordering = ['-date', 'start_time']
+        indexes = [
+            models.Index(fields=['subject', 'class_assigned']),
+            models.Index(fields=['assessment_type']),
+            models.Index(fields=['date']),
+            models.Index(fields=['is_published']),
+        ]
+    
+    def __str__(self):
+        return f"{self.name} - {self.subject.name} ({self.get_assessment_type_display()})"
+    
+    def get_class_average(self):
+        """Calculate class average for this assessment"""
+        from .models import Grade
+        grades = Grade.objects.filter(assessment=self)
+        avg = grades.aggregate(Avg('score'))['score__avg']
+        return avg if avg else 0
+    
+    def get_pass_rate(self):
+        """Calculate pass rate for this assessment"""
+        from .models import Grade
+        grades = Grade.objects.filter(assessment=self)
+        total = grades.count()
+        if total == 0:
+            return 0
+        
+        passed = grades.filter(score__gte=self.passing_marks).count()
+        return (passed / total) * 100
+    
+    def get_top_performers(self, limit=5):
+        """Get top performers for this assessment"""
+        from .models import Grade
+        return Grade.objects.filter(
+            assessment=self
+        ).select_related('student').order_by('-score')[:limit]
+    
+    def publish_results(self):
+        """Publish assessment results"""
+        self.is_published = True
+        self.published_date = timezone.now()
+        self.save()
+
+
+class Grade(BaseModel):
+    """Student grade/score model"""
+    
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={'role': 'student'},
+        related_name='academic_grades',
+        verbose_name=_("Student")
+    )
+    assessment = models.ForeignKey(
+        Assessment,
+        on_delete=models.CASCADE,
+        related_name='grades_assesments_new',
+        verbose_name=_("Assessment")
+    )
+    subject = models.ForeignKey(
+        Subject,
+        on_delete=models.CASCADE,
+        related_name='subject_grades',
+        verbose_name=_("Subject")
+    )
+    class_assigned = models.ForeignKey(
+        Class,
+        on_delete=models.CASCADE,
+        related_name='class_grades_new',
+        verbose_name=_("Class")
+    )
+    enrollment = models.ForeignKey(
+        Enrollment,
+        on_delete=models.CASCADE,
+        related_name='enrolling_grades',
+        verbose_name=_("Enrollment")
+    )
+    score = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        verbose_name=_("Score")
+    )
+    grade = models.CharField(
+        max_length=10,
+        blank=True,
+        verbose_name=_("Grade")
+    )
+    grade_point = models.DecimalField(
+        max_digits=3,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name=_("Grade Point")
+    )
+    percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        verbose_name=_("Percentage"),
+        help_text=_("Score as percentage of total marks")
+    )
+    remarks = models.TextField(
+        blank=True,
+        verbose_name=_("Remarks")
+    )
+    is_absent = models.BooleanField(
+        default=False,
+        verbose_name=_("Absent")
+    )
+    is_exempted = models.BooleanField(
+        default=False,
+        verbose_name=_("Exempted")
+    )
+    graded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='graded_records_academic',
+        verbose_name=_("Graded By")
+    )
+    graded_date = models.DateTimeField(
+        default=timezone.now,
+        verbose_name=_("Graded Date")
+    )
+    
+    class Meta:
+        verbose_name = _("Grade")
+        verbose_name_plural = _("Grades")
+        unique_together = ['student', 'assessment']
+        ordering = ['-assessment__date', 'student']
+        indexes = [
+            models.Index(fields=['student', 'assessment']),
+            models.Index(fields=['subject', 'class_assigned']),
+            models.Index(fields=['score']),
+            models.Index(fields=['grade']),
+        ]
+    
+    def __str__(self):
+        return f"{self.student.get_full_name()} - {self.assessment.name}: {self.score}"
     
     def save(self, *args, **kwargs):
-        """Auto-generate version if not provided."""
-        if not self.version:
-            # Find latest version for this subject and academic year
-            latest = Syllabus.objects.filter(
-                subject=self.subject,
-                academic_year=self.academic_year
-            ).order_by('-version').first()
-            
-            if latest and latest.version:
-                try:
-                    version_num = float(latest.version)
-                    self.version = f"{version_num + 0.1:.1f}"
-                except ValueError:
-                    self.version = '1.0'
-            else:
-                self.version = '1.0'
+        """Calculate percentage, grade, and grade point"""
+        if self.score is not None and self.assessment.total_marks > 0:
+            self.percentage = (self.score / self.assessment.total_marks) * 100
+        
+        # Calculate grade and grade point
+        if self.score is not None and not self.is_absent and not self.is_exempted:
+            self.grade = self.calculate_grade(self.percentage)
+            self.grade_point = self.calculate_grade_point(self.grade)
         
         super().save(*args, **kwargs)
     
-    @property
-    def total_topics(self):
-        """Get total number of topics."""
-        return len(self.topics) if self.topics else 0
+    def calculate_grade(self, percentage):
+        """Calculate letter grade based on percentage"""
+        if percentage >= 90:
+            return 'A+'
+        elif percentage >= 80:
+            return 'A'
+        elif percentage >= 70:
+            return 'B+'
+        elif percentage >= 60:
+            return 'B'
+        elif percentage >= 50:
+            return 'C+'
+        elif percentage >= 40:
+            return 'C'
+        elif percentage >= 30:
+            return 'D'
+        else:
+            return 'F'
+    
+    def calculate_grade_point(self, grade):
+        """Calculate grade point based on letter grade"""
+        grade_points = {
+            'A+': 4.0,
+            'A': 4.0,
+            'B+': 3.5,
+            'B': 3.0,
+            'C+': 2.5,
+            'C': 2.0,
+            'D': 1.0,
+            'F': 0.0,
+        }
+        return grade_points.get(grade, 0.0)
     
     @property
-    def total_weeks(self):
-        """Calculate total weeks based on time allocation."""
-        if not self.topics:
-            return 0
-        
-        total_hours = sum(topic.get('estimated_hours', 0) for topic in self.topics)
-        return round(total_hours / self.subject.weekly_hours) if self.subject.weekly_hours > 0 else 0
+    def is_passing(self):
+        """Check if grade is passing"""
+        if self.is_absent or self.is_exempted:
+            return False
+        return self.score >= self.assessment.passing_marks
     
-    def get_competency_coverage(self):
-        """Get competency coverage analysis."""
-        if not self.competency_mapping:
-            return {}
-        
-        coverage = {}
-        for topic in self.topics:
-            if 'competencies' in topic:
-                for competency in topic['competencies']:
-                    coverage[competency] = coverage.get(competency, 0) + 1
-        
-        return coverage
+    @property
+    def grade_description(self):
+        """Get grade description"""
+        descriptions = {
+            'A+': _('Excellent'),
+            'A': _('Very Good'),
+            'B+': _('Good'),
+            'B': _('Above Average'),
+            'C+': _('Average'),
+            'C': _('Below Average'),
+            'D': _('Poor'),
+            'F': _('Fail'),
+        }
+        return descriptions.get(self.grade, _('No Grade'))
 
 
-class AcademicEvent(BaseAcademicModel):
-    """Model for academic events and calendar entries."""
+class Transcript(BaseModel):
+    """Student academic transcript"""
     
-    # Basic Information
-    title = models.CharField(max_length=200, verbose_name=_("Event Title"))
-    description = models.TextField(blank=True, null=True, verbose_name=_("Description"))
-    
-    # Event Details
-    event_type = models.CharField(
-        max_length=20,
-        choices=EVENT_TYPE_CHOICES,
-        verbose_name=_("Event Type")
-    )
-    
-    start_date = models.DateTimeField(verbose_name=_("Start Date"))
-    end_date = models.DateTimeField(verbose_name=_("End Date"))
-    
-    # Location
-    location = models.CharField(
-        max_length=200,
-        blank=True,
-        null=True,
-        verbose_name=_("Location")
-    )
-    
-    # Academic Context
-    academic_year = models.ForeignKey(
-        AcademicYear,
+    student = models.ForeignKey(
+        User,
         on_delete=models.CASCADE,
-        related_name='academic_events',
+        limit_choices_to={'role': 'student'},
+        related_name='transcripts',
+        verbose_name=_("Student")
+    )
+    academic_year = models.CharField(
+        max_length=20,
         verbose_name=_("Academic Year")
     )
+    term = models.CharField(
+        max_length=20,
+        choices=TermType.choices,
+        verbose_name=_("Term")
+    )
+    gpa = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name=_("GPA")
+    )
+    cgpa = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name=_("CGPA")
+    )
+    total_credits = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=0.0,
+        verbose_name=_("Total Credits")
+    )
+    credits_earned = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=0.0,
+        verbose_name=_("Credits Earned")
+    )
+    class_rank = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Class Rank")
+    )
+    grade_level_rank = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Grade Level Rank")
+    )
+    overall_rank = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Overall Rank")
+    )
+    remarks = models.TextField(
+        blank=True,
+        verbose_name=_("Remarks")
+    )
+    generated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='generated_transcripts',
+        verbose_name=_("Generated By")
+    )
+    generated_date = models.DateTimeField(
+        default=timezone.now,
+        verbose_name=_("Generated Date")
+    )
+    is_official = models.BooleanField(
+        default=False,
+        verbose_name=_("Official Transcript")
+    )
+    document = models.FileField(
+        upload_to='transcripts/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        verbose_name=_("Transcript Document")
+    )
     
-    term = models.ForeignKey(
-        AcademicTerm,
+    class Meta:
+        verbose_name = _("Transcript")
+        verbose_name_plural = _("Transcripts")
+        unique_together = ['student', 'academic_year', 'term']
+        ordering = ['-academic_year', '-term']
+        indexes = [
+            models.Index(fields=['student', 'academic_year', 'term']),
+            models.Index(fields=['gpa']),
+            models.Index(fields=['class_rank']),
+        ]
+    
+    def __str__(self):
+        return f"Transcript - {self.student.get_full_name()} - {self.academic_year} {self.term}"
+    
+    def calculate_gpa(self):
+        """Calculate GPA for this transcript"""
+        from .models import Grade
+        grades = Grade.objects.filter(
+            student=self.student,
+            assessment__academic_year=self.academic_year,
+            assessment__term=self.term,
+            grade_point__isnull=False
+        )
+        
+        if not grades.exists():
+            return 0.0
+        
+        total_grade_points = sum(g.grade_point * (g.assessment.weight or 1) for g in grades if g.grade_point)
+        total_weight = sum(g.assessment.weight or 1 for g in grades)
+        
+        if total_weight > 0:
+            return total_grade_points / total_weight
+        
+        return 0.0
+    
+    def calculate_cgpa(self):
+        """Calculate cumulative GPA up to this term"""
+        from .models import Transcript
+        previous_transcripts = Transcript.objects.filter(
+            student=self.student,
+            academic_year__lt=self.academic_year
+        ).order_by('academic_year', 'term')
+        
+        total_gpa = 0
+        count = 0
+        
+        for transcript in previous_transcripts:
+            if transcript.gpa:
+                total_gpa += transcript.gpa
+                count += 1
+        
+        if self.gpa:
+            total_gpa += self.gpa
+            count += 1
+        
+        if count > 0:
+            return total_gpa / count
+        
+        return 0.0
+    
+    def update_ranks(self):
+        """Update class, grade level, and overall ranks"""
+        from .models import Transcript
+        from django.db.models import Window, F
+        from django.db.models.functions import DenseRank
+        
+        # Update all transcripts for this academic year and term
+        transcripts = Transcript.objects.filter(
+            academic_year=self.academic_year,
+            term=self.term,
+            gpa__isnull=False
+        )
+        
+        # Class rank
+        class_transcripts = transcripts.filter(
+            student__current_class=self.student.current_class
+        ).order_by('-gpa')
+        
+        for rank, transcript in enumerate(class_transcripts, start=1):
+            transcript.class_rank = rank
+            transcript.save(update_fields=['class_rank'])
+        
+        # Grade level rank
+        grade_transcripts = transcripts.filter(
+            student__grade_level=self.student.grade_level
+        ).order_by('-gpa')
+        
+        for rank, transcript in enumerate(grade_transcripts, start=1):
+            transcript.grade_level_rank = rank
+            transcript.save(update_fields=['grade_level_rank'])
+        
+        # Overall rank
+        for rank, transcript in enumerate(transcripts.order_by('-gpa'), start=1):
+            transcript.overall_rank = rank
+            transcript.save(update_fields=['overall_rank'])
+    
+    def generate_document(self):
+        """Generate transcript document"""
+        # This would be implemented with a document generation library
+        # like ReportLab, WeasyPrint, or similar
+        pass
+
+
+# ============================================================================
+# ATTENDANCE MODELS
+# ============================================================================
+
+class Attendance(BaseModel, AcademicMixin):
+    """Student attendance record"""
+    STATUS_CHOICES = [
+
+        ('present', 'Present'),
+        ('absent', 'Absent'),
+        ('late', 'Late'),
+        ('excused', 'Excused'),
+    ]
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={'role': 'student'},
+        related_name='attendances',
+        verbose_name=_("Student")
+    )
+    enrollment = models.ForeignKey(
+        Enrollment,
+        on_delete=models.CASCADE,
+        related_name='attendances',
+        verbose_name=_("Enrollment")
+    )
+    class_assigned = models.ForeignKey(
+        Class,
+        on_delete=models.CASCADE,
+        related_name='attendances',
+        verbose_name=_("Class")
+    )
+    date = models.DateField(verbose_name=_("Date"))
+    status = models.CharField(
+        max_length=20,
+        choices=AttendanceStatus.choices,
+        verbose_name=_("Status")
+    )
+    check_in_time = models.TimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Check-in Time")
+    )
+    check_out_time = models.TimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Check-out Time")
+    )
+    reason = models.TextField(
+        blank=True,
+        verbose_name=_("Reason for Absence/Late")
+    )
+    medical_certificate = models.FileField(
+        upload_to='medical_certificates/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        verbose_name=_("Medical Certificate")
+    )
+    parent_note = models.FileField(
+        upload_to='parent_notes/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        verbose_name=_("Parent Note")
+    )
+    verified_by = models.ForeignKey(
+        User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='events',
+        limit_choices_to={'role__in': ['teacher', 'admin', 'head_teacher']},
+        related_name='verified_attendances',
+        verbose_name=_("Verified By")
+    )
+    verified_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Verified Date")
+    )
+    remarks = models.TextField(
+        blank=True,
+        verbose_name=_("Remarks")
+    )
+    
+    class Meta:
+        verbose_name = _("Attendance")
+        verbose_name_plural = _("Attendance Records")
+        unique_together = ['student', 'date']
+        ordering = ['-date', 'student']
+        indexes = [
+            models.Index(fields=['student', 'date']),
+            models.Index(fields=['class_assigned', 'date']),
+            models.Index(fields=['status']),
+            models.Index(fields=['date']),
+        ]
+    
+    def __str__(self):
+        return f"{self.student.get_full_name()} - {self.date} ({self.get_status_display()})"
+    
+    @property
+    def duration(self):
+        """Calculate duration if both check-in and check-out times exist"""
+        if self.check_in_time and self.check_out_time:
+            check_in_dt = datetime.combine(self.date, self.check_in_time)
+            check_out_dt = datetime.combine(self.date, self.check_out_time)
+            if check_out_dt < check_in_dt:
+                check_out_dt += timedelta(days=1)
+            return check_out_dt - check_in_dt
+        return None
+    
+    @property
+    def is_late(self):
+        """Check if student was late (after 8:30 AM)"""
+        if self.check_in_time:
+            late_time = datetime.strptime('08:30', '%H:%M').time()
+            return self.check_in_time > late_time
+        return False
+    
+    @classmethod
+    def mark_daily_attendance(cls, class_obj, date, attendance_data):
+        """Mark attendance for entire class on a specific date"""
+        from django.db import transaction
+        
+        with transaction.atomic():
+            created_count = 0
+            updated_count = 0
+            
+            for student_data in attendance_data:
+                student_id = student_data['student_id']
+                status = student_data['status']
+                reason = student_data.get('reason', '')
+                check_in = student_data.get('check_in_time')
+                check_out = student_data.get('check_out_time')
+                
+                # Get student
+                from accounts.models import User
+                try:
+                    student = User.objects.get(id=student_id, role='student')
+                except User.DoesNotExist:
+                    continue
+                
+                # Get enrollment
+                enrollment = Enrollment.objects.filter(
+                    student=student,
+                    class_assigned=class_obj,
+                    academic_year=class_obj.academic_year,
+                    term=class_obj.term,
+                    status='active'
+                ).first()
+                
+                if not enrollment:
+                    continue
+                
+                # Create or update attendance
+                attendance, created = cls.objects.update_or_create(
+                    student=student,
+                    date=date,
+                    defaults={
+                        'enrollment': enrollment,
+                        'class_assigned': class_obj,
+                        'academic_year': class_obj.academic_year,
+                        'term': class_obj.term,
+                        'status': status,
+                        'reason': reason,
+                        'check_in_time': check_in,
+                        'check_out_time': check_out,
+                    }
+                )
+                
+                if created:
+                    created_count += 1
+                else:
+                    updated_count += 1
+            
+            return {
+                'created': created_count,
+                'updated': updated_count,
+                'total': created_count + updated_count
+            }
+    
+    @classmethod
+    def get_class_attendance_summary(cls, class_obj, start_date, end_date):
+        """Get attendance summary for a class over date range"""
+        attendance = cls.objects.filter(
+            class_assigned=class_obj,
+            date__range=[start_date, end_date]
+        )
+        
+        summary = attendance.aggregate(
+            total_records=Count('id'),
+            present=Count('id', filter=Q(status=AttendanceStatus.PRESENT)),
+            absent=Count('id', filter=Q(status=AttendanceStatus.ABSENT)),
+            late=Count('id', filter=Q(status=AttendanceStatus.LATE)),
+            excused=Count('id', filter=Q(status=AttendanceStatus.EXCUSED)),
+            half_day=Count('id', filter=Q(status=AttendanceStatus.HALF_DAY))
+        )
+        
+        total = summary['total_records'] or 0
+        if total > 0:
+            return {
+                'total_days': (end_date - start_date).days + 1,
+                'total_records': total,
+                'present': summary['present'] or 0,
+                'absent': summary['absent'] or 0,
+                'late': summary['late'] or 0,
+                'excused': summary['excused'] or 0,
+                'half_day': summary['half_day'] or 0,
+                'attendance_rate': (summary['present'] / total) * 100 if total > 0 else 0,
+            }
+        
+        return {
+            'total_days': (end_date - start_date).days + 1,
+            'total_records': 0,
+            'present': 0,
+            'absent': 0,
+            'late': 0,
+            'excused': 0,
+            'half_day': 0,
+            'attendance_rate': 0,
+        }
+class Stream(BaseModel):
+    """Stream/Division model for class groupings"""
+    
+    name = models.CharField(
+        max_length=100,
+        verbose_name=_("Stream Name"),
+        help_text=_("e.g., East, West, Science, Arts")
+    )
+    code = models.CharField(
+        max_length=20,
+        unique=True,
+        verbose_name=_("Stream Code")
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    color_code = models.CharField(
+        max_length=7,
+        default='#007bff',
+        verbose_name=_("Color Code")
+    )
+    capacity = models.IntegerField(
+        default=30,
+        verbose_name=_("Capacity")
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name=_("Active")
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = _("Stream")
+        verbose_name_plural = _("Streams")
+        ordering = ['name']
+    
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+    
+    @property
+    def current_student_count(self):
+        """Get number of students currently in this stream"""
+        return self.classes.filter(
+            academic_year__is_current=True,
+            term__is_current=True
+        ).count()
+    
+    @property
+    def available_slots(self):
+        """Get available slots in this stream"""
+        return max(0, self.capacity - self.current_student_count)
+
+
+
+class AttendanceReport(BaseModel):
+    """Attendance report and analytics"""
+    
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={'role': 'student'},
+        related_name='attendance_reports_new',
+        verbose_name=_("Student")
+    )
+    enrollment = models.ForeignKey(
+        Enrollment,
+        on_delete=models.CASCADE,
+        related_name='attendance_reports',
+        verbose_name=_("Enrollment")
+    )
+    academic_year = models.CharField(
+        max_length=20,
+        verbose_name=_("Academic Year")
+    )
+    term = models.CharField(
+        max_length=20,
+        choices=TermType.choices,
+        verbose_name=_("Term")
+    )
+    period_start = models.DateField(verbose_name=_("Period Start"))
+    period_end = models.DateField(verbose_name=_("Period End"))
+    
+    # Statistics
+    total_school_days = models.PositiveIntegerField(verbose_name=_("Total School Days"))
+    days_present = models.PositiveIntegerField(verbose_name=_("Days Present"))
+    days_absent = models.PositiveIntegerField(verbose_name=_("Days Absent"))
+    days_late = models.PositiveIntegerField(verbose_name=_("Days Late"))
+    days_excused = models.PositiveIntegerField(verbose_name=_("Days Excused"))
+    attendance_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        verbose_name=_("Attendance Percentage")
+    )
+    
+    # Patterns
+    consecutive_absences = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Maximum Consecutive Absences")
+    )
+    frequent_absence_pattern = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_("Frequent Absence Pattern")
+    )
+    
+    # Warnings
+    is_at_risk = models.BooleanField(
+        default=False,
+        verbose_name=_("At Risk of Failing Attendance")
+    )
+    warning_level = models.CharField(
+        max_length=20,
+        choices=[
+            ('none', _('None')),
+            ('warning', _('Warning')),
+            ('severe', _('Severe')),
+            ('critical', _('Critical')),
+        ],
+        default='none',
+        verbose_name=_("Warning Level")
+    )
+    
+    # Parent notifications
+    parent_notified = models.BooleanField(
+        default=False,
+        verbose_name=_("Parent Notified")
+    )
+    last_notification_date = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Last Notification Date")
+    )
+    
+    remarks = models.TextField(
+        blank=True,
+        verbose_name=_("Remarks")
+    )
+    generated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='generated_academic_reports',
+        verbose_name=_("Generated By")
+    )
+    generated_date = models.DateTimeField(
+        default=timezone.now,
+        verbose_name=_("Generated Date")
+    )
+    
+    class Meta:
+        verbose_name = _("Attendance Report")
+        verbose_name_plural = _("Attendance Reports")
+        ordering = ['-period_end', 'student']
+        indexes = [
+            models.Index(fields=['student', 'academic_year', 'term']),
+            models.Index(fields=['attendance_percentage']),
+            models.Index(fields=['is_at_risk']),
+        ]
+    
+    def __str__(self):
+        return f"Attendance Report - {self.student.get_full_name()} - {self.period_start} to {self.period_end}"
+    
+    def update_statistics(self):
+        """Update attendance statistics from attendance records"""
+        attendance = Attendance.objects.filter(
+            student=self.student,
+            date__range=[self.period_start, self.period_end]
+        )
+        
+        self.days_present = attendance.filter(status=AttendanceStatus.PRESENT).count()
+        self.days_absent = attendance.filter(status=AttendanceStatus.ABSENT).count()
+        self.days_late = attendance.filter(status=AttendanceStatus.LATE).count()
+        self.days_excused = attendance.filter(status=AttendanceStatus.EXCUSED).count()
+        
+        total_attendance = attendance.count()
+        if total_attendance > 0:
+            self.attendance_percentage = (self.days_present / total_attendance) * 100
+        
+        # Check if at risk
+        min_attendance = getattr(settings, 'MIN_ATTENDANCE_PERCENTAGE', 75)
+        self.is_at_risk = self.attendance_percentage < min_attendance
+        
+        # Determine warning level
+        if self.attendance_percentage < 50:
+            self.warning_level = 'critical'
+        elif self.attendance_percentage < 65:
+            self.warning_level = 'severe'
+        elif self.attendance_percentage < 75:
+            self.warning_level = 'warning'
+        else:
+            self.warning_level = 'none'
+        
+        self.save()
+    
+    def detect_patterns(self):
+        """Detect attendance patterns"""
+        attendance = Attendance.objects.filter(
+            student=self.student,
+            date__range=[self.period_start, self.period_end]
+        ).order_by('date')
+        
+        # Detect consecutive absences
+        consecutive = 0
+        max_consecutive = 0
+        for record in attendance:
+            if record.status == AttendanceStatus.ABSENT:
+                consecutive += 1
+                max_consecutive = max(max_consecutive, consecutive)
+            else:
+                consecutive = 0
+        
+        self.consecutive_absences = max_consecutive
+        
+        # Detect day-of-week patterns
+        day_patterns = {}
+        absences_by_day = attendance.filter(status=AttendanceStatus.ABSENT).values_list('date', flat=True)
+        
+        for absence_date in absences_by_day:
+            day_name = absence_date.strftime('%A')
+            day_patterns[day_name] = day_patterns.get(day_name, 0) + 1
+        
+        self.frequent_absence_pattern = day_patterns
+        self.save()
+    
+    def notify_parent(self):
+        """Notify parent about attendance issues"""
+        if self.is_at_risk and not self.parent_notified:
+            # Send notification to parent
+            parent_email = self.student.parent_email
+            if parent_email:
+                from django.core.mail import send_mail
+                from django.template.loader import render_to_string
+                from django.utils.html import strip_tags
+                
+                subject = _("Attendance Alert - {student_name}").format(
+                    student_name=self.student.get_full_name()
+                )
+                
+                html_message = render_to_string('academic/attendance_alert_email.html', {
+                    'student': self.student,
+                    'report': self,
+                    'period_start': self.period_start,
+                    'period_end': self.period_end,
+                })
+                
+                plain_message = strip_tags(html_message)
+                
+                try:
+                    send_mail(
+                        subject,
+                        plain_message,
+                        settings.DEFAULT_FROM_EMAIL,
+                        [parent_email],
+                        html_message=html_message
+                    )
+                    
+                    self.parent_notified = True
+                    self.last_notification_date = date.today()
+                    self.save()
+                    
+                    return True
+                except Exception as e:
+                    logger.error(f"Failed to send attendance alert: {e}")
+        
+        return False
+
+
+# ============================================================================
+# TIMETABLE AND SCHEDULING MODELS
+# ============================================================================
+
+class Schedule(BaseModel):
+    """Class schedule/timetable"""
+    
+    class_assigned = models.ForeignKey(
+        Class,
+        on_delete=models.CASCADE,
+        related_name='class_schedules',
+        verbose_name=_("Class")
+    )
+    subject = models.ForeignKey(
+        Subject,
+        on_delete=models.CASCADE,
+        related_name='schedules_new',
+        verbose_name=_("Subject")
+    )
+    teacher = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={'role': 'teacher'},
+        related_name='schedules',
+        verbose_name=_("Teacher")
+    )
+    classroom = models.ForeignKey(
+        Classroom,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='schedules',
+        verbose_name=_("Classroom")
+    )
+    day_of_week = models.CharField(
+        max_length=10,
+        choices=DayOfWeek.choices,
+        verbose_name=_("Day of Week")
+    )
+    start_time = models.TimeField(verbose_name=_("Start Time"))
+    end_time = models.TimeField(verbose_name=_("End Time"))
+    academic_year = models.CharField(
+        max_length=20,
+        verbose_name=_("Academic Year")
+    )
+    term = models.CharField(
+        max_length=20,
+        choices=TermType.choices,
+        verbose_name=_("Term")
+    )
+    is_recurring = models.BooleanField(
+        default=True,
+        verbose_name=_("Recurring Schedule")
+    )
+    start_date = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Schedule Start Date")
+    )
+    end_date = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("Schedule End Date")
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name=_("Active")
+    )
+    color_code = models.CharField(
+        max_length=7,
+        default='#3498db',
+        verbose_name=_("Color Code")
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    
+    class Meta:
+        verbose_name = _("Schedule")
+        verbose_name_plural = _("Schedules")
+        ordering = ['day_of_week', 'start_time']
+        indexes = [
+            models.Index(fields=['class_assigned', 'day_of_week']),
+            models.Index(fields=['teacher', 'day_of_week']),
+            models.Index(fields=['subject', 'day_of_week']),
+            models.Index(fields=['academic_year', 'term']),
+        ]
+    
+    def __str__(self):
+        return f"{self.subject.name} - {self.class_assigned.name} - {self.day_of_week} {self.start_time}-{self.end_time}"
+    
+    @property
+    def duration(self):
+        """Calculate duration in minutes"""
+        start_dt = datetime.combine(date.today(), self.start_time)
+        end_dt = datetime.combine(date.today(), self.end_time)
+        if end_dt < start_dt:
+            end_dt += timedelta(days=1)
+        return (end_dt - start_dt).seconds // 60
+    
+    @property
+    def is_current(self):
+        """Check if this schedule is currently active"""
+        now = timezone.now()
+        current_time = now.time()
+        current_day = now.strftime('%A').lower()
+        
+        if current_day != self.day_of_week:
+            return False
+        
+        return self.start_time <= current_time <= self.end_time
+    
+    def clean(self):
+        """Validate schedule timing"""
+        if self.start_time >= self.end_time:
+            raise ValidationError(_("End time must be after start time"))
+        
+        # Check for overlapping schedules
+        overlapping = Schedule.objects.filter(
+            class_assigned=self.class_assigned,
+            day_of_week=self.day_of_week,
+            academic_year=self.academic_year,
+            term=self.term,
+            is_active=True
+        ).exclude(pk=self.pk if self.pk else None)
+        
+        for schedule in overlapping:
+            if (self.start_time < schedule.end_time and 
+                self.end_time > schedule.start_time):
+                raise ValidationError(
+                    _("Schedule overlaps with existing schedule: {} - {}").format(
+                        schedule.subject.name, schedule.teacher.get_full_name()
+                    )
+                )
+        
+        # Check teacher availability
+        teacher_conflict = Schedule.objects.filter(
+            teacher=self.teacher,
+            day_of_week=self.day_of_week,
+            academic_year=self.academic_year,
+            term=self.term,
+            is_active=True
+        ).exclude(pk=self.pk if self.pk else None)
+        
+        for schedule in teacher_conflict:
+            if (self.start_time < schedule.end_time and 
+                self.end_time > schedule.start_time):
+                raise ValidationError(
+                    _("Teacher {} is already teaching {} during this time").format(
+                        self.teacher.get_full_name(), schedule.subject.name
+                    )
+                )
+        
+        # Check classroom availability
+        if self.classroom:
+            classroom_conflict = Schedule.objects.filter(
+                classroom=self.classroom,
+                day_of_week=self.day_of_week,
+                academic_year=self.academic_year,
+                term=self.term,
+                is_active=True
+            ).exclude(pk=self.pk if self.pk else None)
+            
+            for schedule in classroom_conflict:
+                if (self.start_time < schedule.end_time and 
+                    self.end_time > schedule.start_time):
+                    raise ValidationError(
+                        _("Classroom {} is already booked for {} during this time").format(
+                            self.classroom.room_number, schedule.subject.name
+                        )
+                    )
+    
+    @classmethod
+    def get_class_timetable(cls, class_obj, academic_year=None, term=None):
+        """Get complete timetable for a class"""
+        if not academic_year:
+            academic_year = class_obj.academic_year
+        if not term:
+            term = class_obj.term
+        
+        return cls.objects.filter(
+            class_assigned=class_obj,
+            academic_year=academic_year,
+            term=term,
+            is_active=True
+        ).order_by('day_of_week', 'start_time').select_related(
+            'subject', 'teacher', 'classroom'
+        )
+    
+    @classmethod
+    def get_teacher_timetable(cls, teacher, academic_year=None, term=None):
+        """Get complete timetable for a teacher"""
+        current_academic_year = AcademicYear.get_current_academic_year()
+        if not academic_year and current_academic_year:
+            academic_year = current_academic_year.academic_year
+        if not term and current_academic_year:
+            term = current_academic_year.get_current_term()
+        
+        return cls.objects.filter(
+            teacher=teacher,
+            academic_year=academic_year,
+            term=term,
+            is_active=True
+        ).order_by('day_of_week', 'start_time').select_related(
+            'subject', 'class_assigned', 'classroom'
+        )
+    
+    @classmethod
+    def generate_weekly_schedule(cls, class_obj, academic_year, term):
+        """Generate weekly schedule for a class"""
+        days = [day[0] for day in DayOfWeek.choices]
+        
+        schedule_data = {}
+        for day in days:
+            schedule_data[day] = cls.objects.filter(
+                class_assigned=class_obj,
+                day_of_week=day,
+                academic_year=academic_year,
+                term=term,
+                is_active=True
+            ).order_by('start_time').select_related(
+                'subject', 'teacher', 'classroom'
+            )
+        
+        return schedule_data
+
+
+# ============================================================================
+# TEACHER ASSIGNMENT AND MANAGEMENT
+# ============================================================================
+
+class TeacherAssignment(BaseModel, AcademicMixin):
+    """Teacher assignment to classes and subjects"""
+    
+    teacher = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={'role': 'teacher'},
+        related_name='assignments_teacher',
+        verbose_name=_("Teacher")
+    )
+    subject = models.ForeignKey(
+        Subject,
+        on_delete=models.CASCADE,
+        related_name='teacher_assignments',
+        verbose_name=_("Subject")
+    )
+    class_assigned = models.ForeignKey(
+        Class,
+        on_delete=models.CASCADE,
+        related_name='teacher_assignment_new',
+        verbose_name=_("Class")
+    )
+    is_class_teacher = models.BooleanField(
+        default=False,
+        verbose_name=_("Class Teacher")
+    )
+    assignment_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('full_time', _('Full Time')),
+            ('part_time', _('Part Time')),
+            ('substitute', _('Substitute')),
+            ('visiting', _('Visiting Faculty')),
+        ],
+        default='full_time',
+        verbose_name=_("Assignment Type")
+    )
+    hours_per_week = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0.0,
+        verbose_name=_("Hours Per Week")
+    )
+    start_date = models.DateField(
+        default=date.today,
+        verbose_name=_("Start Date")
+    )
+    end_date = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("End Date")
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name=_("Active")
+    )
+    remarks = models.TextField(
+        blank=True,
+        verbose_name=_("Remarks")
+    )
+    
+    class Meta:
+        verbose_name = _("Teacher Assignment")
+        verbose_name_plural = _("Teacher Assignments")
+        unique_together = ['teacher', 'subject', 'class_assigned', 'academic_year', 'term']
+        ordering = ['teacher', 'class_assigned', 'subject']
+        indexes = [
+            models.Index(fields=['teacher', 'subject', 'class_assigned']),
+            models.Index(fields=['is_active']),
+            models.Index(fields=['academic_year', 'term']),
+        ]
+    
+    def __str__(self):
+        return f"{self.teacher.get_full_name()} - {self.subject.name} - {self.class_assigned.name}"
+    
+    @property
+    def duration(self):
+        """Calculate assignment duration in days"""
+        if self.end_date:
+            return (self.end_date - self.start_date).days
+        return (date.today() - self.start_date).days
+    
+    def get_teaching_hours(self):
+        """Calculate total teaching hours based on schedule"""
+        from .models import Schedule
+        schedules = Schedule.objects.filter(
+            teacher=self.teacher,
+            subject=self.subject,
+            class_assigned=self.class_assigned,
+            academic_year=self.academic_year,
+            term=self.term,
+            is_active=True
+        )
+        
+        total_minutes = 0
+        for schedule in schedules:
+            total_minutes += schedule.duration
+        
+        return total_minutes / 60  # Convert to hours
+
+
+# ============================================================================
+# ACADEMIC REPORTS AND ANALYTICS
+# ============================================================================
+
+class AcademicReport(BaseModel):
+    """Comprehensive academic report for students"""
+    TERM_CHOICES = [
+        ('term1', 'Term 1'),
+        ('term2', 'Term 2'),
+        ('term3', 'Term 3'),
+        ('annual', 'Annual'),
+    ]
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={'role': 'student'},
+        related_name='academic_reports_new',
+        verbose_name=_("Student")
+    )
+    enrollment = models.ForeignKey(
+        Enrollment,
+        on_delete=models.CASCADE,
+        related_name='academic_reports',
+        verbose_name=_("Enrollment")
+    )
+    academic_year = models.CharField(
+        max_length=20,
+        verbose_name=_("Academic Year")
+    )
+    term = models.CharField(
+        max_length=20,
+        choices=TermType.choices,
         verbose_name=_("Term")
     )
     
-    # Participants
-    target_audience = models.JSONField(
+    # Performance metrics
+    overall_score = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name=_("Overall Score")
+    )
+    overall_grade = models.CharField(
+        max_length=10,
+        blank=True,
+        verbose_name=_("Overall Grade")
+    )
+    gpa = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name=_("GPA")
+    )
+    class_rank = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Class Rank")
+    )
+    grade_level_rank = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Grade Level Rank")
+    )
+    attendance_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0.0,
+        verbose_name=_("Attendance Percentage")
+    )
+    
+    # Subject performance
+    subject_performance = models.JSONField(
         default=list,
         blank=True,
-        help_text=_("Target audience (students, teachers, parents, etc.)"),
-        verbose_name=_("Target Audience")
+        verbose_name=_("Subject Performance")
+    )
+    
+    # Strengths and weaknesses
+    strengths = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_("Strengths")
+    )
+    weaknesses = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_("Areas for Improvement")
+    )
+    
+    # Teacher comments
+    form_teacher_comment = models.TextField(
+        blank=True,
+        verbose_name=_("Form Teacher's Comment")
+    )
+    head_teacher_comment = models.TextField(
+        blank=True,
+        verbose_name=_("Head Teacher's Comment")
+    )
+    
+    # Recommendations
+    recommendations = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_("Recommendations")
     )
     
     # Status
-    is_published = models.BooleanField(default=False, verbose_name=_("Is Published"))
-    is_cancelled = models.BooleanField(default=False, verbose_name=_("Is Cancelled"))
-    
-    # Priority
-    priority = models.CharField(
+    promotion_status = models.CharField(
         max_length=20,
-        choices=PRIORITY_CHOICES,
-        default='medium',
-        verbose_name=_("Priority")
+        choices=[
+            ('promoted', _('Promoted')),
+            ('retained', _('Retained')),
+            ('conditional', _('Conditional Promotion')),
+            ('pending', _('Pending Review')),
+        ],
+        default='pending',
+        verbose_name=_("Promotion Status")
     )
     
-    # Organizer
-    organizer = models.ForeignKey(
+    # Report generation
+    generated_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
+        related_name='generated_reports',
+        verbose_name=_("Generated By")
+    )
+    generated_date = models.DateTimeField(
+        default=timezone.now,
+        verbose_name=_("Generated Date")
+    )
+    is_published = models.BooleanField(
+        default=False,
+        verbose_name=_("Published")
+    )
+    published_date = models.DateTimeField(
+        null=True,
         blank=True,
-        related_name='organized_events',
+        verbose_name=_("Published Date")
+    )
+    report_document = models.FileField(
+        upload_to='academic_reports/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        verbose_name=_("Report Document")
+    )
+    
+    class Meta:
+        verbose_name = _("Academic Report")
+        verbose_name_plural = _("Academic Reports")
+        unique_together = ['student', 'academic_year', 'term']
+        ordering = ['-academic_year', '-term', 'student']
+        indexes = [
+            models.Index(fields=['student', 'academic_year', 'term']),
+            models.Index(fields=['overall_grade']),
+            models.Index(fields=['promotion_status']),
+            models.Index(fields=['is_published']),
+        ]
+    
+    def __str__(self):
+        return f"Academic Report - {self.student.get_full_name()} - {self.academic_year} {self.term}"
+    
+    def generate_report(self):
+        """Generate comprehensive academic report"""
+        # Calculate overall performance
+        from .models import Grade, Attendance
+        
+        # Get all grades for this term
+        grades = Grade.objects.filter(
+            student=self.student,
+            assessment__academic_year=self.academic_year,
+            assessment__term=self.term
+        )
+        
+        if grades.exists():
+            # Calculate overall score and grade
+            total_score = sum(g.score for g in grades)
+            total_possible = sum(g.assessment.total_marks for g in grades)
+            
+            if total_possible > 0:
+                self.overall_score = (total_score / total_possible) * 100
+                self.overall_grade = self.convert_to_grade(self.overall_score)
+            
+            # Calculate subject-wise performance
+            subject_data = {}
+            for grade in grades:
+                subject = grade.subject
+                if subject.id not in subject_data:
+                    subject_data[subject.id] = {
+                        'subject_name': subject.name,
+                        'subject_code': subject.code,
+                        'scores': [],
+                        'total_possible': 0,
+                    }
+                
+                subject_data[subject.id]['scores'].append(grade.score)
+                subject_data[subject.id]['total_possible'] += grade.assessment.total_marks
+            
+            # Calculate subject averages
+            self.subject_performance = []
+            for subject_id, data in subject_data.items():
+                avg_score = sum(data['scores']) / len(data['scores'])
+                percentage = (sum(data['scores']) / data['total_possible']) * 100 if data['total_possible'] > 0 else 0
+                grade = self.convert_to_grade(percentage)
+                
+                self.subject_performance.append({
+                    'subject_id': subject_id,
+                    'subject_name': data['subject_name'],
+                    'subject_code': data['subject_code'],
+                    'average_score': avg_score,
+                    'percentage': percentage,
+                    'grade': grade,
+                    'is_passing': percentage >= 40,  # Assuming 40% passing
+                })
+        
+        # Get attendance data
+        attendance = Attendance.objects.filter(
+            student=self.student,
+            academic_year=self.academic_year,
+            term=self.term
+        )
+        
+        if attendance.exists():
+            total_days = attendance.count()
+            present_days = attendance.filter(status=AttendanceStatus.PRESENT).count()
+            self.attendance_percentage = (present_days / total_days) * 100 if total_days > 0 else 0
+        
+        # Analyze strengths and weaknesses
+        self.analyze_performance()
+        
+        # Determine promotion status
+        self.determine_promotion_status()
+        
+        self.save()
+    
+    def analyze_performance(self):
+        """Analyze student performance to identify strengths and weaknesses"""
+        self.strengths = []
+        self.weaknesses = []
+        
+        for subject in self.subject_performance:
+            if subject['percentage'] >= 80:
+                self.strengths.append({
+                    'subject': subject['subject_name'],
+                    'score': subject['percentage'],
+                    'grade': subject['grade'],
+                })
+            elif subject['percentage'] < 40:
+                self.weaknesses.append({
+                    'subject': subject['subject_name'],
+                    'score': subject['percentage'],
+                    'grade': subject['grade'],
+                    'recommendation': 'Needs extra help and tutoring',
+                })
+        
+        # Add attendance analysis
+        if self.attendance_percentage < 75:
+            self.weaknesses.append({
+                'area': 'Attendance',
+                'score': self.attendance_percentage,
+                'recommendation': 'Needs to improve attendance record',
+            })
+    
+    def determine_promotion_status(self):
+        """Determine promotion status based on academic performance"""
+        # Check if student passed all subjects
+        failed_subjects = [s for s in self.subject_performance if not s['is_passing']]
+        
+        if not failed_subjects and self.attendance_percentage >= 75:
+            self.promotion_status = 'promoted'
+        elif len(failed_subjects) <= 2 and self.attendance_percentage >= 65:
+            self.promotion_status = 'conditional'
+        else:
+            self.promotion_status = 'retained'
+    
+    def convert_to_grade(self, percentage):
+        """Convert percentage to letter grade"""
+        if percentage >= 90:
+            return 'A+'
+        elif percentage >= 80:
+            return 'A'
+        elif percentage >= 70:
+            return 'B+'
+        elif percentage >= 60:
+            return 'B'
+        elif percentage >= 50:
+            return 'C+'
+        elif percentage >= 40:
+            return 'C'
+        elif percentage >= 30:
+            return 'D'
+        else:
+            return 'F'
+    
+    def publish_report(self):
+        """Publish the academic report"""
+        self.is_published = True
+        self.published_date = timezone.now()
+        self.save()
+        
+        # Generate PDF document
+        self.generate_pdf()
+    
+    def generate_pdf(self):
+        """Generate PDF version of the report"""
+        # Implementation using a PDF generation library
+        # This would typically use ReportLab, WeasyPrint, or similar
+        pass
+
+
+# ============================================================================
+# EVENT AND HOLIDAY MODELS
+# ============================================================================
+
+class AcademicEvent(BaseModel):
+    """Academic events and holidays"""
+    EVENT_TYPE_CHOICES = [
+        ('academic', 'Academic'),
+        ('sports', 'Sports'),
+        ('cultural', 'Cultural'),
+        ('parent_meeting', 'Parent Meeting'),
+        ('staff_meeting', 'Staff Meeting'),
+        ('holiday', 'Holiday'),
+        ('exam', 'Examination'),
+    ]
+
+
+    title = models.CharField(
+        max_length=200,
+        verbose_name=_("Event Title")
+    )
+    event_type = models.CharField(
+        max_length=50,
+        choices=[
+            ('holiday', _('Holiday')),
+            ('exam', _('Examination')),
+            ('parent_meeting', _('Parent Meeting')),
+            ('sports_day', _('Sports Day')),
+            ('cultural_event', _('Cultural Event')),
+            ('field_trip', _('Field Trip')),
+            ('workshop', _('Workshop')),
+            ('other', _('Other')),
+        ],
+        verbose_name=_("Event Type")
+    )
+    start_date = models.DateField(verbose_name=_("Start Date"))
+    end_date = models.DateField(verbose_name=_("End Date"))
+    start_time = models.TimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Start Time")
+    )
+    end_time = models.TimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("End Time")
+    )
+    academic_year = models.CharField(
+        max_length=20,
+        verbose_name=_("Academic Year")
+    )
+    term = models.CharField(
+        max_length=20,
+        choices=TermType.choices,
+        verbose_name=_("Term")
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
+    location = models.CharField(
+        max_length=200,
+        blank=True,
+        verbose_name=_("Location")
+    )
+    organizer = models.CharField(
+        max_length=100,
+        blank=True,
         verbose_name=_("Organizer")
     )
-    
-    # Resources
-    resources = models.JSONField(
-        default=list,
+    participants = models.ManyToManyField(
+        User,
         blank=True,
-        help_text=_("Event resources and materials"),
-        verbose_name=_("Resources")
+        related_name='academic_events',
+        verbose_name=_("Participants")
     )
-    
-    # Attendance Tracking
-    requires_attendance = models.BooleanField(
+    affected_classes = models.ManyToManyField(
+        Class,
+        blank=True,
+        related_name='academic_events',
+        verbose_name=_("Affected Classes")
+    )
+    is_holiday = models.BooleanField(
         default=False,
-        verbose_name=_("Requires Attendance")
+        verbose_name=_("Is Holiday")
     )
-    
-    # Reminders
-    reminder_days_before = models.IntegerField(
-        default=0,
-        validators=[MinValueValidator(0), MaxValueValidator(30)],
-        verbose_name=_("Reminder Days Before")
+    color_code = models.CharField(
+        max_length=7,
+        default='#e74c3c',
+        verbose_name=_("Color Code")
     )
     
     class Meta:
         verbose_name = _("Academic Event")
         verbose_name_plural = _("Academic Events")
-        ordering = ['start_date']
+        ordering = ['start_date', 'start_time']
         indexes = [
             models.Index(fields=['start_date', 'end_date']),
             models.Index(fields=['event_type']),
             models.Index(fields=['academic_year', 'term']),
-            models.Index(fields=['is_published']),
-            models.Index(fields=['priority']),
+            models.Index(fields=['is_holiday']),
         ]
     
     def __str__(self):
-        return f"{self.title} - {self.start_date.strftime('%Y-%m-%d')}"
+        return f"{self.title} - {self.start_date}"
+    
+    @property
+    def duration_days(self):
+        """Calculate event duration in days"""
+        return (self.end_date - self.start_date).days + 1
+    
+    def is_current(self):
+        """Check if event is currently ongoing"""
+        today = date.today()
+        return self.start_date <= today <= self.end_date
     
     def clean(self):
-        """Validate event dates."""
-        if self.start_date and self.end_date:
-            if self.start_date >= self.end_date:
-                raise ValidationError(_("End date must be after start date"))
+        """Validate event dates"""
+        if self.end_date < self.start_date:
+            raise ValidationError(_("End date must be after start date"))
+        
+        if self.start_time and self.end_time and self.end_time < self.start_time:
+            raise ValidationError(_("End time must be after start time"))
     
-    @property
-    def duration_hours(self):
-        """Calculate event duration in hours."""
-        if self.start_date and self.end_date:
-            duration = self.end_date - self.start_date
-            return duration.total_seconds() / 3600
-        return 0
+    @classmethod
+    def get_upcoming_events(cls, days=30):
+        """Get upcoming events within specified days"""
+        today = date.today()
+        future_date = today + timedelta(days=days)
+        
+        return cls.objects.filter(
+            start_date__gte=today,
+            start_date__lte=future_date
+        ).order_by('start_date', 'start_time')
     
-    @property
-    def is_upcoming(self):
-        """Check if event is upcoming."""
-        return self.start_date > timezone.now()
-    
-    @property
-    def is_ongoing(self):
-        """Check if event is currently ongoing."""
-        now = timezone.now()
-        return self.start_date <= now <= self.end_date
-    
-    @property
-    def is_past(self):
-        """Check if event is in the past."""
-        return self.end_date < timezone.now()
+    @classmethod
+    def get_events_for_date(cls, target_date, academic_year=None, term=None):
+        """Get events for a specific date"""
+        query = cls.objects.filter(
+            start_date__lte=target_date,
+            end_date__gte=target_date
+        )
+        
+        if academic_year:
+            query = query.filter(academic_year=academic_year)
+        if term:
+            query = query.filter(term=term)
+        
+        return query.order_by('start_time')
 
 
-class Stream(BaseAcademicModel):
-    """Model for academic streams/tracks."""
+# ============================================================================
+# ACADEMIC CONFIGURATION
+# ============================================================================
+
+class GradingScale(BaseModel):
+    """Grading scale configuration"""
+    SCALE_TYPE_CHOICES = [
+        ('percentage', 'Percentage'),
+        ('letter', 'Letter Grade'),
+        ('cbc', 'CBC Scale'),
+        ('points', 'Points'),
+    ]
     
-    name = models.CharField(max_length=100, verbose_name=_("Stream Name"))
-    code = models.CharField(max_length=20, unique=True, verbose_name=_("Stream Code"))
-    
-    description = models.TextField(blank=True, null=True, verbose_name=_("Description"))
-    
-    # Academic Information
-    education_level = models.CharField(
-        max_length=20,
-        choices=EDUCATION_LEVELS,
-        verbose_name=_("Education Level")
+    ACADEMIC_LEVEL_CHOICES = [
+        ('pre_primary', 'Pre-Primary'),
+        ('lower_primary', 'Lower Primary'),
+        ('upper_primary', 'Upper Primary'),
+        ('lower_secondary', 'Lower Secondary'),
+        ('senior_secondary', 'Senior Secondary'),
+    ]
+    name = models.CharField(
+        max_length=100,
+        verbose_name=_("Grading Scale Name")
     )
-    
-    curriculum = models.CharField(
+    scale_type = models.CharField(
         max_length=20,
-        choices=CURRICULUM_CHOICES,
-        default='cbc',
+        choices=GradeScale.choices,
+        verbose_name=_("Scale Type")
+    )
+    academic_level = models.CharField(
+        max_length=30,
+        choices=AcademicLevel.choices,
+        blank=True,
+        verbose_name=_("Academic Level")
+    )
+    curriculum = models.CharField(
+        max_length=50,
+        choices=settings.CURRICULUM_CHOICES if hasattr(settings, 'CURRICULUM_CHOICES') else [],
+        blank=True,
         verbose_name=_("Curriculum")
     )
-    
-    # Pathway Information
-    pathway = models.CharField(
-        max_length=20,
-        choices=CBC_PATHWAY_CHOICES,
-        blank=True,
-        null=True,
-        verbose_name=_("CBC Pathway")
+    is_default = models.BooleanField(
+        default=False,
+        verbose_name=_("Default Scale")
     )
     
-    # Requirements
-    minimum_requirements = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text=_("Minimum academic requirements"),
-        verbose_name=_("Minimum Requirements")
-    )
-    
-    # Subjects
-    core_subjects = models.ManyToManyField(
-        Subject,
-        related_name='core_in_streams',
-        blank=True,
-        verbose_name=_("Core Subjects")
-    )
-    
-    elective_subjects = models.ManyToManyField(
-        Subject,
-        related_name='elective_in_streams',
-        blank=True,
-        verbose_name=_("Elective Subjects")
-    )
-    
-    # Career Pathways
-    career_pathways = models.JSONField(
+    # Grade ranges (stored as JSON for flexibility)
+    grade_ranges = models.JSONField(
         default=list,
-        blank=True,
-        help_text=_("Related career pathways"),
-        verbose_name=_("Career Pathways")
+        verbose_name=_("Grade Ranges"),
+        help_text=_("List of grade ranges with min, max, grade, points, description")
     )
     
-    # Status
-    is_active = models.BooleanField(default=True, verbose_name=_("Is Active"))
+    description = models.TextField(
+        blank=True,
+        verbose_name=_("Description")
+    )
     
     class Meta:
-        verbose_name = _("Stream")
-        verbose_name_plural = _("Streams")
-        ordering = ['education_level', 'name']
+        verbose_name = _("Grading Scale")
+        verbose_name_plural = _("Grading Scales")
+        ordering = ['name']
         indexes = [
-            models.Index(fields=['code']),
-            models.Index(fields=['education_level', 'pathway']),
-            models.Index(fields=['is_active']),
+            models.Index(fields=['scale_type']),
+            models.Index(fields=['academic_level']),
+            models.Index(fields=['is_default']),
         ]
     
     def __str__(self):
-        return f"{self.name} ({self.get_education_level_display()})"
-
-
-class StudentEnrollment(BaseAcademicModel):
-    """Enhanced Student enrollment management with comprehensive tracking and CBC support."""
+        return self.name
     
-    # Core Relationships
-    student = models.ForeignKey(
-        'students.StudentProfile', 
-        on_delete=models.CASCADE, 
-        related_name='academics_enrollments_new',
-        verbose_name=_("Student")
-    )
-    class_enrolled = models.ForeignKey(
-        Class, 
-        on_delete=models.CASCADE, 
-        related_name='enrollments_academics',
-        verbose_name=_("Class")
-    )
-    academic_year = models.ForeignKey(
-        AcademicYear, 
-        on_delete=models.CASCADE, 
-        related_name='enrollments_academics_1',
-        verbose_name=_("Academic Year")
-    )
-    
-    # Enrollment Information
-    enrollment_date = models.DateField(
-        default=timezone.now, 
-        verbose_name=_("Enrollment Date")
-    )
-    enrollment_number = models.CharField(
-        max_length=20, 
-        unique=True, 
-        verbose_name=_("Enrollment Number")
-    )
-    
-    # Status Information
-    status = models.CharField(
-        max_length=20, 
-        choices=ENROLLMENT_STATUS, 
-        default='active',
-        verbose_name=_("Status")
-    )
-    
-    status_changed_date = models.DateField(
-        null=True, 
-        blank=True, 
-        verbose_name=_("Status Changed Date")
-    )
-    status_reason = models.TextField(
-        blank=True, 
-        null=True, 
-        verbose_name=_("Status Reason")
-    )
-    
-    # Academic Information
-    roll_number = models.IntegerField(
-        null=True, 
-        blank=True,
-        validators=[MinValueValidator(1)],
-        verbose_name=_("Roll Number")
-    )
-    
-    # CBC-Specific Information
-    cbc_pathway_selection = models.CharField(
-        max_length=20,
-        choices=CBC_PATHWAY_CHOICES,
-        blank=True,
-        null=True,
-        verbose_name=_("CBC Pathway Selection")
-    )
-    
-    senior_track_selection = models.CharField(
-        max_length=30,
-        choices=SENIOR_SCHOOL_TRACKS,
-        blank=True,
-        null=True,
-        verbose_name=_("Senior Track Selection")
-    )
-    
-    portfolio_status = models.CharField(
-        max_length=20,
-        choices=[
-            ('not_started', 'Not Started'),
-            ('in_progress', 'In Progress'),
-            ('submitted', 'Submitted'),
-            ('reviewed', 'Reviewed'),
-            ('completed', 'Completed'),
-        ],
-        default='not_started',
-        verbose_name=_("Portfolio Status")
-    )
-    
-    community_service_hours_completed = models.IntegerField(
-        default=0,
-        validators=[MinValueValidator(0)],
-        verbose_name=_("Community Service Hours Completed")
-    )
-    
-    # House and Extracurricular
-    house = models.CharField(
-        max_length=20, 
-        choices=HOUSE_CHOICES, 
-        blank=True, 
-        null=True, 
-        verbose_name=_("House")
-    )
-    
-    extracurricular_activities = models.JSONField(
-        default=list,
-        blank=True,
-        verbose_name=_("Extracurricular Activities")
-    )
-    
-    # Previous School Information
-    previous_school = models.CharField(
-        max_length=200, 
-        blank=True, 
-        null=True, 
-        verbose_name=_("Previous School")
-    )
-    
-    transfer_certificate = models.FileField(
-        upload_to='transfer_certificates/%Y/%m/', 
-        blank=True, 
-        null=True,
-        verbose_name=_("Transfer Certificate")
-    )
-    
-    previous_performance = models.JSONField(
-        default=dict,
-        blank=True,
-        verbose_name=_("Previous Performance")
-    )
-    
-    # Financial Information
-    fee_status = models.CharField(
-        max_length=20,
-        choices=[
-            ('paid', 'Fully Paid'),
-            ('partial', 'Partially Paid'),
-            ('unpaid', 'Unpaid'),
-            ('scholarship', 'Scholarship'),
-            ('bursary', 'Bursary'),
-        ],
-        default='unpaid',
-        verbose_name=_("Fee Status")
-    )
-    
-    fee_arrears = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        default=0.00,
-        verbose_name=_("Fee Arrears")
-    )
-    
-    # Parent/Guardian Information
-    parent_engagement_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('low', 'Low Engagement'),
-            ('medium', 'Medium Engagement'),
-            ('high', 'High Engagement'),
-            ('very_high', 'Very High Engagement'),
-        ],
-        default='medium',
-        verbose_name=_("Parent Engagement Level")
-    )
-    
-    # Special Needs and Support
-    special_needs = models.JSONField(
-        default=list,
-        blank=True,
-        verbose_name=_("Special Needs")
-    )
-    
-    support_services = models.JSONField(
-        default=list,
-        blank=True,
-        verbose_name=_("Support Services")
-    )
-    
-    # Academic Support
-    academic_support_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('none', 'No Support Needed'),
-            ('minimal', 'Minimal Support'),
-            ('moderate', 'Moderate Support'),
-            ('intensive', 'Intensive Support'),
-        ],
-        default='none',
-        verbose_name=_("Academic Support Level")
-    )
-    
-    # Performance Tracking
-    average_performance = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        validators=[MinValueValidator(0), MaxValueValidator(100)],
-        verbose_name=_("Average Performance")
-    )
-    
-    attendance_percentage = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        validators=[MinValueValidator(0), MaxValueValidator(100)],
-        verbose_name=_("Attendance Percentage")
-    )
-    
-    # Metadata
-    remarks = models.TextField(blank=True, null=True, verbose_name=_("Remarks"))
-    
-    enrollment_metadata = models.JSONField(
-        default=dict,
-        blank=True,
-        verbose_name=_("Enrollment Metadata")
-    )
-
-    class Meta:
-        verbose_name = _("Student Enrollment")
-        verbose_name_plural = _("Student Enrollments")
-        unique_together = ['student', 'academic_year']
-        ordering = ['class_enrolled', 'roll_number']
-        indexes = [
-            models.Index(fields=['student', 'academic_year']),
-            models.Index(fields=['enrollment_number']),
-            models.Index(fields=['status']),
-            models.Index(fields=['house']),
-            models.Index(fields=['class_enrolled']),
-            models.Index(fields=['cbc_pathway_selection']),
-            models.Index(fields=['senior_track_selection']),
-            models.Index(fields=['portfolio_status']),
-            models.Index(fields=['fee_status']),
-        ]
-
-    def __str__(self):
-        return f"{self.student.full_name} - {self.class_enrolled.display_name}"
-
-    def save(self, *args, **kwargs):
-        """Generate enrollment number and update status dates."""
-        if not self.enrollment_number:
-            self.enrollment_number = self._generate_enrollment_number()
+    def get_grade_for_score(self, score, max_score=100):
+        """Get grade for a given score"""
+        if max_score != 100:
+            score = (score / max_score) * 100
         
-        if self.pk:
-            original = StudentEnrollment.objects.get(pk=self.pk)
-            if original.status != self.status:
-                self.status_changed_date = timezone.now().date()
-        else:
-            self.status_changed_date = timezone.now().date()
+        for grade_range in self.grade_ranges:
+            min_score = grade_range.get('min_score', 0)
+            max_score = grade_range.get('max_score', 100)
             
-        # Auto-set roll number if not provided
-        if not self.roll_number:
-            self.roll_number = self._get_next_roll_number()
+            if min_score <= score <= max_score:
+                return {
+                    'grade': grade_range.get('grade'),
+                    'points': grade_range.get('points'),
+                    'description': grade_range.get('description'),
+                }
         
-        # Auto-set CBC pathway from class if not specified
-        if self.class_enrolled.is_cbc_class and not self.cbc_pathway_selection:
-            if self.class_enrolled.cbc_pathway:
-                self.cbc_pathway_selection = self.class_enrolled.cbc_pathway
-            if self.class_enrolled.senior_track:
-                self.senior_track_selection = self.class_enrolled.senior_track
+        return None
+    
+    def save(self, *args, **kwargs):
+        """Ensure only one default scale per type and level"""
+        if self.is_default:
+            GradingScale.objects.filter(
+                scale_type=self.scale_type,
+                academic_level=self.academic_level,
+                is_default=True
+            ).exclude(pk=self.pk if self.pk else None).update(is_default=False)
         
         super().save(*args, **kwargs)
 
-    def _generate_enrollment_number(self):
-        """Generate unique enrollment number."""
-        year = self.enrollment_date.year
-        student_initials = self.student.initials if hasattr(self.student, 'initials') else 'ST'
-        
-        # Find last enrollment for this year
-        last_enrollment = StudentEnrollment.objects.filter(
-            enrollment_date__year=year
-        ).order_by('-enrollment_number').first()
-        
-        if last_enrollment and last_enrollment.enrollment_number:
-            try:
-                last_num = int(last_enrollment.enrollment_number.split('-')[-1])
-                new_num = last_num + 1
-            except (ValueError, IndexError):
-                new_num = 1
-        else:
-            new_num = 1
-        
-        return f"ENR-{year}-{student_initials}-{new_num:04d}"
 
-    def _get_next_roll_number(self):
-        """Get next available roll number for the class."""
-        enrollments = StudentEnrollment.objects.filter(
-            class_enrolled=self.class_enrolled,
-            academic_year=self.academic_year
-        ).exclude(roll_number=None).order_by('-roll_number')
-        
-        if enrollments.exists():
-            return enrollments.first().roll_number + 1
-        return 1
-
-    def clean(self):
-        """Validate enrollment data."""
-        errors = {}
-        
-        # Check for duplicate enrollment in same academic year
-        duplicate_enrollment = StudentEnrollment.objects.filter(
-            student=self.student, 
-            academic_year=self.academic_year
-        ).exclude(pk=self.pk).exists()
-        
-        if duplicate_enrollment:
-            errors['academic_year'] = _('Student is already enrolled for this academic year.')
-        
-        # Check for duplicate roll number in same class
-        if self.roll_number:
-            duplicate_roll = StudentEnrollment.objects.filter(
-                academic_year=self.academic_year,
-                class_enrolled=self.class_enrolled,
-                roll_number=self.roll_number
-            ).exclude(pk=self.pk).exists()
-            
-            if duplicate_roll:
-                errors['roll_number'] = _('Roll number must be unique within the class for this academic year.')
-        
-        # Validate CBC pathway for senior school
-        if (self.class_enrolled.is_cbc_class and 
-            self.class_enrolled.education_level == 'senior_school' and 
-            not self.cbc_pathway_selection):
-            errors['cbc_pathway_selection'] = _('CBC pathway selection is required for Senior School enrollment.')
-        
-        # Validate community service hours
-        if self.community_service_hours_completed < 0:
-            errors['community_service_hours_completed'] = _('Community service hours cannot be negative.')
-        
-        if errors:
-            raise ValidationError(errors)
-
-    # ============ PROPERTIES ============
-
-    @property
-    def is_current(self):
-        """Check if this is the current enrollment."""
-        return self.status == 'active' and self.academic_year.is_current
-
-    @property
-    def enrollment_duration(self):
-        """Calculate enrollment duration in days."""
-        if self.status in ['transferred', 'withdrawn', 'graduated'] and self.status_changed_date:
-            end_date = self.status_changed_date
-        else:
-            end_date = timezone.now().date()
-        
-        return max(0, (end_date - self.enrollment_date).days)
-
-    @property
-    def is_cbc_enrollment(self):
-        """Check if this is a CBC enrollment."""
-        return self.class_enrolled.is_cbc_class
-
-    @property
-    def cbc_info(self):
-        """Get CBC-specific information."""
-        if not self.is_cbc_enrollment:
-            return None
-        
-        info = {
-            'pathway': self.get_cbc_pathway_selection_display() if self.cbc_pathway_selection else 'Not Selected',
-            'senior_track': self.get_senior_track_selection_display() if self.senior_track_selection else 'Not Selected',
-            'portfolio_status': self.get_portfolio_status_display(),
-            'community_service_hours': {
-                'completed': self.community_service_hours_completed,
-                'required': self.class_enrolled.community_service_hours,
-                'remaining': max(0, self.class_enrolled.community_service_hours - self.community_service_hours_completed),
-            },
-            'requires_portfolio': self.class_enrolled.portfolio_required,
-            'requires_project': self.class_enrolled.project_work_required,
-        }
-        
-        return info
-
-    @property
-    def academic_progress(self):
-        """Get academic progress information."""
-        try:
-            from grading.models import Grade
-            
-            grades = Grade.objects.filter(
-                enrollment=self,
-                is_active=True
-            )
-            
-            if grades.exists():
-                avg_score = grades.aggregate(avg=models.Avg('score'))['avg']
-                total_grades = grades.count()
-                passing_grades = grades.filter(score__gte=40).count()
-                
-                return {
-                    'average_score': round(avg_score, 2) if avg_score else 0,
-                    'total_grades': total_grades,
-                    'passing_grades': passing_grades,
-                    'pass_rate': round((passing_grades / total_grades * 100), 2) if total_grades > 0 else 0,
-                }
-        except ImportError:
-            pass
-        
-        return None
-
-    @property
-    def enrollment_summary(self):
-        """Get enrollment summary."""
-        summary = {
-            'student': self.student.full_name,
-            'class': self.class_enrolled.display_name,
-            'academic_year': self.academic_year.name,
-            'enrollment_date': self.enrollment_date,
-            'enrollment_number': self.enrollment_number,
-            'status': self.get_status_display(),
-            'roll_number': self.roll_number,
-            'enrollment_duration_days': self.enrollment_duration,
-            'is_current': self.is_current,
-        }
-        
-        if self.is_cbc_enrollment:
-            summary['cbc_info'] = self.cbc_info
-        
-        return summary
-
-    # ============ METHODS ============
-
-    def update_portfolio_status(self, new_status, notes=None):
-        """Update portfolio status."""
-        valid_statuses = [choice[0] for choice in self._meta.get_field('portfolio_status').choices]
-        
-        if new_status in valid_statuses:
-            self.portfolio_status = new_status
-            if notes:
-                self.remarks = f"{self.remarks or ''}\nPortfolio Update: {notes}"
-            self.save()
-            return True
-        return False
-
-    def add_community_service_hours(self, hours, activity_description=None):
-        """Add community service hours."""
-        if hours > 0:
-            self.community_service_hours_completed += hours
-            
-            if activity_description:
-                activity_record = {
-                    'date': timezone.now().date().isoformat(),
-                    'hours': hours,
-                    'activity': activity_description,
-                    'verified_by': None,  # Could be set by supervisor
-                }
-                
-                # Add to extracurricular activities
-                if not self.extracurricular_activities:
-                    self.extracurricular_activities = []
-                self.extracurricular_activities.append(activity_record)
-            
-            self.save()
-            return True
-        return False
-
-    def get_required_community_service_hours(self):
-        """Get required community service hours."""
-        if self.is_cbc_enrollment:
-            return self.class_enrolled.community_service_hours
-        return 0
-
-    def get_subject_enrollments(self):
-        """Get subject enrollments for this student."""
-        try:
-            from .models import StudentClassAssignment
-            return StudentClassAssignment.objects.filter(
-                student=self.student,
-                class_assigned=self.class_enrolled,
-                academic_year=self.academic_year,
-                status='active'
-            )
-        except ImportError:
-            return StudentClassAssignment.objects.none()
-
-    def calculate_fee_balance(self, total_fee_amount):
-        """Calculate fee balance."""
-        # This would typically integrate with a fee payment system
-        # For now, return basic calculation
-        if self.fee_status == 'paid':
-            return 0
-        elif self.fee_status == 'partial':
-            return total_fee_amount - (total_fee_amount * 0.5)  # Assuming 50% paid
-        else:
-            return total_fee_amount
-
-    def update_academic_performance(self):
-        """Update academic performance metrics."""
-        progress = self.academic_progress
-        if progress:
-            self.average_performance = progress['average_score']
-            self.save()
-            return True
-        return False
-
-    def get_attendance_summary(self):
-        """Get attendance summary."""
-        try:
-            from attendance.models import StudentAttendance
-            
-            attendance_records = StudentAttendance.objects.filter(
-                enrollment=self
-            )
-            
-            if attendance_records.exists():
-                total_days = attendance_records.count()
-                present_days = attendance_records.filter(status='present').count()
-                absent_days = attendance_records.filter(status='absent').count()
-                late_days = attendance_records.filter(status='late').count()
-                
-                attendance_rate = (present_days / total_days * 100) if total_days > 0 else 0
-                self.attendance_percentage = attendance_rate
-                self.save()
-                
-                return {
-                    'total_days': total_days,
-                    'present_days': present_days,
-                    'absent_days': absent_days,
-                    'late_days': late_days,
-                    'attendance_rate': round(attendance_rate, 2),
-                }
-        except ImportError:
-            pass
-        
-        return None
-
-    def promote_to_next_class(self, next_academic_year):
-        """Promote student to next class."""
-        try:
-            # Find next class based on current class
-            next_grade = self._get_next_grade_level()
-            next_class = Class.objects.filter(
-                academic_year=next_academic_year,
-                grade_level=next_grade,
-                is_active=True
-            ).first()
-            
-            if next_class:
-                # Create new enrollment for next year
-                new_enrollment = StudentEnrollment.objects.create(
-                    student=self.student,
-                    class_enrolled=next_class,
-                    academic_year=next_academic_year,
-                    previous_school=self.class_enrolled.name,
-                    remarks=f"Promoted from {self.class_enrolled.display_name}",
-                    created_by=self.created_by,
-                )
-                
-                # Update current enrollment status
-                self.status = 'graduated' if next_grade == 'grade_12' else 'transferred'
-                self.save()
-                
-                return new_enrollment
-        except Exception as e:
-            logger.error(f"Error promoting student: {e}")
-        
-        return None
-
-    def _get_next_grade_level(self):
-        """Get next grade level."""
-        grade_order = [choice[0] for choice in GRADE_LEVEL_CHOICES]
-        try:
-            current_index = grade_order.index(self.class_enrolled.grade_level)
-            if current_index < len(grade_order) - 1:
-                return grade_order[current_index + 1]
-        except (ValueError, IndexError):
-            pass
-        
-        return self.class_enrolled.grade_level
-
-    def generate_enrollment_certificate_data(self):
-        """Generate data for enrollment certificate."""
-        return {
-            'student_name': self.student.full_name,
-            'student_admission_number': self.student.admission_number,
-            'class': self.class_enrolled.display_name,
-            'academic_year': self.academic_year.name,
-            'enrollment_date': self.enrollment_date.strftime('%B %d, %Y'),
-            'enrollment_number': self.enrollment_number,
-            'roll_number': self.roll_number,
-            'principal_signature': None,  # Would be added by system
-            'date_issued': timezone.now().date().strftime('%B %d, %Y'),
-        }
-
-
-class StudentClassAssignment(BaseAcademicModel):
-    """Enhanced Student assignment to specific classes or subjects with CBC support."""
+class AcademicConfiguration(BaseModel):
+    """Academic system configuration"""
     
-    # Core Relationships
-    student = models.ForeignKey(
-        'students.StudentProfile',
-        on_delete=models.CASCADE,
-        related_name='class_assignments',
-        verbose_name=_("Student")
-    )
-    class_assigned = models.ForeignKey(
-        Class,
-        on_delete=models.CASCADE,
-        related_name='student_assignments',
-        verbose_name=_("Class")
-    )
-    subject = models.ForeignKey(
-        Subject,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name='student_assignments',
-        verbose_name=_("Subject")
-    )
-    academic_year = models.ForeignKey(
+    current_academic_year = models.ForeignKey(
         AcademicYear,
-        on_delete=models.CASCADE,
-        related_name='student_class_assignments',
-        verbose_name=_("Academic Year")
-    )
-    
-    # Assignment Details
-    assignment_date = models.DateField(
-        default=timezone.now, 
-        verbose_name=_("Assignment Date")
-    )
-    effective_from = models.DateField(
-        default=timezone.now,
-        verbose_name=_("Effective From")
-    )
-    effective_until = models.DateField(
-        null=True, 
-        blank=True, 
-        verbose_name=_("Effective Until")
-    )
-    
-    # Status Information
-    status = models.CharField(
-        max_length=20,
-        choices=[
-            ('active', 'Active'),
-            ('pending', 'Pending Approval'),
-            ('approved', 'Approved'),
-            ('rejected', 'Rejected'),
-            ('completed', 'Completed'),
-            ('transferred', 'Transferred'),
-            ('withdrawn', 'Withdrawn'),
-            ('suspended', 'Suspended'),
-        ],
-        default='active',
-        verbose_name=_("Status")
-    )
-    
-    status_changed_date = models.DateField(
-        null=True,
-        blank=True,
-        verbose_name=_("Status Changed Date")
-    )
-    
-    # Academic Information
-    seating_position = models.CharField(
-        max_length=50,
-        blank=True,
-        null=True,
-        verbose_name=_("Seating Position")
-    )
-    
-    locker_number = models.CharField(
-        max_length=20,
-        blank=True,
-        null=True,
-        verbose_name=_("Locker Number")
-    )
-    
-    desk_number = models.CharField(
-        max_length=20,
-        blank=True,
-        null=True,
-        verbose_name=_("Desk Number")
-    )
-    
-    # CBC-Specific Information
-    is_core_subject = models.BooleanField(
-        default=False,
-        verbose_name=_("Is Core Subject")
-    )
-    
-    is_elective_subject = models.BooleanField(
-        default=False,
-        verbose_name=_("Is Elective Subject")
-    )
-    
-    competency_tracking_enabled = models.BooleanField(
-        default=False,
-        verbose_name=_("Competency Tracking Enabled")
-    )
-    
-    project_work_assigned = models.BooleanField(
-        default=False,
-        verbose_name=_("Project Work Assigned")
-    )
-    
-    # Performance Tracking
-    performance_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('beginning', 'Beginning'),
-            ('developing', 'Developing'),
-            ('proficient', 'Proficient'),
-            ('advanced', 'Advanced'),
-            ('exemplary', 'Exemplary'),
-        ],
-        blank=True,
-        null=True,
-        verbose_name=_("Performance Level")
-    )
-    
-    last_assessment_date = models.DateField(
-        null=True,
-        blank=True,
-        verbose_name=_("Last Assessment Date")
-    )
-    
-    # Teacher Information
-    assigned_teacher = models.ForeignKey(
-        'teachers.TeacherProfile',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='student_assignments',
-        verbose_name=_("Assigned Teacher")
+        related_name='configurations',
+        verbose_name=_("Current Academic Year")
     )
-    
-    # Additional Information
-    learning_style = models.CharField(
-        max_length=20,
-        choices=[
-            ('visual', 'Visual Learner'),
-            ('auditory', 'Auditory Learner'),
-            ('kinesthetic', 'Kinesthetic Learner'),
-            ('reading_writing', 'Reading/Writing Learner'),
-            ('mixed', 'Mixed Learning Style'),
-        ],
-        blank=True,
+    default_grading_scale = models.ForeignKey(
+        GradingScale,
+        on_delete=models.SET_NULL,
         null=True,
-        verbose_name=_("Learning Style")
-    )
-    
-    special_accommodations = models.JSONField(
-        default=list,
         blank=True,
-        verbose_name=_("Special Accommodations")
+        verbose_name=_("Default Grading Scale")
+    )
+    min_attendance_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=75.00,
+        verbose_name=_("Minimum Attendance Percentage")
+    )
+    passing_grade_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=40.00,
+        verbose_name=_("Passing Grade Percentage")
+    )
+    max_absent_days = models.PositiveIntegerField(
+        default=30,
+        verbose_name=_("Maximum Absent Days")
+    )
+    school_start_time = models.TimeField(
+        default='08:00',
+        verbose_name=_("School Start Time")
+    )
+    school_end_time = models.TimeField(
+        default='16:00',
+        verbose_name=_("School End Time")
+    )
+    period_duration = models.PositiveIntegerField(
+        default=45,
+        verbose_name=_("Period Duration (minutes)")
+    )
+    break_duration = models.PositiveIntegerField(
+        default=15,
+        verbose_name=_("Break Duration (minutes)")
+    )
+    lunch_duration = models.PositiveIntegerField(
+        default=60,
+        verbose_name=_("Lunch Duration (minutes)")
     )
     
-    # Metadata
-    remarks = models.TextField(blank=True, null=True, verbose_name=_("Remarks"))
-    
-    assignment_metadata = models.JSONField(
-        default=dict,
-        blank=True,
-        verbose_name=_("Assignment Metadata")
+    # Assessment weights
+    exam_weight = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=40.00,
+        verbose_name=_("Exam Weight (%)")
     )
-
+    test_weight = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=30.00,
+        verbose_name=_("Test Weight (%)")
+    )
+    assignment_weight = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=15.00,
+        verbose_name=_("Assignment Weight (%)")
+    )
+    participation_weight = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=15.00,
+        verbose_name=_("Participation Weight (%)")
+    )
+    
+    # Promotion criteria
+    min_promotion_score = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=50.00,
+        verbose_name=_("Minimum Promotion Score (%)")
+    )
+    max_failed_subjects = models.PositiveIntegerField(
+        default=2,
+        verbose_name=_("Maximum Failed Subjects for Promotion")
+    )
+    
+    # Notification settings
+    attendance_warning_threshold = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=80.00,
+        verbose_name=_("Attendance Warning Threshold (%)")
+    )
+    send_attendance_alerts = models.BooleanField(
+        default=True,
+        verbose_name=_("Send Attendance Alerts")
+    )
+    send_performance_alerts = models.BooleanField(
+        default=True,
+        verbose_name=_("Send Performance Alerts")
+    )
+    
+    # Other settings
+    enable_online_submission = models.BooleanField(
+        default=True,
+        verbose_name=_("Enable Online Assignment Submission")
+    )
+    enable_parent_portal = models.BooleanField(
+        default=True,
+        verbose_name=_("Enable Parent Portal")
+    )
+    result_publication_delay = models.PositiveIntegerField(
+        default=7,
+        verbose_name=_("Result Publication Delay (days)")
+    )
+    
     class Meta:
-        verbose_name = _("Student Class Assignment")
-        verbose_name_plural = _("Student Class Assignments")
-        unique_together = ['student', 'class_assigned', 'subject', 'academic_year']
-        ordering = ['class_assigned', 'student']
-        indexes = [
-            models.Index(fields=['student', 'academic_year']),
-            models.Index(fields=['class_assigned', 'subject']),
-            models.Index(fields=['status']),
-            models.Index(fields=['assigned_teacher']),
-            models.Index(fields=['is_core_subject']),
-            models.Index(fields=['performance_level']),
-        ]
-
+        verbose_name = _("Academic Configuration")
+        verbose_name_plural = _("Academic Configurations")
+    
     def __str__(self):
-        if self.subject:
-            return f"{self.student.full_name} - {self.class_assigned.display_name} - {self.subject.name}"
-        return f"{self.student.full_name} - {self.class_assigned.display_name}"
-
+        return "Academic Configuration"
+    
     def save(self, *args, **kwargs):
-        """Set default effective_from if not provided and validate dates."""
-        if not self.effective_from:
-            self.effective_from = timezone.now().date()
-        
-        # Update status changed date if status changed
-        if self.pk:
-            original = StudentClassAssignment.objects.get(pk=self.pk)
-            if original.status != self.status:
-                self.status_changed_date = timezone.now().date()
-        else:
-            self.status_changed_date = timezone.now().date()
-        
-        # Auto-set subject type flags
-        if self.subject:
-            self.is_core_subject = self.subject.is_cbc_core or self.subject.is_compulsory
-            self.is_elective_subject = not self.is_core_subject
-        
-        # Auto-set competency tracking for CBC subjects
-        if self.subject and self.subject.is_cbc_subject:
-            self.competency_tracking_enabled = True
-        
+        """Ensure only one configuration exists"""
+        self.pk = 1
         super().save(*args, **kwargs)
-
-    def clean(self):
-        """Validate assignment dates."""
-        errors = {}
-        
-        # Check if dates exist before comparing
-        if self.effective_from and self.effective_until:
-            if self.effective_from > self.effective_until:
-                errors['effective_from'] = _("Effective from date must be before effective until date")
-                errors['effective_until'] = _("Effective until date must be after effective from date")
-        
-        # Check for duplicate assignments
-        if self.subject:
-            duplicate_assignment = StudentClassAssignment.objects.filter(
-                student=self.student,
-                class_assigned=self.class_assigned,
-                subject=self.subject,
-                academic_year=self.academic_year,
-                status='active'
-            ).exclude(pk=self.pk).exists()
-            
-            if duplicate_assignment:
-                errors['subject'] = _('Student already has an active assignment for this subject.')
-        
-        if errors:
-            raise ValidationError(errors)
-
-    # ============ PROPERTIES ============
-
-    @property
-    def is_current(self):
-        """Check if assignment is currently active."""
-        today = timezone.now().date()
-        
-        # Check if effective_from exists (should always exist after save)
-        if not self.effective_from:
-            return False
-        
-        # Check if we're after the effective_from date
-        if today < self.effective_from:
-            return False
-        
-        # Check if effective_until exists and we're before it
-        if self.effective_until:
-            return today <= self.effective_until
-        
-        # If no effective_until, return True if we're after effective_from
-        return True
-
-    @property
-    def assignment_duration(self):
-        """Calculate assignment duration in days."""
-        if not self.effective_from:
-            return 0
-        
-        end_date = self.effective_until or timezone.now().date()
-        return max(0, (end_date - self.effective_from).days)
-
-    @property
-    def is_cbc_assignment(self):
-        """Check if this is a CBC assignment."""
-        return self.subject and self.subject.is_cbc_subject
-
-    @property
-    def subject_info(self):
-        """Get subject information."""
-        if not self.subject:
-            return None
-        
-        info = {
-            'name': self.subject.name,
-            'code': self.subject.code,
-            'category': self.subject.get_category_display(),
-            'credits': float(self.subject.credits),
-            'periods_per_week': self.subject.periods_per_week,
-            'weekly_hours': self.subject.weekly_hours,
-            'is_core': self.is_core_subject,
-            'is_elective': self.is_elective_subject,
-        }
-        
-        if self.is_cbc_assignment:
-            info.update({
-                'cbc_competency_area': self.subject.get_cbc_competency_area_display() if self.subject.cbc_competency_area else None,
-                'cbc_pathway': self.subject.get_cbc_pathway_display() if self.subject.cbc_pathway else None,
-                'practical_weight': self.subject.practical_weight,
-                'project_based': self.subject.project_based,
-            })
-        
-        return info
-
-    @property
-    def assignment_summary(self):
-        """Get assignment summary."""
-        summary = {
-            'student': self.student.full_name,
-            'class': self.class_assigned.display_name,
-            'subject': self.subject.name if self.subject else 'General Class Assignment',
-            'academic_year': self.academic_year.name,
-            'assignment_date': self.assignment_date,
-            'status': self.get_status_display(),
-            'is_current': self.is_current,
-            'assignment_duration_days': self.assignment_duration,
-        }
-        
-        if self.assigned_teacher:
-            summary['teacher'] = self.assigned_teacher.full_name
-        
-        return summary
-
-    # ============ METHODS ============
-
-    def update_status(self, new_status, reason=None):
-        """Update assignment status."""
-        valid_statuses = [choice[0] for choice in self._meta.get_field('status').choices]
-        
-        if new_status in valid_statuses:
-            self.status = new_status
-            self.status_changed_date = timezone.now().date()
-            
-            if reason:
-                self.remarks = f"{self.remarks or ''}\nStatus Change: {new_status} - {reason}"
-            
-            self.save()
-            return True
-        return False
-
-    def assign_teacher(self, teacher):
-        """Assign teacher to this student assignment."""
-        self.assigned_teacher = teacher
-        self.save()
-        return True
-
-    def update_performance_level(self, level, assessment_date=None):
-        """Update performance level."""
-        valid_levels = [choice[0] for choice in self._meta.get_field('performance_level').choices]
-        
-        if level in valid_levels:
-            self.performance_level = level
-            self.last_assessment_date = assessment_date or timezone.now().date()
-            self.save()
-            return True
-        return False
-
-    def get_competency_progress(self):
-        """Get competency progress for CBC assignments."""
-        if not self.competency_tracking_enabled or not self.subject:
-            return None
-        
-        try:
-            from .models import CompetencyTracking
-            
-            competencies = CompetencyTracking.objects.filter(
-                student=self.student,
-                academic_year=self.academic_year,
-                competency_area=self.subject.cbc_competency_area
-            )
-            
-            if competencies.exists():
-                competency = competencies.first()
-                return {
-                    'competency_area': competency.get_competency_area_display(),
-                    'current_level': competency.get_current_level_display(),
-                    'target_level': competency.get_target_level_display(),
-                    'has_improved': competency.has_improved,
-                    'last_assessed': competency.last_assessed,
-                }
-        except ImportError:
-            pass
-        
-        return None
-
-    def assign_project_work(self, project_title, description=None):
-        """Assign project work to student."""
-        if self.is_cbc_assignment and self.subject.project_based:
-            self.project_work_assigned = True
-            
-            project_data = {
-                'title': project_title,
-                'description': description,
-                'assigned_date': timezone.now().date().isoformat(),
-                'status': 'assigned',
-                'subject': self.subject.name,
-            }
-            
-            # Add to assignment metadata
-            if 'projects' not in self.assignment_metadata:
-                self.assignment_metadata['projects'] = []
-            
-            self.assignment_metadata['projects'].append(project_data)
-            self.save()
-            return True
-        
-        return False
-
-    def get_assessment_history(self):
-        """Get assessment history for this assignment."""
-        try:
-            from grading.models import Grade
-            
-            grades = Grade.objects.filter(
-                student=self.student,
-                subject=self.subject,
-                class_assigned=self.class_assigned,
-                academic_year=self.academic_year,
-                is_active=True
-            ).order_by('-assessment_date')
-            
-            assessments = []
-            for grade in grades:
-                assessments.append({
-                    'assessment_type': grade.get_assessment_type_display(),
-                    'score': float(grade.score),
-                    'max_score': float(grade.max_score),
-                    'percentage': grade.percentage,
-                    'assessment_date': grade.assessment_date,
-                    'teacher': grade.teacher.full_name if grade.teacher else None,
-                })
-            
-            return assessments
-        except ImportError:
-            return []
-
-    def calculate_performance_trend(self):
-        """Calculate performance trend over time."""
-        assessments = self.get_assessment_history()
-        
-        if not assessments:
-            return None
-        
-        # Group by month for trend analysis
-        monthly_performance = {}
-        for assessment in assessments:
-            month_key = assessment['assessment_date'].strftime('%Y-%m')
-            if month_key not in monthly_performance:
-                monthly_performance[month_key] = []
-            monthly_performance[month_key].append(assessment['percentage'])
-        
-        # Calculate monthly averages
-        trend_data = []
-        for month, scores in sorted(monthly_performance.items()):
-            avg_score = sum(scores) / len(scores)
-            trend_data.append({
-                'month': month,
-                'average_percentage': round(avg_score, 2),
-                'assessment_count': len(scores),
-            })
-        
-        return trend_data
-
-    def get_learning_resources(self):
-        """Get learning resources for this assignment."""
-        resources = []
-        
-        if self.subject:
-            # Add subject resources
-            if self.subject.resources_required:
-                resources.extend(self.subject.resources_required)
-            
-            # Add syllabus resources if available
-            try:
-                from .models import Syllabus
-                syllabus = Syllabus.objects.filter(
-                    subject=self.subject,
-                    academic_year=self.academic_year,
-                    is_active=True
-                ).first()
-                
-                if syllabus and syllabus.recommended_books:
-                    resources.extend([
-                        {'type': 'book', 'name': book, 'category': 'recommended'}
-                        for book in syllabus.recommended_books
-                    ])
-            except ImportError:
-                pass
-        
-        # Add special accommodations as resources
-        if self.special_accommodations:
-            resources.extend([
-                {'type': 'accommodation', 'name': accommodation, 'category': 'special'}
-                for accommodation in self.special_accommodations
-            ])
-        
-        return resources
-
-    def clone_for_next_year(self, next_academic_year, next_class=None):
-        """Clone assignment for next academic year."""
-        try:
-            # Determine next class
-            target_class = next_class or self.class_assigned.clone_for_next_year(next_academic_year)
-            
-            if not target_class:
-                return None
-            
-            # Create new assignment
-            new_assignment = StudentClassAssignment.objects.create(
-                student=self.student,
-                class_assigned=target_class,
-                subject=self.subject,
-                academic_year=next_academic_year,
-                assignment_date=timezone.now().date(),
-                effective_from=next_academic_year.start_date,
-                status='pending',
-                is_core_subject=self.is_core_subject,
-                is_elective_subject=self.is_elective_subject,
-                competency_tracking_enabled=self.competency_tracking_enabled,
-                learning_style=self.learning_style,
-                special_accommodations=self.special_accommodations,
-                remarks=f"Cloned from previous year assignment",
-                created_by=self.created_by,
-            )
-            
-            return new_assignment
-        except Exception as e:
-            logger.error(f"Error cloning student class assignment: {e}")
-            return None
-
-    def generate_progress_report(self):
-        """Generate progress report for this assignment."""
-        report = {
-            'assignment_info': self.assignment_summary,
-            'subject_info': self.subject_info,
-            'performance': {
-                'current_level': self.get_performance_level_display() if self.performance_level else 'Not Assessed',
-                'last_assessment': self.last_assessment_date,
-                'trend': self.calculate_performance_trend(),
-            },
-            'assessments': self.get_assessment_history(),
-            'resources': self.get_learning_resources(),
-            'competency_progress': self.get_competency_progress(),
-            'project_work': {
-                'assigned': self.project_work_assigned,
-                'projects': self.assignment_metadata.get('projects', []) if self.project_work_assigned else [],
-            },
-        }
-        
-        return report
-
-
-# ============================================================================
-# CBC-SPECIFIC MODELS
-# ============================================================================
-
-class CBCAssessment(BaseAcademicModel):
-    """Model for tracking CBC-specific assessments."""
     
-    student = models.ForeignKey(
-        'students.StudentProfile',
-        on_delete=models.CASCADE,
-        related_name='cbc_assessments'
-    )
-    subject = models.ForeignKey(
-        Subject,
-        on_delete=models.CASCADE,
-        related_name='cbc_assessments'
-    )
-    academic_year = models.ForeignKey(
-        AcademicYear,
-        on_delete=models.CASCADE,
-        related_name='cbc_assessments'
-    )
-    class_assigned = models.ForeignKey(
-        Class,
-        on_delete=models.CASCADE,
-        related_name='cbc_assessments'
-    )
+    def delete(self, *args, **kwargs):
+        """Prevent deletion"""
+        pass
     
-    # Assessment details
-    assessment_type = models.CharField(
-        max_length=20,
-        choices=ASSESSMENT_TYPES,
-        verbose_name=_("Assessment Type")
-    )
-    
-    assessment_date = models.DateField(verbose_name=_("Assessment Date"))
-    
-    # Competency-based scores
-    competency_scores = models.JSONField(
-        default=dict,
-        help_text=_("Scores for different competencies"),
-        verbose_name=_("Competency Scores")
-    )
-    
-    practical_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        verbose_name=_("Practical Score")
-    )
-    
-    theory_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        verbose_name=_("Theory Score")
-    )
-    
-    project_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        verbose_name=_("Project Score")
-    )
-    
-    # CBC descriptors
-    proficiency_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('exceeding', 'Exceeding Expectations'),
-            ('meeting', 'Meeting Expectations'),
-            ('approaching', 'Approaching Expectations'),
-            ('beginning', 'Beginning to Develop'),
-        ],
-        verbose_name=_("Proficiency Level")
-    )
-    
-    teacher_comments = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Teacher Comments")
-    )
-    
-    portfolio_evidence = models.FileField(
-        upload_to='cbc_portfolio/%Y/%m/',
-        blank=True,
-        null=True,
-        verbose_name=_("Portfolio Evidence")
-    )
-    
-    class Meta:
-        verbose_name = _("CBC Assessment")
-        verbose_name_plural = _("CBC Assessments")
-        unique_together = ['student', 'subject', 'academic_year', 'assessment_type']
-        ordering = ['-assessment_date']
-        indexes = [
-            models.Index(fields=['student', 'academic_year']),
-            models.Index(fields=['assessment_type']),
-            models.Index(fields=['proficiency_level']),
-        ]
-    
-    def __str__(self):
-        return f"{self.student.full_name} - {self.subject.name} - {self.get_assessment_type_display()}"
-    
-    @property
-    def total_score(self):
-        """Calculate total score based on assessment type."""
-        if self.assessment_type == 'practical':
-            return self.practical_score
-        elif self.assessment_type == 'project':
-            return self.project_score
-        else:
-            return self.theory_score
-    
-    @property
-    def is_national_exam(self):
-        """Check if this is a national exam assessment."""
-        return self.assessment_type in ['knec', 'kpsea', 'kjsea', 'kcse']
-
-
-class CBCPortfolio(BaseAcademicModel):
-    """Model for tracking student portfolios in CBC."""
-    
-    student = models.ForeignKey(
-        'students.StudentProfile',
-        on_delete=models.CASCADE,
-        related_name='cbc_portfolios'
-    )
-    academic_year = models.ForeignKey(
-        AcademicYear,
-        on_delete=models.CASCADE,
-        related_name='cbc_portfolios'
-    )
-    
-    portfolio_title = models.CharField(max_length=200, verbose_name=_("Portfolio Title"))
-    portfolio_type = models.CharField(
-        max_length=30,
-        choices=[
-            ('academic', 'Academic Portfolio'),
-            ('talent', 'Talent Portfolio'),
-            ('project', 'Project Portfolio'),
-            ('reflection', 'Reflection Portfolio'),
-        ],
-        verbose_name=_("Portfolio Type")
-    )
-    
-    description = models.TextField(blank=True, null=True, verbose_name=_("Description"))
-    artifacts = models.JSONField(
-        default=list,
-        help_text=_("List of portfolio artifacts with metadata"),
-        verbose_name=_("Artifacts")
-    )
-    
-    skills_demonstrated = models.JSONField(
-        default=list,
-        help_text=_("Skills demonstrated in this portfolio"),
-        verbose_name=_("Skills Demonstrated")
-    )
-    
-    reflection = models.TextField(blank=True, null=True, verbose_name=_("Student Reflection"))
-    teacher_feedback = models.TextField(blank=True, null=True, verbose_name=_("Teacher Feedback"))
-    
-    submission_date = models.DateField(auto_now_add=True, verbose_name=_("Submission Date"))
-    is_complete = models.BooleanField(default=False, verbose_name=_("Is Complete"))
-    
-    class Meta:
-        verbose_name = _("CBC Portfolio")
-        verbose_name_plural = _("CBC Portfolios")
-        ordering = ['-submission_date']
-        indexes = [
-            models.Index(fields=['student', 'academic_year']),
-            models.Index(fields=['portfolio_type']),
-            models.Index(fields=['is_complete']),
-        ]
-    
-    def __str__(self):
-        return f"{self.student.full_name} - {self.portfolio_title}"
-    
-    @property
-    def artifacts_count(self):
-        """Count of artifacts in portfolio."""
-        return len(self.artifacts) if self.artifacts else 0
-
-
-class PathwaySelection(BaseAcademicModel):
-    """Model for tracking student pathway selections in CBC."""
-    
-    student = models.ForeignKey(
-        'students.StudentProfile',
-        on_delete=models.CASCADE,
-        related_name='pathway_selections'
-    )
-    academic_year = models.ForeignKey(
-        AcademicYear,
-        on_delete=models.CASCADE,
-        related_name='pathway_selections'
-    )
-    
-    # Pathways
-    preferred_pathway = models.CharField(
-        max_length=30,
-        choices=CBC_PATHWAY_CHOICES,
-        verbose_name=_("Preferred Pathway")
-    )
-    
-    alternative_pathway = models.CharField(
-        max_length=30,
-        choices=CBC_PATHWAY_CHOICES,
-        blank=True,
-        null=True,
-        verbose_name=_("Alternative Pathway")
-    )
-    
-    senior_track = models.CharField(
-        max_length=30,
-        choices=SENIOR_SCHOOL_TRACKS,
-        blank=True,
-        null=True,
-        verbose_name=_("Senior School Track")
-    )
-    
-    # Selection details
-    selection_date = models.DateField(default=timezone.now, verbose_name=_("Selection Date"))
-    is_approved = models.BooleanField(default=False, verbose_name=_("Is Approved"))
-    approved_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='approved_pathways',
-        verbose_name=_("Approved By")
-    )
-    approval_date = models.DateField(null=True, blank=True, verbose_name=_("Approval Date"))
-    
-    # Rationale
-    student_statement = models.TextField(
-        blank=True,
-        null=True,
-        help_text=_("Student's statement about why they chose this pathway"),
-        verbose_name=_("Student Statement")
-    )
-    
-    parent_consent = models.BooleanField(default=False, verbose_name=_("Parent Consent"))
-    teacher_recommendation = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Teacher Recommendation")
-    )
-    
-    # Career aspirations
-    career_interests = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Career interests related to pathway"),
-        verbose_name=_("Career Interests")
-    )
-    
-    class Meta:
-        verbose_name = _("Pathway Selection")
-        verbose_name_plural = _("Pathway Selections")
-        unique_together = ['student', 'academic_year']
-        ordering = ['-selection_date']
-        indexes = [
-            models.Index(fields=['student', 'academic_year']),
-            models.Index(fields=['preferred_pathway']),
-            models.Index(fields=['is_approved']),
-        ]
-    
-    def __str__(self):
-        return f"{self.student.full_name} - {self.get_preferred_pathway_display()}"
-
-
-class CompetencyTracking(BaseAcademicModel):
-    """Model for tracking student competencies across curriculum."""
-    
-    student = models.ForeignKey(
-        'students.StudentProfile',
-        on_delete=models.CASCADE,
-        related_name='competency_tracking'
-    )
-    academic_year = models.ForeignKey(
-        AcademicYear,
-        on_delete=models.CASCADE,
-        related_name='competency_tracking'
-    )
-    
-    competency_area = models.CharField(
-        max_length=50,
-        choices=[
-            ('communication', 'Communication and Collaboration'),
-            ('critical_thinking', 'Critical Thinking and Problem Solving'),
-            ('creativity', 'Creativity and Imagination'),
-            ('citizenship', 'Citizenship'),
-            ('digital_literacy', 'Digital Literacy'),
-            ('learning_to_learn', 'Learning to Learn'),
-            ('self_efficacy', 'Self-efficacy'),
-        ],
-        verbose_name=_("Competency Area")
-    )
-    
-    # Assessment levels
-    baseline_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('beginning', 'Beginning'),
-            ('developing', 'Developing'),
-            ('proficient', 'Proficient'),
-            ('advanced', 'Advanced'),
-        ],
-        null=True,
-        blank=True,
-        verbose_name=_("Baseline Level")
-    )
-    
-    current_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('beginning', 'Beginning'),
-            ('developing', 'Developing'),
-            ('proficient', 'Proficient'),
-            ('advanced', 'Advanced'),
-        ],
-        verbose_name=_("Current Level")
-    )
-    
-    target_level = models.CharField(
-        max_length=20,
-        choices=[
-            ('beginning', 'Beginning'),
-            ('developing', 'Developing'),
-            ('proficient', 'Proficient'),
-            ('advanced', 'Advanced'),
-        ],
-        verbose_name=_("Target Level")
-    )
-    
-    # Evidence and tracking
-    evidence = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Evidence of competency development"),
-        verbose_name=_("Evidence")
-    )
-    
-    teacher_comments = models.TextField(
-        blank=True,
-        null=True,
-        verbose_name=_("Teacher Comments")
-    )
-    
-    last_assessed = models.DateField(null=True, blank=True, verbose_name=_("Last Assessed"))
-    next_review = models.DateField(null=True, blank=True, verbose_name=_("Next Review"))
-    
-    class Meta:
-        verbose_name = _("Competency Tracking")
-        verbose_name_plural = _("Competency Tracking")
-        unique_together = ['student', 'academic_year', 'competency_area']
-        ordering = ['competency_area']
-        indexes = [
-            models.Index(fields=['student', 'academic_year']),
-            models.Index(fields=['competency_area', 'current_level']),
-        ]
-    
-    def __str__(self):
-        return f"{self.student.full_name} - {self.get_competency_area_display()}"
-    
-    @property
-    def has_improved(self):
-        """Check if student has improved from baseline."""
-        if not self.baseline_level:
-            return None
-        
-        levels = ['beginning', 'developing', 'proficient', 'advanced']
-        try:
-            baseline_index = levels.index(self.baseline_level)
-            current_index = levels.index(self.current_level)
-            return current_index > baseline_index
-        except ValueError:
-            return None
-
-
-class CurriculumMapping(BaseAcademicModel):
-    """Model for mapping curriculum standards and competencies."""
-    
-    curriculum_system = models.CharField(
-        max_length=30,
-        choices=AcademicYear.CURRICULUM_SYSTEMS,
-        verbose_name=_("Curriculum System")
-    )
-    
-    grade_level = models.CharField(
-        max_length=20,
-        choices=GRADE_LEVEL_CHOICES,
-        verbose_name=_("Grade Level")
-    )
-    
-    subject = models.ForeignKey(
-        Subject,
-        on_delete=models.CASCADE,
-        related_name='curriculum_mappings',
-        verbose_name=_("Subject")
-    )
-    
-    # Standards mapping
-    standard_code = models.CharField(max_length=50, verbose_name=_("Standard Code"))
-    standard_description = models.TextField(verbose_name=_("Standard Description"))
-    
-    # Competency alignment
-    aligned_competencies = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Competencies aligned with this standard"),
-        verbose_name=_("Aligned Competencies")
-    )
-    
-    # Learning outcomes
-    learning_outcomes = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Specific learning outcomes"),
-        verbose_name=_("Learning Outcomes")
-    )
-    
-    # Assessment criteria
-    assessment_criteria = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Assessment criteria for this standard"),
-        verbose_name=_("Assessment Criteria")
-    )
-    
-    # Resources and links
-    resources = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Recommended resources"),
-        verbose_name=_("Resources")
-    )
-    
-    # International alignment
-    international_equivalents = models.JSONField(
-        default=list,
-        blank=True,
-        help_text=_("Equivalent standards in other curricula"),
-        verbose_name=_("International Equivalents")
-    )
-    
-    class Meta:
-        verbose_name = _("Curriculum Mapping")
-        verbose_name_plural = _("Curriculum Mappings")
-        unique_together = ['curriculum_system', 'grade_level', 'subject', 'standard_code']
-        ordering = ['curriculum_system', 'grade_level', 'subject']
-        indexes = [
-            models.Index(fields=['curriculum_system', 'grade_level']),
-            models.Index(fields=['subject', 'standard_code']),
-        ]
-    
-    def __str__(self):
-        return f"{self.get_curriculum_system_display()} - {self.get_grade_level_display()} - {self.standard_code}"
+    @classmethod
+    def load(cls):
+        """Load or create academic configuration"""
+        obj, created = cls.objects.get_or_create(pk=1)
+        return obj

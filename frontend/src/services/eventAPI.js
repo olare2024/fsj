@@ -7,7 +7,7 @@ export const eventAPI = {
   // Get all events with filtering and pagination
   getEvents: async (params = {}) => {
     try {
-      const response = await api.get('/events/events/', { params });
+      const response = await api.get('/events/', { params });
       return {
         success: true,
         data: response.data,
@@ -131,7 +131,7 @@ export const eventAPI = {
   // Get upcoming events
   getUpcomingEvents: async (params = {}) => {
     try {
-      const response = await api.get('/events/events/upcoming/', { params });
+      const response = await api.get('/events/upcoming/', { params });
       return {
         success: true,
         data: response.data,
@@ -151,7 +151,7 @@ export const eventAPI = {
   // Get ongoing events
   getOngoingEvents: async (params = {}) => {
     try {
-      const response = await api.get('/events/events/ongoing/', { params });
+      const response = await api.get('/events/ongoing/', { params });
       return {
         success: true,
         data: response.data,
@@ -171,7 +171,7 @@ export const eventAPI = {
   // Get past events
   getPastEvents: async (params = {}) => {
     try {
-      const response = await api.get('/events/events/past/', { params });
+      const response = await api.get('/events/past/', { params });
       return {
         success: true,
         data: response.data,
@@ -191,7 +191,7 @@ export const eventAPI = {
   // Get featured events
   getFeaturedEvents: async (params = {}) => {
     try {
-      const response = await api.get('/events/events/featured/', { params });
+      const response = await api.get('/events/featured/', { params });
       return {
         success: true,
         data: response.data,

@@ -1,28 +1,77 @@
-# accounts/admin.py
+# accounts/admin.py - REFACTORED AND ORGANIZED VERSION
 
-from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from django.utils.translation import gettext_lazy as _
-from django.utils.html import format_html
-from django.urls import reverse
-from django.db.models import Count, Q
-from django.contrib import messages
-from .models import User, UserProfile, TwoFactorAuth, OTPToken, LoginHistory
-from django.db.models import F
-from django.utils import timezone
+import csv
+import logging
 from datetime import timedelta
+
+from django import forms
+from django.contrib import admin, messages
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.forms import UserChangeForm, UserCreationForm
+from django.db import models
+from django.db.models import Count
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import redirect, render
+from django.urls import path, reverse
+from django.utils import timezone
+from django.utils.html import format_html
+from django.utils.translation import gettext_lazy as _
+
+from .models import (
+    LoginHistory, OTPToken, TwoFactorAuth, User, UserProfile,
+    EmailVerification, LoginSession, GenderChoices, UserRole,
+    CurriculumChoices, HouseChoices, BloodGroupChoices,
+    TwoFAMethodChoices, TokenTypeChoices, LoginStatusChoices,
+    SessionStatusChoices
+)
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# INLINES
+# CUSTOM FORMS
+# ============================================================================
+
+class CustomUserCreationForm(UserCreationForm):
+    """Custom user creation form for admin"""
+    class Meta:
+        model = User
+        fields = ('email', 'first_name', 'last_name', 'role')
+    
+    def clean(self):
+        """Clean form data - skip admission_number and staff_id validation"""
+        cleaned_data = super().clean()
+        return cleaned_data
+    
+    def save(self, commit=True):
+        """Save the user - admission_number and staff_id will be auto-generated"""
+        user = super().save(commit=False)
+        if commit:
+            user.save()
+        return user
+
+
+class CustomUserChangeForm(UserChangeForm):
+    """Custom user change form for admin"""
+    class Meta:
+        model = User
+        fields = '__all__'
+    
+    def clean(self):
+        """Clean form - skip admission_number and staff_id validation"""
+        cleaned_data = super().clean()
+        return cleaned_data
+
+
+# ============================================================================
+# INLINE ADMIN CLASSES
 # ============================================================================
 
 class UserProfileInline(admin.StackedInline):
-    """Inline for UserProfile in User admin"""
+    """Inline admin for UserProfile"""
     model = UserProfile
     can_delete = False
     verbose_name_plural = _('User Profile')
-
     fields = (
         'bio', 'website', 'social_links', 'hobbies',
         'notifications_enabled', 'email_notifications',
@@ -30,20 +79,23 @@ class UserProfileInline(admin.StackedInline):
         'language', 'timezone', 'profile_visibility',
         'contact_preference'
     )
-    readonly_fields = ('achievements', 'skills', 'education_background')
+    readonly_fields = ('skills', 'achievements', 'education_background')
 
 
-class TwoFactorAuthInline(admin.TabularInline):
-    """Inline for TwoFactorAuth in User admin"""
+class TwoFactorAuthInline(admin.StackedInline):
+    """Inline admin for TwoFactorAuth"""
     model = TwoFactorAuth
     can_delete = False
-    verbose_name_plural = _('Two-Factor Authentication')
-    fields = ('is_enabled', 'primary_method', 'last_used', 'recovery_email')
-    readonly_fields = ('last_used',)
+    verbose_name_plural = _('Two Factor Authentication')
+    fields = (
+        'is_enabled', 'primary_method', 'last_used',
+        'recovery_email', 'recovery_phone', 'last_backup_code_generated'
+    )
+    readonly_fields = ('secret_key', 'backup_codes')
 
 
 # ============================================================================
-# FILTERS
+# CUSTOM FILTERS
 # ============================================================================
 
 class RoleFilter(admin.SimpleListFilter):
@@ -52,7 +104,7 @@ class RoleFilter(admin.SimpleListFilter):
     parameter_name = 'role'
 
     def lookups(self, request, model_admin):
-        return User.Role.choices
+        return UserRole.choices
 
     def queryset(self, request, queryset):
         if self.value():
@@ -74,34 +126,217 @@ class ProfileCompletionFilter(admin.SimpleListFilter):
     def queryset(self, request, queryset):
         if self.value() == 'completed':
             return queryset.filter(profile_completed=True)
-        elif self.value() == 'incomplete':
+        if self.value() == 'incomplete':
             return queryset.filter(profile_completed=False)
         return queryset
 
 
-class VerificationStatusFilter(admin.SimpleListFilter):
-    """Filter users by verification status"""
-    title = _('Verification Status')
-    parameter_name = 'verification_status'
+class AccountStatusFilter(admin.SimpleListFilter):
+    """Filter users by account status"""
+    title = _('Account Status')
+    parameter_name = 'status'
 
     def lookups(self, request, model_admin):
         return (
-            ('verified', _('Verified')),
-            ('unverified', _('Unverified')),
+            ('active', _('Active')),
             ('suspended', _('Suspended')),
-            ('pending', _('Pending Approval')),
+            ('pending_approval', _('Pending Approval')),
+            ('on_leave', _('On Leave')),
         )
 
     def queryset(self, request, queryset):
-        if self.value() == 'verified':
-            return queryset.filter(is_verified=True, is_suspended=False)
-        elif self.value() == 'unverified':
-            return queryset.filter(is_verified=False, is_suspended=False)
-        elif self.value() == 'suspended':
+        if self.value() == 'active':
+            return queryset.filter(is_active=True, is_suspended=False)
+        if self.value() == 'suspended':
             return queryset.filter(is_suspended=True)
-        elif self.value() == 'pending':
-            return queryset.filter(is_approved=False, is_suspended=False)
+        if self.value() == 'pending_approval':
+            return queryset.filter(is_approved=False, is_active=True)
+        if self.value() == 'on_leave':
+            return queryset.filter(is_on_leave=True)
         return queryset
+
+
+class LastLoginFilter(admin.SimpleListFilter):
+    """Filter users by last login time"""
+    title = _('Last Login')
+    parameter_name = 'last_login'
+
+    def lookups(self, request, model_admin):
+        return (
+            ('today', _('Today')),
+            ('week', _('This Week')),
+            ('month', _('This Month')),
+            ('year', _('This Year')),
+            ('never', _('Never Logged In')),
+        )
+
+    def queryset(self, request, queryset):
+        now = timezone.now()
+        if self.value() == 'today':
+            today = now.date()
+            return queryset.filter(last_login__date=today)
+        if self.value() == 'week':
+            week_ago = now - timedelta(days=7)
+            return queryset.filter(last_login__gte=week_ago)
+        if self.value() == 'month':
+            month_ago = now - timedelta(days=30)
+            return queryset.filter(last_login__gte=month_ago)
+        if self.value() == 'year':
+            year_ago = now - timedelta(days=365)
+            return queryset.filter(last_login__gte=year_ago)
+        if self.value() == 'never':
+            return queryset.filter(last_login__isnull=True)
+        return queryset
+
+
+# ============================================================================
+# ADMIN ACTIONS
+# ============================================================================
+
+@admin.action(description=_("Approve selected users"))
+def approve_users(modeladmin, request, queryset):
+    """Approve selected users"""
+    updated = queryset.update(is_approved=True, is_verified=True)
+    modeladmin.message_user(
+        request,
+        _("Successfully approved %(count)d user(s)") % {'count': updated},
+        messages.SUCCESS
+    )
+
+
+@admin.action(description=_("Suspend selected users"))
+def suspend_users(modeladmin, request, queryset):
+    """Suspend selected users"""
+    updated = queryset.update(is_suspended=True)
+    modeladmin.message_user(
+        request,
+        _("Successfully suspended %(count)d user(s)") % {'count': updated},
+        messages.SUCCESS
+    )
+
+
+@admin.action(description=_("Unsuspend selected users"))
+def unsuspend_users(modeladmin, request, queryset):
+    """Unsuspend selected users"""
+    updated = queryset.update(is_suspended=False)
+    modeladmin.message_user(
+        request,
+        _("Successfully unsuspended %(count)d user(s)") % {'count': updated},
+        messages.SUCCESS
+    )
+
+
+@admin.action(description=_("Mark as verified"))
+def verify_users(modeladmin, request, queryset):
+    """Mark selected users as verified"""
+    updated = queryset.update(is_verified=True, email_verified=True)
+    modeladmin.message_user(
+        request,
+        _("Successfully verified %(count)d user(s)") % {'count': updated},
+        messages.SUCCESS
+    )
+
+
+@admin.action(description=_("Send verification email"))
+def send_verification_email(modeladmin, request, queryset):
+    """Send verification email to selected users"""
+    success_count = 0
+    for user in queryset:
+        try:
+            user.send_verification_email(request)
+            success_count += 1
+        except Exception as e:
+            modeladmin.message_user(
+                request,
+                _("Failed to send verification email to %(email)s: %(error)s") % {
+                    'email': user.email,
+                    'error': str(e)
+                },
+                messages.ERROR
+            )
+    
+    if success_count > 0:
+        modeladmin.message_user(
+            request,
+            _("Verification emails sent to %(count)d user(s)") % {'count': success_count},
+            messages.SUCCESS
+        )
+
+
+@admin.action(description=_("Reset password"))
+def reset_password(modeladmin, request, queryset):
+    """Initiate password reset for selected users"""
+    success_count = 0
+    for user in queryset:
+        try:
+            user.initiate_password_reset(request)
+            success_count += 1
+        except Exception as e:
+            modeladmin.message_user(
+                request,
+                _("Failed to reset password for %(email)s: %(error)s") % {
+                    'email': user.email,
+                    'error': str(e)
+                },
+                messages.ERROR
+            )
+    
+    if success_count > 0:
+        modeladmin.message_user(
+            request,
+            _("Password reset emails sent to %(count)d user(s)") % {'count': success_count},
+            messages.SUCCESS
+        )
+
+
+@admin.action(description=_("Export user data (GDPR)"))
+def export_user_data(modeladmin, request, queryset):
+    """Export user data for GDPR compliance"""
+    data = []
+    for user in queryset:
+        user_data = user.export_data(include_sensitive=True)
+        data.append(user_data)
+    
+    response = JsonResponse(data, safe=False)
+    response['Content-Disposition'] = 'attachment; filename="user_data_export.json"'
+    return response
+
+
+@admin.action(description=_("Bulk activate users"))
+def bulk_activate_users(modeladmin, request, queryset):
+    """Activate selected users"""
+    updated = queryset.update(is_active=True)
+    modeladmin.message_user(
+        request,
+        _("Activated %(count)d user(s)") % {'count': updated},
+        messages.SUCCESS
+    )
+
+
+@admin.action(description=_("Bulk deactivate users"))
+def bulk_deactivate_users(modeladmin, request, queryset):
+    """Deactivate selected users"""
+    updated = queryset.update(is_active=False)
+    modeladmin.message_user(
+        request,
+        _("Deactivated %(count)d user(s)") % {'count': updated},
+        messages.SUCCESS
+    )
+
+
+@admin.action(description=_("Force profile completion check"))
+def force_profile_check(modeladmin, request, queryset):
+    """Force profile completion check for selected users"""
+    checked_count = 0
+    for user in queryset:
+        user.check_profile_completion(force_check=True)
+        checked_count += 1
+    
+    modeladmin.message_user(
+        request,
+        _("Forced profile completion check for %(count)d user(s)") % {'count': checked_count},
+        messages.SUCCESS
+    )
 
 
 # ============================================================================
@@ -110,402 +345,372 @@ class VerificationStatusFilter(admin.SimpleListFilter):
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
-    """Custom User Admin with enhanced functionality"""
+    """Custom User admin interface"""
     
+    # Use custom forms
+    form = CustomUserChangeForm
+    add_form = CustomUserCreationForm
+    
+    # Fix the ordering field
+    ordering = ('email',)
+    
+    # Inline configurations
     inlines = [UserProfileInline, TwoFactorAuthInline]
+    
+    # List display configuration
     list_display = (
-        'email', 'full_name', 'role_display', 'profile_completion_badge',
-        'verification_status', 'last_login_display', 'actions'
+        'email', 'get_full_name', 'role', 'is_active', 
+        'is_verified', 'is_approved', 'is_suspended',
+        'last_login', 'profile_completion_badge', 'action_buttons'
     )
+    
+    list_display_links = ('email', 'get_full_name')
+    
+    # List filters
     list_filter = (
         RoleFilter,
         ProfileCompletionFilter,
-        VerificationStatusFilter,
-        'is_staff', 'is_active', 'is_superuser',
-        'date_joined', 'last_login'
+        AccountStatusFilter,
+        LastLoginFilter,
+        'is_staff', 
+        'is_superuser',
+        'email_verified',
+        'phone_verified',
+        'created_at'
     )
-    search_fields = ('email', 'first_name', 'last_name', 'admission_number', 'staff_id')
-    ordering = ('-date_joined',)
-    readonly_fields = (
-        'date_joined', 'last_login', 'last_login_ip',
-        'login_count', 'failed_login_attempts',
-        'profile_completion_date', 'last_profile_update',
-        'password_changed_at', 'last_activity',
-        'profile_completion_percentage_display',
-        'age_display', 'years_of_service_display',
-        'online_status', 'identifier_display'
-    )
-    actions = [
-        'activate_users', 'deactivate_users',
-        'verify_users', 'unverify_users',
-        'approve_users', 'suspend_users',
-        'mark_profiles_completed', 'send_welcome_email'
-    ]
     
+    # Search fields
+    search_fields = (
+        'email', 'first_name', 'last_name', 'middle_name',
+        'admission_number', 'staff_id', 'phone_number',
+        'id_number', 'parent_email'
+    )
+    
+    # Fieldsets for add/edit form
     fieldsets = (
         (_('Authentication'), {
-            'fields': ('email', 'password', 'date_joined', 'last_login')
+            'fields': ('email', 'password', 'role')
         }),
         (_('Personal Information'), {
             'fields': (
                 ('first_name', 'middle_name', 'last_name'),
-                ('date_of_birth', 'gender', 'nationality'),
-                ('phone_number', 'alternative_phone'),
-                ('address', 'city', 'country'),
-                'profile_picture',
-                'id_number'
+                'date_of_birth', 'gender', 'nationality',
+                'id_number', 'profile_picture'
             )
         }),
         (_('Academy Information'), {
             'fields': (
-                ('role', 'is_active', 'is_staff', 'is_superuser'),
-                ('admission_number', 'staff_id'),
-                ('grade_level', 'current_class', 'house'),
-                ('primary_curriculum', 'academic_year'),
-                ('enrollment_date', 'employment_date')
+                'admission_number', 'staff_id',
+                'grade_level', 'current_class', 'house',
+                'primary_curriculum', 'academic_year'
             )
         }),
-        (_('Professional Information'), {
+        (_('Contact Information'), {
             'fields': (
-                ('department', 'designation'),
-                ('qualification', 'specialization'),
-                'years_of_experience'
-            )
-        }),
-        (_('Parent/Guardian Information'), {
-            'fields': (
-                ('parent_name', 'parent_email', 'parent_phone'),
-                'parent_occupation'
+                'phone_number', 'alternative_phone',
+                'address', 'city', 'country'
             )
         }),
         (_('Emergency Contact'), {
             'fields': (
-                ('emergency_contact_name', 'emergency_contact_relationship'),
-                ('emergency_contact_phone', 'emergency_contact_address')
+                'emergency_contact_name',
+                'emergency_contact_phone',
+                'emergency_contact_relationship',
+                'emergency_contact_address'
             )
         }),
         (_('Medical Information'), {
             'fields': (
-                ('blood_group', 'medical_info'),
-                ('allergies', 'chronic_conditions'),
-                ('current_medications', 'doctor_name', 'doctor_phone')
+                'blood_group', 'medical_info',
+                'allergies', 'chronic_conditions',
+                'current_medications',
+                'doctor_name', 'doctor_phone'
             )
+        }),
+        (_('Student Information'), {
+            'fields': (
+                'parent_name', 'parent_email',
+                'parent_phone', 'parent_occupation',
+                'previous_school'
+            ),
+            'classes': ('collapse',)
+        }),
+        (_('Professional Information'), {
+            'fields': (
+                'department', 'qualification',
+                'specialization', 'designation',
+                'years_of_experience', 'employment_date'
+            ),
+            'classes': ('collapse',)
         }),
         (_('Documents'), {
             'fields': (
-                'previous_school',
-                ('transfer_certificate', 'birth_certificate', 'recommendation_letter')
-            )
-        }),
-        (_('Status & Verification'), {
-            'fields': (
-                ('is_verified', 'is_approved', 'is_suspended', 'is_on_leave'),
-                ('email_verified', 'phone_verified'),
-                ('profile_completed', 'profile_completion_date'),
-                'profile_requirements_met'
-            )
-        }),
-        (_('Dashboard Preferences'), {
-            'fields': (
-                ('preferred_dashboard_view', 'theme_preference'),
-                'dashboard_widgets'
-            )
-        }),
-        (_('Security & Activity'), {
-            'fields': (
-                ('last_login_ip', 'last_login_user_agent'),
-                ('login_count', 'failed_login_attempts'),
-                ('account_locked_until', 'password_changed_at'),
-                ('last_activity', 'last_profile_update')
-            )
-        }),
-        (_('Calculated Fields'), {
-            'fields': (
-                'profile_completion_percentage_display',
-                'age_display', 'years_of_service_display',
-                'online_status', 'identifier_display'
+                'transfer_certificate',
+                'birth_certificate',
+                'recommendation_letter'
             ),
+            'classes': ('collapse',)
+        }),
+        (_('Status & Permissions'), {
+            'fields': (
+                'is_active', 'is_staff', 'is_superuser',
+                'is_verified', 'is_approved', 'is_suspended',
+                'is_on_leave', 'email_verified', 'phone_verified',
+                'groups', 'user_permissions'
+            )
+        }),
+        (_('Profile & Settings'), {
+            'fields': (
+                'profile_completed', 'profile_completion_date',
+                'preferred_dashboard_view', 'dashboard_widgets',
+                'theme_preference'
+            )
+        }),
+        (_('Login Information'), {
+            'fields': (
+                'last_login', 'last_login_ip',
+                'login_count', 'failed_login_attempts',
+                'account_locked_until',
+                'password_changed_at'
+            ),
+            'classes': ('collapse',)
+        }),
+        (_('Important Dates'), {
+            'fields': ('date_joined', 'enrollment_date', 'last_profile_update'),
             'classes': ('collapse',)
         }),
     )
     
+    # Add form fieldsets - simplified for new user creation
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
             'fields': (
                 'email', 'first_name', 'last_name', 'role',
-                'password1', 'password2', 'is_staff', 'is_active'
+                'password1', 'password2'
             ),
         }),
     )
     
-    # === Custom List Display Methods ===
-    def full_name(self, obj):
-        """Display full name"""
-        return obj.get_full_name()
-    full_name.short_description = _('Full Name')
-    full_name.admin_order_field = 'last_name'
+    # Admin actions
+    actions = [
+        approve_users,
+        suspend_users,
+        unsuspend_users,
+        verify_users,
+        send_verification_email,
+        reset_password,
+        bulk_activate_users,
+        bulk_deactivate_users,
+        force_profile_check,
+        export_user_data
+    ]
     
-    def role_display(self, obj):
-        """Display role with badge"""
-        colors = {
-            'admin': 'red',
-            'head_teacher': 'purple',
-            'teacher': 'blue',
-            'student': 'green',
-            'parent': 'orange',
-            'accountant': 'teal',
-        }
-        color = colors.get(obj.role, 'gray')
-        return format_html(
-            '<span style="padding: 2px 6px; border-radius: 3px; '
-            f'background-color: {color}; color: white; font-size: 0.9em;">'
-            f'{obj.get_role_display()}'
-            '</span>'
-        )
-    role_display.short_description = _('Role')
+    # Readonly fields for viewing
+    def get_readonly_fields(self, request, obj=None):
+        readonly_fields = list(super().get_readonly_fields(request, obj))
+        if obj:  # editing an existing object
+            readonly_fields.extend([
+                'last_login', 'last_login_ip', 'login_count',
+                'failed_login_attempts', 'password_changed_at',
+                'date_joined', 'profile_completion_date',
+                'last_profile_update', 'admission_number', 'staff_id'
+            ])
+        return readonly_fields
+    
+    # Formfield overrides
+    formfield_overrides = {
+        models.JSONField: {'widget': admin.widgets.AdminTextareaWidget},
+        models.TextField: {'widget': admin.widgets.AdminTextareaWidget},
+    }
+    
+    # ====================
+    # CUSTOM LIST DISPLAY METHODS
+    # ====================
+    
+    def get_full_name(self, obj):
+        """Display full name in admin"""
+        return obj.get_full_name()
+    get_full_name.short_description = _('Full Name')
+    get_full_name.admin_order_field = 'first_name'
     
     def profile_completion_badge(self, obj):
-        """Display profile completion as badge"""
+        """Display profile completion as colored badge"""
         percentage = obj.profile_completion_percentage
-        if percentage == 100:
+        if percentage >= 100:
             color = 'green'
-            text = _('Complete')
-        elif percentage >= 70:
+        elif percentage >= 50:
             color = 'orange'
-            text = f'{percentage}%'
         else:
             color = 'red'
-            text = f'{percentage}%'
-        
         return format_html(
-            '<span style="padding: 2px 6px; border-radius: 3px; '
-            f'background-color: {color}; color: white; font-size: 0.9em;">'
-            f'{text}'
-            '</span>'
+            '<span style="color: {}; font-weight: bold;">{}%</span>',
+            color, percentage
         )
-    profile_completion_badge.short_description = _('Profile')
-    profile_completion_badge.admin_order_field = 'profile_completed'
+    profile_completion_badge.short_description = _('Profile Complete')
     
-    def verification_status(self, obj):
-        """Display verification status"""
-        if obj.is_suspended:
-            color = 'red'
-            text = _('Suspended')
-        elif not obj.is_verified:
-            color = 'orange'
-            text = _('Unverified')
-        elif not obj.is_approved:
-            color = 'yellow'
-            text = _('Pending')
-        else:
-            color = 'green'
-            text = _('Verified')
-        
+    def action_buttons(self, obj):
+        """Display quick action buttons"""
         return format_html(
-            '<span style="padding: 2px 6px; border-radius: 3px; '
-            f'background-color: {color}; color: white; font-size: 0.9em;">'
-            f'{text}'
-            '</span>'
+            '<div class="action-buttons">'
+            '<a href="{}" class="button" title="{}">🔐</a> '
+            '<a href="{}" class="button" title="{}">📧</a> '
+            '<a href="{}" class="button" title="{}">👁️</a>'
+            '</div>',
+            reverse('admin:auth_user_password_change', args=[obj.id]),
+            _('Change Password'),
+            reverse('admin:accounts_user_send_verification', args=[obj.id]),
+            _('Send Verification Email'),
+            reverse('admin:accounts_user_view_logins', args=[obj.id]),
+            _('View Login History')
         )
-    verification_status.short_description = _('Status')
+    action_buttons.short_description = _('Actions')
     
-    def last_login_display(self, obj):
-        """Display last login in human-readable format"""
-        if obj.last_login:
-            from django.utils import timezone
-            now = timezone.now()
-            diff = now - obj.last_login
-            
-            if diff.days == 0:
-                if diff.seconds < 60:
-                    return _('Just now')
-                elif diff.seconds < 3600:
-                    minutes = diff.seconds // 60
-                    return _('{} minutes ago').format(minutes)
-                else:
-                    hours = diff.seconds // 3600
-                    return _('{} hours ago').format(hours)
-            elif diff.days == 1:
-                return _('Yesterday')
-            elif diff.days < 7:
-                return _('{} days ago').format(diff.days)
-            else:
-                return obj.last_login.strftime('%Y-%m-%d')
-        return _('Never')
-    last_login_display.short_description = _('Last Login')
-
-    def user_actions(self, obj):
-        """Display action buttons"""
-        view_url = reverse('admin:accounts_user_change', args=[obj.id])
-        login_history_url = reverse('admin:accounts_loginhistory_changelist') + f'?user__id__exact={obj.id}'
-        otp_tokens_url = reverse('admin:accounts_otptoken_changelist') + f'?user__id__exact={obj.id}'
-        
-        return format_html(
-            '<a href="{}" class="button" title="{}">👁️</a>&nbsp;'
-            '<a href="{}" class="button" title="{}">📋</a>&nbsp;'
-            '<a href="{}" class="button" title="{}">🔑</a>',
-            view_url, _('Edit User'),
-            login_history_url, _('View Login History'),
-            otp_tokens_url, _('View OTP Tokens')
-        )
-    user_actions.short_description = _('Actions')
+    # ====================
+    # CUSTOM URLS AND VIEWS
+    # ====================
     
-    # === Custom Readonly Fields ===
-    def profile_completion_percentage_display(self, obj):
-        """Display profile completion percentage"""
-        percentage = obj.profile_completion_percentage
-        return f'{percentage}%'
-    profile_completion_percentage_display.short_description = _('Profile Completion')
+    def get_urls(self):
+        """Add custom URLs to user admin"""
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                '<path:object_id>/send-verification/',
+                self.admin_site.admin_view(self.send_verification_view),
+                name='accounts_user_send_verification'
+            ),
+            path(
+                '<path:object_id>/view-logins/',
+                self.admin_site.admin_view(self.view_logins_view),
+                name='accounts_user_view_logins'
+            ),
+        ]
+        return custom_urls + urls
     
-    def age_display(self, obj):
-        """Display age"""
-        if obj.age:
-            return f'{obj.age} years'
-        return 'N/A'
-    age_display.short_description = _('Age')
-    
-    def years_of_service_display(self, obj):
-        """Display years of service"""
-        if obj.years_of_service:
-            return f'{obj.years_of_service} years'
-        return 'N/A'
-    years_of_service_display.short_description = _('Years of Service')
-    
-    def online_status(self, obj):
-        """Display online status"""
-        if obj.is_online:
-            return format_html(
-                '<span style="color: green;">● {}</span>',
-                _('Online')
+    def send_verification_view(self, request, object_id):
+        """Custom view to send verification email"""
+        try:
+            user = User.objects.get(id=object_id)
+            user.send_verification_email(request)
+            self.message_user(
+                request,
+                _('Verification email sent to %(email)s') % {'email': user.email},
+                messages.SUCCESS
             )
-        return format_html(
-            '<span style="color: gray;">● {}</span>',
-            _('Offline')
-        )
-    online_status.short_description = _('Status')
-    
-    def identifier_display(self, obj):
-        """Display primary identifier"""
-        return obj.identifier
-    identifier_display.short_description = _('Identifier')
-    
-    # === Custom Actions ===
-    def activate_users(self, request, queryset):
-        """Activate selected users"""
-        updated = queryset.update(is_active=True)
-        self.message_user(
-            request,
-            _('Successfully activated {} users.').format(updated),
-            messages.SUCCESS
-        )
-    activate_users.short_description = _('Activate selected users')
-    
-    def deactivate_users(self, request, queryset):
-        """Deactivate selected users"""
-        updated = queryset.update(is_active=False)
-        self.message_user(
-            request,
-            _('Successfully deactivated {} users.').format(updated),
-            messages.SUCCESS
-        )
-    deactivate_users.short_description = _('Deactivate selected users')
-    
-    def verify_users(self, request, queryset):
-        """Verify selected users"""
-        updated = queryset.update(is_verified=True, is_approved=True)
-        self.message_user(
-            request,
-            _('Successfully verified {} users.').format(updated),
-            messages.SUCCESS
-        )
-    verify_users.short_description = _('Verify selected users')
-    
-    def unverify_users(self, request, queryset):
-        """Unverify selected users"""
-        updated = queryset.update(is_verified=False)
-        self.message_user(
-            request,
-            _('Successfully unverified {} users.').format(updated),
-            messages.SUCCESS
-        )
-    unverify_users.short_description = _('Unverify selected users')
-    
-    def approve_users(self, request, queryset):
-        """Approve selected users"""
-        updated = queryset.update(is_approved=True)
-        self.message_user(
-            request,
-            _('Successfully approved {} users.').format(updated),
-            messages.SUCCESS
-        )
-    approve_users.short_description = _('Approve selected users')
-    
-    def suspend_users(self, request, queryset):
-        """Suspend selected users"""
-        updated = queryset.update(is_suspended=True, is_active=False)
-        self.message_user(
-            request,
-            _('Successfully suspended {} users.').format(updated),
-            messages.SUCCESS
-        )
-    suspend_users.short_description = _('Suspend selected users')
-    
-    def mark_profiles_completed(self, request, queryset):
-        """Mark profiles as completed"""
-        for user in queryset:
-            user.mark_profile_completed()
-        self.message_user(
-            request,
-            _('Successfully marked {} profiles as completed.').format(queryset.count()),
-            messages.SUCCESS
-        )
-    mark_profiles_completed.short_description = _('Mark profiles as completed')
-    
-    def send_welcome_email(self, request, queryset):
-        """Send welcome email to selected users"""
-        from django.core.mail import send_mail
-        from django.template.loader import render_to_string
-        from django.utils.html import strip_tags
+        except Exception as e:
+            self.message_user(
+                request,
+                _('Failed to send verification email: %(error)s') % {'error': str(e)},
+                messages.ERROR
+            )
         
-        count = 0
-        for user in queryset:
-            if user.email:
-                try:
-                    subject = _("Welcome to Delvok Academy")
-                    html_message = render_to_string('accounts/welcome_email.html', {
-                        'user': user,
-                        'admin': request.user
-                    })
-                    plain_message = strip_tags(html_message)
-                    
-                    user.email_user(subject, plain_message, html_message=html_message)
-                    count += 1
-                except Exception as e:
-                    self.message_user(
-                        request,
-                        _('Failed to send email to {}: {}').format(user.email, str(e)),
-                        messages.ERROR
-                    )
-        
-        self.message_user(
-            request,
-            _('Successfully sent welcome emails to {} users.').format(count),
-            messages.SUCCESS
-        )
-    send_welcome_email.short_description = _('Send welcome email')
+        return redirect(reverse('admin:accounts_user_change', args=[object_id]))
     
-    # === Override Methods ===
+    def view_logins_view(self, request, object_id):
+        """Custom view to display user login history"""
+        try:
+            user = User.objects.get(id=object_id)
+            login_history = LoginHistory.objects.filter(user=user).order_by('-created_at')[:50]
+            
+            context = {
+                'title': _('Login History for %s') % user.email,
+                'user': user,
+                'login_history': login_history,
+                'opts': self.model._meta,
+                'app_label': self.model._meta.app_label,
+                'media': self.media,
+                'has_view_permission': True,
+                'has_add_permission': False,
+                'has_change_permission': False,
+                'has_delete_permission': False,
+            }
+            
+            return render(request, 'admin/accounts/user/view_logins.html', context)
+            
+        except User.DoesNotExist:
+            self.message_user(request, _('User not found'), messages.ERROR)
+            return redirect(reverse('admin:accounts_user_changelist'))
+    
+    # ====================
+    # CUSTOM VIEWS AND STATISTICS
+    # ====================
+    
+    def changelist_view(self, request, extra_context=None):
+        """Add statistics to changelist view"""
+        response = super().changelist_view(request, extra_context=extra_context)
+        
+        try:
+            # Get statistics
+            total_users = User.objects.count()
+            active_users = User.objects.filter(is_active=True).count()
+            staff_users = User.objects.filter(is_staff=True).count()
+            verified_users = User.objects.filter(is_verified=True).count()
+            
+            # Role statistics
+            role_stats = User.objects.values('role').annotate(
+                count=Count('id')
+            ).order_by('-count')
+            
+            # Profile completion statistics
+            completed_profiles = User.objects.filter(profile_completed=True).count()
+            incomplete_profiles = total_users - completed_profiles
+            
+            # Login statistics
+            recent_logins = User.objects.filter(
+                last_login__gte=timezone.now() - timedelta(days=7)
+            ).count()
+            
+            statistics = {
+                'total_users': total_users,
+                'active_users': active_users,
+                'staff_users': staff_users,
+                'verified_users': verified_users,
+                'role_stats': role_stats,
+                'completed_profiles': completed_profiles,
+                'incomplete_profiles': incomplete_profiles,
+                'recent_logins': recent_logins,
+            }
+            
+            if extra_context is None:
+                extra_context = {}
+            extra_context.update(statistics)
+            
+            response.context_data.update(extra_context)
+            
+        except Exception as e:
+            logger.error(f"Error loading statistics: {e}")
+            self.message_user(request, f"Error loading statistics: {e}", messages.ERROR)
+        
+        return response
+    
+    # ====================
+    # SAVE AND QUERYSET METHODS
+    # ====================
+    
+    def save_model(self, request, obj, form, change):
+        """Custom save model to handle password and logging"""
+        if not change:  # New user
+            if 'password' in form.cleaned_data and form.cleaned_data['password']:
+                obj.set_password(form.cleaned_data['password'])
+        
+        super().save_model(request, obj, form, change)
+        
+        # Log the action
+        if change:
+            action = _('updated')
+        else:
+            action = _('created')
+        
+        self.log_change(request, obj, [{'changed': {'fields': list(form.changed_data)}}])
+    
     def get_queryset(self, request):
-        """Optimize queryset for admin"""
-        qs = super().get_queryset(request)
-        return qs.select_related('user_profile').prefetch_related('two_factor_auth')
-    
-    def get_inline_instances(self, request, obj=None):
-        """Only show inlines when editing an existing object"""
-        if not obj:
-            return []
-        return super().get_inline_instances(request, obj)
+        """Custom queryset to optimize performance"""
+        queryset = super().get_queryset(request)
+        return queryset.select_related(
+            'user_profile', 'two_factor_auth'
+        ).prefetch_related(
+            'groups', 'user_permissions'
+        )
 
 
 # ============================================================================
@@ -514,77 +719,44 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    """Admin for UserProfile model"""
-    list_display = ('user_email', 'full_name', 'notifications_status', 'profile_visibility')
-    list_filter = ('notifications_enabled', 'profile_visibility', 'contact_preference')
+    """Admin for UserProfile"""
+    
+    list_display = ('user', 'language', 'timezone', 'notifications_enabled')
+    list_filter = ('language', 'timezone', 'notifications_enabled', 'profile_visibility')
     search_fields = ('user__email', 'user__first_name', 'user__last_name', 'bio')
-    readonly_fields = ('user_link', 'achievements', 'skills', 'education_background')
+    raw_id_fields = ('user',)
     
     fieldsets = (
-        (_('User Information'), {
-            'fields': ('user_link',)
+        (None, {
+            'fields': ('user',)
         }),
         (_('Profile Information'), {
             'fields': ('bio', 'website', 'social_links', 'hobbies')
         }),
-        (_('Notifications'), {
+        (_('Settings'), {
             'fields': (
-                'notifications_enabled',
-                ('email_notifications', 'sms_notifications', 'push_notifications'),
+                'language', 'timezone', 'profile_visibility',
                 'contact_preference'
             )
         }),
-        (_('Preferences'), {
-            'fields': ('language', 'timezone', 'profile_visibility')
+        (_('Notifications'), {
+            'fields': (
+                'notifications_enabled',
+                'email_notifications',
+                'sms_notifications',
+                'push_notifications'
+            )
         }),
-        (_('Additional Information'), {
-            'fields': ('achievements', 'skills', 'education_background'),
+        (_('Skills & Achievements'), {
+            'fields': ('skills', 'achievements', 'education_background'),
             'classes': ('collapse',)
         }),
     )
     
-    def user_email(self, obj):
-        """Display user email"""
-        return obj.user.email
-    user_email.short_description = _('Email')
-    user_email.admin_order_field = 'user__email'
-    
-    def full_name(self, obj):
-        """Display full name"""
-        return obj.user.get_full_name()
-    full_name.short_description = _('Full Name')
-    full_name.admin_order_field = 'user__last_name'
-    
-    def user_link(self, obj):
-        """Display link to user"""
-        url = reverse('admin:accounts_user_change', args=[obj.user.id])
-        return format_html('<a href="{}">{}</a>', url, obj.user)
-    user_link.short_description = _('User')
-    
-    def notifications_status(self, obj):
-        """Display notifications status"""
-        if obj.notifications_enabled:
-            enabled = []
-            if obj.email_notifications:
-                enabled.append('Email')
-            if obj.sms_notifications:
-                enabled.append('SMS')
-            if obj.push_notifications:
-                enabled.append('Push')
-            
-            return format_html(
-                '<span style="color: green;">✓ {}</span>',
-                ', '.join(enabled) or _('None')
-            )
-        return format_html(
-            '<span style="color: red;">✗ {}</span>',
-            _('Disabled')
-        )
-    notifications_status.short_description = _('Notifications')
-    
-    def get_queryset(self, request):
-        """Optimize queryset"""
-        return super().get_queryset(request).select_related('user')
+    def get_readonly_fields(self, request, obj=None):
+        if obj:
+            return ['user'] + list(super().get_readonly_fields(request, obj))
+        return super().get_readonly_fields(request, obj)
 
 
 # ============================================================================
@@ -593,152 +765,78 @@ class UserProfileAdmin(admin.ModelAdmin):
 
 @admin.register(TwoFactorAuth)
 class TwoFactorAuthAdmin(admin.ModelAdmin):
-    """Admin for TwoFactorAuth model"""
-    list_display = ('user_email', 'full_name', 'is_enabled_badge', 'primary_method', 'last_used', 'backup_codes_count')
-    list_filter = ('is_enabled', 'primary_method')
-    search_fields = ('user__email', 'user__first_name', 'user__last_name', 'recovery_email')
-    readonly_fields = ('user_link', 'secret_key', 'last_used', 'backup_codes_list', 'qr_code_display')
+    """Admin for TwoFactorAuth"""
+    
+    list_display = ('user', 'is_enabled', 'primary_method', 'last_used')
+    list_filter = ('is_enabled', 'primary_method', 'last_used')
+    search_fields = ('user__email', 'user__first_name', 'user__last_name')
+    raw_id_fields = ('user',)
+    readonly_fields = ('secret_key', 'backup_codes', 'last_backup_code_generated')
     
     fieldsets = (
-        (_('User Information'), {
-            'fields': ('user_link',)
+        (None, {
+            'fields': ('user', 'is_enabled', 'primary_method')
         }),
-        (_('2FA Configuration'), {
-            'fields': (
-                'is_enabled', 'primary_method',
-                ('recovery_email', 'recovery_phone'),
-                'secret_key', 'qr_code_display'
-            )
-        }),
-        (_('Usage'), {
-            'fields': ('last_used', 'last_backup_code_generated')
-        }),
-        (_('Backup Codes'), {
-            'fields': ('backup_codes_list',),
+        (_('Security Information'), {
+            'fields': ('secret_key', 'backup_codes'),
             'classes': ('collapse',)
         }),
+        (_('Recovery Options'), {
+            'fields': ('recovery_email', 'recovery_phone')
+        }),
+        (_('Activity'), {
+            'fields': ('last_used', 'last_backup_code_generated')
+        }),
         (_('Session Management'), {
-            'fields': ('pending_session_token', 'pending_session_expiry', 'pending_redirect_url'),
+            'fields': (
+                'pending_session_token',
+                'pending_session_expiry',
+                'pending_redirect_url'
+            ),
             'classes': ('collapse',)
         }),
     )
     
-    actions = ['enable_2fa', 'disable_2fa', 'regenerate_backup_codes']
+    actions = ['enable_2fa', 'disable_2fa', 'generate_backup_codes']
     
-    def user_email(self, obj):
-        """Display user email"""
-        return obj.user.email
-    user_email.short_description = _('Email')
-    user_email.admin_order_field = 'user__email'
-    
-    def full_name(self, obj):
-        """Display full name"""
-        return obj.user.get_full_name()
-    full_name.short_description = _('Full Name')
-    full_name.admin_order_field = 'user__last_name'
-    
-    def is_enabled_badge(self, obj):
-        """Display enabled status as badge"""
-        if obj.is_enabled:
-            return format_html(
-                '<span style="padding: 2px 6px; border-radius: 3px; '
-                'background-color: green; color: white; font-size: 0.9em;">'
-                '✓ Enabled'
-                '</span>'
-            )
-        return format_html(
-            '<span style="padding: 2px 6px; border-radius: 3px; '
-            'background-color: red; color: white; font-size: 0.9em;">'
-            '✗ Disabled'
-            '</span>'
-        )
-    is_enabled_badge.short_description = _('Status')
-    
-    def backup_codes_count(self, obj):
-        """Count unused backup codes"""
-        unused = obj.get_unused_backup_codes()
-        return f'{len(unused)}/{len(obj.backup_codes)}'
-    backup_codes_count.short_description = _('Backup Codes')
-    
-    def user_link(self, obj):
-        """Display link to user"""
-        url = reverse('admin:accounts_user_change', args=[obj.user.id])
-        return format_html('<a href="{}">{}</a>', url, obj.user)
-    user_link.short_description = _('User')
-    
-    def backup_codes_list(self, obj):
-        """Display backup codes in readable format"""
-        if not obj.backup_codes:
-            return _('No backup codes generated')
-        
-        html = '<table style="width: 100%;">'
-        html += '<tr><th>Code</th><th>Used</th><th>Generated At</th><th>Used At</th></tr>'
-        
-        for code in obj.backup_codes:
-            used = '✓' if code.get('used') else '✗'
-            used_at = code.get('used_at', 'N/A')
-            generated_at = code.get('generated_at', 'N/A')
-            
-            html += f'<tr>'
-            html += f'<td><code>{code.get("code")}</code></td>'
-            html += f'<td style="text-align: center;">{used}</td>'
-            html += f'<td>{generated_at}</td>'
-            html += f'<td>{used_at}</td>'
-            html += f'</tr>'
-        
-        html += '</table>'
-        return format_html(html)
-    backup_codes_list.short_description = _('Backup Codes')
-    
-    def qr_code_display(self, obj):
-        """Display QR code for 2FA setup"""
-        if obj.is_enabled and obj.primary_method == 'authenticator':
-            qr_code = obj.generate_qr_code()
-            if qr_code:
-                return format_html(
-                    '<img src="data:image/png;base64,{}" alt="QR Code" style="max-width: 200px;" />',
-                    qr_code
-                )
-        return _('QR code available only for enabled authenticator 2FA')
-    qr_code_display.short_description = _('QR Code')
-    
-    # === Custom Actions ===
+    @admin.action(description=_("Enable 2FA for selected users"))
     def enable_2fa(self, request, queryset):
         """Enable 2FA for selected users"""
-        for two_fa in queryset:
-            two_fa.is_enabled = True
-            two_fa.save()
-        
+        updated = queryset.update(is_enabled=True)
         self.message_user(
             request,
-            _('Successfully enabled 2FA for {} users.').format(queryset.count()),
+            _("Enabled 2FA for %(count)d user(s)") % {'count': updated},
             messages.SUCCESS
         )
-    enable_2fa.short_description = _('Enable 2FA')
     
+    @admin.action(description=_("Disable 2FA for selected users"))
     def disable_2fa(self, request, queryset):
         """Disable 2FA for selected users"""
-        for two_fa in queryset:
-            two_fa.disable_2fa()
-        
+        for obj in queryset:
+            obj.disable_2fa()
         self.message_user(
             request,
-            _('Successfully disabled 2FA for {} users.').format(queryset.count()),
+            _("Disabled 2FA for %(count)d user(s)") % {'count': queryset.count()},
             messages.SUCCESS
         )
-    disable_2fa.short_description = _('Disable 2FA')
     
-    def regenerate_backup_codes(self, request, queryset):
-        """Regenerate backup codes for selected users"""
-        for two_fa in queryset:
-            two_fa.generate_backup_codes()
-        
-        self.message_user(
-            request,
-            _('Successfully regenerated backup codes for {} users.').format(queryset.count()),
-            messages.SUCCESS
-        )
-    regenerate_backup_codes.short_description = _('Regenerate Backup Codes')
+    @admin.action(description=_("Generate backup codes"))
+    def generate_backup_codes(self, request, queryset):
+        """Generate backup codes for selected users"""
+        for obj in queryset:
+            if obj.is_enabled:
+                backup_codes = obj.generate_backup_codes()
+                self.message_user(
+                    request,
+                    _("Generated backup codes for %(email)s") % {'email': obj.user.email},
+                    messages.SUCCESS
+                )
+            else:
+                self.message_user(
+                    request,
+                    _("2FA is not enabled for %(email)s") % {'email': obj.user.email},
+                    messages.WARNING
+                )
 
 
 # ============================================================================
@@ -747,22 +845,23 @@ class TwoFactorAuthAdmin(admin.ModelAdmin):
 
 @admin.register(OTPToken)
 class OTPTokenAdmin(admin.ModelAdmin):
-    """Admin for OTPToken model"""
-    list_display = ('token', 'user_email', 'token_type_badge', 'purpose', 'is_used_badge', 'created_at', 'expires_at')
+    """Admin for OTPToken"""
+    
+    list_display = ('user', 'token', 'token_type', 'is_used', 'created_at', 'expires_at')
     list_filter = ('token_type', 'is_used', 'created_at')
-    search_fields = ('token', 'user__email', 'purpose', 'ip_address')
-    readonly_fields = ('user_link', 'token', 'created_at', 'expires_at', 'used_at', 'validity_status')
-    list_per_page = 50
+    search_fields = ('user__email', 'token', 'purpose')
+    raw_id_fields = ('user',)
+    readonly_fields = ('token', 'ip_address', 'user_agent')
     
     fieldsets = (
-        (_('Token Information'), {
-            'fields': ('token', 'token_type', 'purpose')
-        }),
-        (_('User Information'), {
-            'fields': ('user_link',)
+        (None, {
+            'fields': ('user', 'token', 'token_type', 'purpose')
         }),
         (_('Status'), {
-            'fields': ('is_used', 'validity_status', ('created_at', 'expires_at', 'used_at'))
+            'fields': ('is_used', 'used_at')
+        }),
+        (_('Timestamps'), {
+            'fields': ('created_at', 'expires_at')
         }),
         (_('Request Information'), {
             'fields': ('ip_address', 'user_agent'),
@@ -770,116 +869,56 @@ class OTPTokenAdmin(admin.ModelAdmin):
         }),
     )
     
-    actions = ['mark_as_used', 'mark_as_unused', 'delete_expired']
+    # Don't allow adding new tokens via admin
+    def has_add_permission(self, request):
+        return False
     
-    def user_email(self, obj):
-        """Display user email"""
-        return obj.user.email
-    user_email.short_description = _('Email')
-    user_email.admin_order_field = 'user__email'
+    # Don't allow changing existing tokens
+    def has_change_permission(self, request, obj=None):
+        return False if obj else True
     
-    def token_type_badge(self, obj):
-        """Display token type as badge"""
-        colors = {
-            'email_verification': 'blue',
-            'password_reset': 'orange',
-            'login_verification': 'green',
-            'account_recovery': 'red',
-        }
-        color = colors.get(obj.token_type, 'gray')
-        return format_html(
-            '<span style="padding: 2px 6px; border-radius: 3px; '
-            f'background-color: {color}; color: white; font-size: 0.9em;">'
-            f'{obj.get_token_type_display()}'
-            '</span>'
-        )
-    token_type_badge.short_description = _('Type')
+    # Actions
+    actions = ['mark_as_used', 'mark_as_unused', 'cleanup_expired_tokens']
     
-    def is_used_badge(self, obj):
-        """Display used status as badge"""
-        if obj.is_used:
-            return format_html(
-                '<span style="padding: 2px 6px; border-radius: 3px; '
-                'background-color: gray; color: white; font-size: 0.9em;">'
-                'Used'
-                '</span>'
-            )
-        
-        if obj.is_valid():
-            return format_html(
-                '<span style="padding: 2px 6px; border-radius: 3px; '
-                'background-color: green; color: white; font-size: 0.9em;">'
-                'Valid'
-                '</span>'
-            )
-        else:
-            return format_html(
-                '<span style="padding: 2px 6px; border-radius: 3px; '
-                'background-color: red; color: white; font-size: 0.9em;">'
-                'Expired'
-                '</span>'
-            )
-    is_used_badge.short_description = _('Status')
-    
-    def user_link(self, obj):
-        """Display link to user"""
-        url = reverse('admin:accounts_user_change', args=[obj.user.id])
-        return format_html('<a href="{}">{}</a>', url, obj.user)
-    user_link.short_description = _('User')
-    
-    def validity_status(self, obj):
-        """Display validity status"""
-        from django.utils import timezone
-        
-        if obj.is_used:
-            return _('Used at {}').format(obj.used_at.strftime('%Y-%m-%d %H:%M:%S'))
-        
-        if obj.expires_at > timezone.now():
-            time_left = obj.expires_at - timezone.now()
-            minutes = int(time_left.total_seconds() / 60)
-            return _('Valid for {} minutes').format(minutes)
-        else:
-            return _('Expired')
-    validity_status.short_description = _('Validity')
-    
-    # === Custom Actions ===
+    @admin.action(description=_("Mark selected tokens as used"))
     def mark_as_used(self, request, queryset):
         """Mark selected tokens as used"""
         updated = queryset.update(is_used=True, used_at=timezone.now())
         self.message_user(
             request,
-            _('Successfully marked {} tokens as used.').format(updated),
+            _("Marked %(count)d token(s) as used") % {'count': updated},
             messages.SUCCESS
         )
-    mark_as_used.short_description = _('Mark as used')
     
+    @admin.action(description=_("Mark selected tokens as unused"))
     def mark_as_unused(self, request, queryset):
         """Mark selected tokens as unused"""
         updated = queryset.update(is_used=False, used_at=None)
         self.message_user(
             request,
-            _('Successfully marked {} tokens as unused.').format(updated),
+            _("Marked %(count)d token(s) as unused") % {'count': updated},
             messages.SUCCESS
         )
-    mark_as_unused.short_description = _('Mark as unused')
     
-    def delete_expired(self, request, queryset):
-        """Delete expired tokens"""
-        from django.utils import timezone
-        expired = queryset.filter(expires_at__lt=timezone.now())
-        count = expired.count()
-        expired.delete()
+    @admin.action(description=_("Cleanup expired tokens"))
+    def cleanup_expired_tokens(self, request, queryset=None):
+        """Cleanup expired tokens"""
+        if queryset is None:
+            expired_tokens = OTPToken.objects.filter(expires_at__lt=timezone.now())
+        else:
+            expired_tokens = queryset.filter(expires_at__lt=timezone.now())
         
+        count, _ = expired_tokens.delete()
         self.message_user(
             request,
-            _('Successfully deleted {} expired tokens.').format(count),
+            _("Deleted %(count)d expired token(s)") % {'count': count},
             messages.SUCCESS
         )
-    delete_expired.short_description = _('Delete expired tokens')
     
     def get_queryset(self, request):
-        """Optimize queryset"""
-        return super().get_queryset(request).select_related('user')
+        """Show only recent tokens by default"""
+        qs = super().get_queryset(request)
+        return qs.filter(created_at__gte=timezone.now() - timedelta(days=30))
 
 
 # ============================================================================
@@ -888,195 +927,367 @@ class OTPTokenAdmin(admin.ModelAdmin):
 
 @admin.register(LoginHistory)
 class LoginHistoryAdmin(admin.ModelAdmin):
-    """Admin for LoginHistory model"""
-    list_display = ('user_email', 'full_name', 'login_status_badge', 'ip_address', 'location', 'device_info', 'created_at', 'suspicious_flag')
-    list_filter = ('login_status', 'is_suspicious', 'device_type', 'browser', 'country', 'created_at')
-    search_fields = ('user__email', 'user__first_name', 'user__last_name', 'ip_address', 'location', 'user_agent')
-    readonly_fields = ('user_link', 'created_at', 'device_info_display', 'location_display', 'suspicious_reason')
-    list_per_page = 50
+    """Admin for LoginHistory"""
+    
+    list_display = ('user', 'ip_address', 'login_status', 'created_at', 'is_suspicious')
+    list_filter = ('login_status', 'is_suspicious', 'created_at', 'device_type', 'browser')
+    search_fields = ('user__email', 'ip_address', 'location', 'user_agent')
+    raw_id_fields = ('user',)
+    readonly_fields = ('created_at', 'updated_at')
     
     fieldsets = (
-        (_('User Information'), {
-            'fields': ('user_link',)
+        (None, {
+            'fields': ('user', 'login_status', 'failure_reason')
         }),
-        (_('Login Details'), {
-            'fields': ('login_status', 'failure_reason', 'created_at')
+        (_('Device Information'), {
+            'fields': ('device_type', 'browser', 'platform', 'user_agent')
         }),
-        (_('Device & Location'), {
-            'fields': ('device_info_display', 'location_display')
+        (_('Location Information'), {
+            'fields': ('ip_address', 'country', 'city', 'location')
         }),
         (_('Security'), {
-            'fields': ('is_suspicious', 'suspicious_reason'),
-            'classes': ('collapse',)
+            'fields': ('is_suspicious', 'two_fa_method', 'session_key')
         }),
-        (_('Technical Details'), {
-            'fields': ('ip_address', 'user_agent', 'session_key', 'two_fa_method'),
-            'classes': ('collapse',)
+        (_('Timestamps'), {
+            'fields': ('created_at', 'updated_at')
         }),
     )
     
-    actions = ['mark_as_suspicious', 'mark_as_normal', 'delete_old_records']
+    # Don't allow adding new login history via admin
+    def has_add_permission(self, request):
+        return False
     
-    def user_email(self, obj):
-        """Display user email"""
-        return obj.user.email
-    user_email.short_description = _('Email')
-    user_email.admin_order_field = 'user__email'
+    # Don't allow changing login history
+    def has_change_permission(self, request, obj=None):
+        return False
     
-    def full_name(self, obj):
-        """Display full name"""
-        return obj.user.get_full_name()
-    full_name.short_description = _('Full Name')
-    full_name.admin_order_field = 'user__last_name'
+    # Actions
+    actions = ['mark_as_suspicious', 'mark_as_not_suspicious', 'export_to_csv']
     
-    def login_status_badge(self, obj):
-        """Display login status as badge"""
-        colors = {
-            'success': 'green',
-            'failed': 'red',
-            'locked': 'orange',
-            'two_factor_required': 'blue',
-            'two_factor_verified': 'purple',
-        }
-        color = colors.get(obj.login_status, 'gray')
-        return format_html(
-            '<span style="padding: 2px 6px; border-radius: 3px; '
-            f'background-color: {color}; color: white; font-size: 0.9em;">'
-            f'{obj.get_login_status_display()}'
-            '</span>'
-        )
-    login_status_badge.short_description = _('Status')
-    
-    def device_info(self, obj):
-        """Display device information concisely"""
-        return f"{obj.device_type} - {obj.browser}"
-    device_info.short_description = _('Device')
-    
-    def suspicious_flag(self, obj):
-        """Display suspicious flag"""
-        if obj.is_suspicious:
-            return format_html(
-                '<span style="color: red;" title="{}">⚠️</span>',
-                _('Suspicious activity detected')
-            )
-        return ''
-    suspicious_flag.short_description = _('⚠')
-    
-    def user_link(self, obj):
-        """Display link to user"""
-        url = reverse('admin:accounts_user_change', args=[obj.user.id])
-        return format_html('<a href="{}">{}</a>', url, obj.user)
-    user_link.short_description = _('User')
-    
-    def device_info_display(self, obj):
-        """Display detailed device information"""
-        return format_html(
-            '<strong>{}:</strong> {}<br>'
-            '<strong>{}:</strong> {}<br>'
-            '<strong>{}:</strong> {}',
-            _('Device Type'), obj.device_type,
-            _('Browser'), obj.browser,
-            _('Platform'), obj.platform
-        )
-    device_info_display.short_description = _('Device Information')
-    
-    def location_display(self, obj):
-        """Display location information"""
-        location_parts = []
-        if obj.city:
-            location_parts.append(obj.city)
-        if obj.country:
-            location_parts.append(obj.country)
-        
-        location = ', '.join(location_parts) if location_parts else obj.location
-        
-        return format_html(
-            '<strong>{}:</strong> {}<br>'
-            '<strong>{}:</strong> {}',
-            _('IP Address'), obj.ip_address,
-            _('Location'), location
-        )
-    location_display.short_description = _('Location')
-    
-    def suspicious_reason(self, obj):
-        """Explain why the login might be suspicious"""
-        if not obj.is_suspicious:
-            return _('No suspicious activity detected')
-        
-        reasons = []
-        if obj.login_status == 'failed':
-            reasons.append(_('Failed login attempt'))
-        
-        recent_logins = LoginHistory.objects.filter(
-            user=obj.user,
-            created_at__gte=obj.created_at - timedelta(days=1),
-            created_at__lt=obj.created_at
-        ).exclude(ip_address=obj.ip_address)
-        
-        if recent_logins.count() >= 3:
-            reasons.append(_('Multiple IP addresses used in last 24 hours'))
-        
-        if obj.country and obj.country != 'Unknown':
-            different_country_logins = LoginHistory.objects.filter(
-                user=obj.user,
-                country__isnull=False,
-                country=obj.country,
-                created_at__gte=obj.created_at - timedelta(days=30)
-            ).exclude(ip_address=obj.ip_address)
-            
-            if not different_country_logins.exists():
-                reasons.append(_('First login from this country'))
-        
-        return ', '.join(reasons) if reasons else _('Suspicious pattern detected')
-    suspicious_reason.short_description = _('Suspicious Reason')
-    
-    # === Custom Actions ===
+    @admin.action(description=_("Mark selected entries as suspicious"))
     def mark_as_suspicious(self, request, queryset):
-        """Mark selected records as suspicious"""
+        """Mark selected entries as suspicious"""
         updated = queryset.update(is_suspicious=True)
         self.message_user(
             request,
-            _('Successfully marked {} records as suspicious.').format(updated),
+            _("Marked %(count)d entry(s) as suspicious") % {'count': updated},
             messages.SUCCESS
         )
-    mark_as_suspicious.short_description = _('Mark as suspicious')
     
-    def mark_as_normal(self, request, queryset):
-        """Mark selected records as normal"""
+    @admin.action(description=_("Mark selected entries as not suspicious"))
+    def mark_as_not_suspicious(self, request, queryset):
+        """Mark selected entries as not suspicious"""
         updated = queryset.update(is_suspicious=False)
         self.message_user(
             request,
-            _('Successfully marked {} records as normal.').format(updated),
+            _("Marked %(count)d entry(s) as not suspicious") % {'count': updated},
             messages.SUCCESS
         )
-    mark_as_normal.short_description = _('Mark as normal')
     
-    def delete_old_records(self, request, queryset):
-        """Delete records older than 90 days"""
-        from django.utils import timezone
-        from datetime import timedelta
-        cutoff_date = timezone.now() - timedelta(days=90)
-        old_records = queryset.filter(created_at__lt=cutoff_date)
-        count = old_records.count()
-        old_records.delete()
+    @admin.action(description=_("Export to CSV"))
+    def export_to_csv(self, request, queryset):
+        """Export selected login history to CSV"""
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="login_history.csv"'
+        
+        writer = csv.writer(response)
+        writer.writerow([
+            'User', 'IP Address', 'Status', 'Device', 'Browser',
+            'Country', 'City', 'Date', 'Suspicious'
+        ])
+        
+        for entry in queryset:
+            writer.writerow([
+                entry.user.email,
+                entry.ip_address,
+                entry.get_login_status_display(),
+                entry.device_type,
+                entry.browser,
+                entry.country,
+                entry.city,
+                entry.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'Yes' if entry.is_suspicious else 'No'
+            ])
+        
+        return response
+    
+    def get_queryset(self, request):
+        """Show only recent login history by default"""
+        qs = super().get_queryset(request)
+        return qs.filter(created_at__gte=timezone.now() - timedelta(days=7))
+    
+    # Custom changelist view with statistics
+    def changelist_view(self, request, extra_context=None):
+        """Add statistics to changelist view"""
+        response = super().changelist_view(request, extra_context=extra_context)
+        
+        try:
+            # Get statistics for the last 7 days
+            week_ago = timezone.now() - timedelta(days=7)
+            
+            total_logins = LoginHistory.objects.filter(created_at__gte=week_ago).count()
+            successful_logins = LoginHistory.objects.filter(
+                login_status=LoginStatusChoices.SUCCESS,
+                created_at__gte=week_ago
+            ).count()
+            failed_logins = LoginHistory.objects.filter(
+                login_status=LoginStatusChoices.FAILED,
+                created_at__gte=week_ago
+            ).count()
+            suspicious_activity = LoginHistory.objects.filter(
+                is_suspicious=True,
+                created_at__gte=week_ago
+            ).count()
+            
+            # Top countries
+            top_countries = LoginHistory.objects.filter(
+                created_at__gte=week_ago
+            ).exclude(country='').values('country').annotate(
+                count=Count('id')
+            ).order_by('-count')[:5]
+            
+            # Top browsers
+            top_browsers = LoginHistory.objects.filter(
+                created_at__gte=week_ago
+            ).exclude(browser='').values('browser').annotate(
+                count=Count('id')
+            ).order_by('-count')[:5]
+            
+            statistics = {
+                'total_logins': total_logins,
+                'successful_logins': successful_logins,
+                'failed_logins': failed_logins,
+                'suspicious_activity': suspicious_activity,
+                'top_countries': top_countries,
+                'top_browsers': top_browsers,
+            }
+            
+            if extra_context is None:
+                extra_context = {}
+            extra_context.update(statistics)
+            
+            response.context_data.update(extra_context)
+            
+        except Exception as e:
+            logger.error(f"Error loading statistics: {e}")
+            self.message_user(request, f"Error loading statistics: {e}", messages.ERROR)
+        
+        return response
+
+
+# ============================================================================
+# EMAIL VERIFICATION ADMIN
+# ============================================================================
+
+@admin.register(EmailVerification)
+class EmailVerificationAdmin(admin.ModelAdmin):
+    """Admin for EmailVerification"""
+    
+    list_display = ('user', 'token', 'is_used', 'created_at', 'expires_at')
+    list_filter = ('is_used', 'created_at')
+    search_fields = ('user__email', 'token')
+    raw_id_fields = ('user',)
+    readonly_fields = ('token', 'used_at')
+    
+    fieldsets = (
+        (None, {
+            'fields': ('user', 'token')
+        }),
+        (_('Status'), {
+            'fields': ('is_used', 'used_at')
+        }),
+        (_('Timestamps'), {
+            'fields': ('created_at', 'expires_at')
+        }),
+    )
+    
+    # Don't allow adding new tokens via admin
+    def has_add_permission(self, request):
+        return False
+    
+    # Don't allow changing existing tokens
+    def has_change_permission(self, request, obj=None):
+        return False if obj else True
+    
+    # Actions
+    actions = ['mark_as_used', 'mark_as_unused', 'cleanup_expired_tokens']
+    
+    @admin.action(description=_("Mark selected tokens as used"))
+    def mark_as_used(self, request, queryset):
+        """Mark selected tokens as used"""
+        updated = queryset.update(is_used=True, used_at=timezone.now())
+        self.message_user(
+            request,
+            _("Marked %(count)d token(s) as used") % {'count': updated},
+            messages.SUCCESS
+        )
+    
+    @admin.action(description=_("Mark selected tokens as unused"))
+    def mark_as_unused(self, request, queryset):
+        """Mark selected tokens as unused"""
+        updated = queryset.update(is_used=False, used_at=None)
+        self.message_user(
+            request,
+            _("Marked %(count)d token(s) as unused") % {'count': updated},
+            messages.SUCCESS
+        )
+    
+    @admin.action(description=_("Cleanup expired tokens"))
+    def cleanup_expired_tokens(self, request, queryset=None):
+        """Cleanup expired tokens"""
+        if queryset is None:
+            expired_tokens = EmailVerification.objects.filter(expires_at__lt=timezone.now())
+        else:
+            expired_tokens = queryset.filter(expires_at__lt=timezone.now())
+        
+        count, _ = expired_tokens.delete()
+        self.message_user(
+            request,
+            _("Deleted %(count)d expired token(s)") % {'count': count},
+            messages.SUCCESS
+        )
+    
+    def get_queryset(self, request):
+        """Show only recent tokens by default"""
+        qs = super().get_queryset(request)
+        return qs.filter(created_at__gte=timezone.now() - timedelta(days=30))
+
+
+# ============================================================================
+# LOGIN SESSION ADMIN
+# ============================================================================
+
+@admin.register(LoginSession)
+class LoginSessionAdmin(admin.ModelAdmin):
+    """Admin for LoginSession"""
+    
+    list_display = ('user', 'session_token', 'status', 'ip_address', 'created_at', 'expires_at')
+    list_filter = ('status', 'created_at')
+    search_fields = ('user__email', 'session_token', 'ip_address')
+    raw_id_fields = ('user',)
+    readonly_fields = ('session_token', 'jwt_access_token', 'jwt_refresh_token')
+    
+    fieldsets = (
+        (None, {
+            'fields': ('user', 'session_token', 'status')
+        }),
+        (_('Device Information'), {
+            'fields': ('ip_address', 'user_agent', 'device_info')
+        }),
+        (_('OTP Verification'), {
+            'fields': ('otp_sent_at', 'otp_verified_at')
+        }),
+        (_('JWT Tokens'), {
+            'fields': ('jwt_access_token', 'jwt_refresh_token'),
+            'classes': ('collapse',)
+        }),
+        (_('Timestamps'), {
+            'fields': ('created_at', 'expires_at', 'last_activity')
+        }),
+    )
+    
+    # Don't allow adding new sessions via admin
+    def has_add_permission(self, request):
+        return False
+    
+    # Don't allow changing sessions
+    def has_change_permission(self, request, obj=None):
+        return False
+    
+    # Actions
+    actions = ['revoke_sessions', 'cleanup_expired_sessions']
+    
+    @admin.action(description=_("Revoke selected sessions"))
+    def revoke_sessions(self, request, queryset):
+        """Revoke selected login sessions"""
+        revoked_count = 0
+        for session in queryset:
+            session.revoke()
+            revoked_count += 1
         
         self.message_user(
             request,
-            _('Successfully deleted {} old records.').format(count),
+            _("Revoked %(count)d session(s)") % {'count': revoked_count},
             messages.SUCCESS
         )
-    delete_old_records.short_description = _('Delete records older than 90 days')
+    
+    @admin.action(description=_("Cleanup expired sessions"))
+    def cleanup_expired_sessions(self, request, queryset=None):
+        """Cleanup expired sessions"""
+        if queryset is None:
+            expired_sessions = LoginSession.objects.filter(expires_at__lt=timezone.now())
+        else:
+            expired_sessions = queryset.filter(expires_at__lt=timezone.now())
+        
+        count, _ = expired_sessions.delete()
+        self.message_user(
+            request,
+            _("Deleted %(count)d expired session(s)") % {'count': count},
+            messages.SUCCESS
+        )
     
     def get_queryset(self, request):
-        """Optimize queryset"""
-        return super().get_queryset(request).select_related('user')
+        """Show only recent sessions by default"""
+        qs = super().get_queryset(request)
+        return qs.filter(created_at__gte=timezone.now() - timedelta(days=7))
 
 
 # ============================================================================
-# ADMIN SITE CUSTOMIZATION
+# ADMIN SITE CONFIGURATION
 # ============================================================================
 
-# Custom admin site header and title
-admin.site.site_header = _('Delvok Academy Administration')
-admin.site.site_title = _('Delvok Academy Admin Portal')
-admin.site.index_title = _('Academy Management System')
+# Configure the default admin site
+admin.site.site_header = _("Delvok Academy Management System")
+admin.site.site_title = _("Delvok Academy Admin Portal")
+admin.site.index_title = _("System Administration")
+
+
+# ============================================================================
+# TEMPLATE CUSTOMIZATIONS
+# ============================================================================
+
+class DelvokAdminSite(admin.AdminSite):
+    """Custom admin site for Delvok Academy"""
+    
+    site_header = _("Delvok Academy Management System")
+    site_title = _("Delvok Academy Admin")
+    index_title = _("System Administration")
+    
+    def get_app_list(self, request, app_label=None):
+        """
+        Return a sorted list of all the installed apps that have been
+        registered in this site.
+        """
+        app_list = super().get_app_list(request)
+        
+        # Custom ordering of apps
+        app_ordering = {
+            'accounts': 1,
+            'auth': 2,
+            # Add other apps here
+        }
+        
+        # Sort apps by custom ordering
+        app_list.sort(key=lambda x: app_ordering.get(x['app_label'], 999))
+        
+        return app_list
+
+
+# Uncomment to use custom admin site
+# admin_site = DelvokAdminSite(name='delvok_admin')
+# Then register models with admin_site instead of admin.site
+
+
+# ============================================================================
+# ADMIN CSS CUSTOMIZATION
+# ============================================================================
+
+class Media:
+    """Custom CSS for admin interface"""
+    css = {
+        'all': ('admin/css/custom.css',)
+    }
+
+
+# Add custom CSS class to action buttons
+admin.site.enable_nav_sidebar = True

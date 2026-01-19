@@ -219,7 +219,7 @@ import {
 // Import APIs
 import authAPI from '../../services/authAPI';
 import curriculumAPI from '../../services/curriculumAPI';
-import {academicAPI} from '../../services/academicAPI';
+import {academicsAPI} from '../../services/academicAPI';
 import adminAPI from '../../services/adminAPI';
 
 // Utility Functions

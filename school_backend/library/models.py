@@ -6,7 +6,7 @@ import uuid
 import os
 from django.core.validators import MinValueValidator, MaxValueValidator
 
-from academics.models import Subject, Class
+from academics.models import Subject, Classroom
 from accounts.models import User
 
 

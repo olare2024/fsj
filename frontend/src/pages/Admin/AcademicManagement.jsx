@@ -50,12 +50,9 @@ import {
 } from 'react-bootstrap-icons';
 
 import { 
-  academicAPI,
-  ASSIGNMENT_CONSTANTS,
-  CLASS_CONSTANTS,
-  SUBJECT_CONSTANTS,
-  ENROLLMENT_CONSTANTS,
-  ACADEMIC_YEAR_CONSTANTS 
+  academicsAPI,
+
+  ACADEMIC_CONSTANTS 
 } from '../../services/academicAPI';
 import authAPI from '../../services/authAPI';
 

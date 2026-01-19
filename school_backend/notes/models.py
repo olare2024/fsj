@@ -556,6 +556,7 @@ class AssignmentContent(LearningContent):
     )
     allowed_file_types = models.JSONField(default=list, blank=True)
     max_file_size = models.PositiveIntegerField(default=10, help_text="Maximum file size in MB")
+    is_published = models.BooleanField(default=True, verbose_name="Is Published")
     
     class Meta:
         verbose_name = _("Assignment Content")

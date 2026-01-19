@@ -32,7 +32,7 @@ import {
   FileEarmarkArrowDown
 } from 'react-bootstrap-icons';
 import { gradesAPI } from '../../services/gradesAPI';
-import { academicAPI } from '../../services/academicAPI';
+import { academicsAPI } from '../../services/academicAPI';
 import { useAuth } from '../../context/AuthContext';
 import './TeacherGrades.css';
 

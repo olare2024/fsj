@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { studentsAPI } from '../services/studentAPI.js';
-import { academicAPI } from '../services/academicAPI.js';
+import { academicsAPI } from '../services/academicAPI.js';
 import { newsAPI } from '../services/newsAPI.js';
 import { eventAPI } from '../services/eventAPI.js';
 import { analyticsAPI } from '../services/analyticsAPI.js';

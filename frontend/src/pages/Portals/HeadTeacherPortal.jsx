@@ -196,7 +196,7 @@ import {
 
 // Import APIs
 import authAPI from '../../services/authAPI';
-import {academicAPI} from '../../services/academicAPI';
+import {academicsAPI} from '../../services/academicAPI';
 import staffAPI from '../../services/staffAPI';
 import {studentsAPI} from '../../services/studentAPI';
 import attendanceAPI from '../../services/attendanceAPI';

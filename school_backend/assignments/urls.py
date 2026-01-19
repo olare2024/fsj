@@ -1,169 +1,158 @@
-# assignments/urls.py
+"""
+URL configuration for the Assignments module.
+Organized by functionality and user roles.
+"""
+
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from . import views
 
-# Create a router and register our viewsets with it
+from .views import (
+    # ViewSets
+    AssignmentViewSet,
+    StudentAssignmentViewSet,
+    AssignmentCategoryViewSet,
+    AssignmentGroupViewSet,
+    AssignmentCommentViewSet,
+    
+    # Dashboard and Overview
+    assignment_dashboard,
+    teacher_assignment_stats,
+    upcoming_deadlines,
+    assignment_calendar,
+    assignment_timeline,
+    assignment_search,
+    
+    # Student-specific
+    student_progress_report,
+    notifications,
+    
+    # Assignment operations
+    create_assignment_comment,
+    create_assignment_reminder,
+    get_assignment_groups,
+    
+    # Group management
+    join_assignment_group,
+    leave_assignment_group,
+    transfer_group_leadership,
+    
+    # Grading operations
+    bulk_grade,
+    import_grades,
+    export_grades,
+    
+    # Analytics and reports
+    assignment_analytics,
+    class_performance_report,
+    
+    # Batch operations
+    batch_update_assignment_status,
+    export_assignment_template,
+    
+    # System and admin
+    send_assignment_reminders,
+    assignments_health_check,
+    system_stats,
+    fix_student_assignments,
+    recalculate_assignment_statistics,
+    DebugURLsView,
+
+)
+
+# ==================== ROUTER CONFIGURATION ====================
+
+# Main router for standard REST endpoints
 router = DefaultRouter()
-router.register(r'categories', views.AssignmentCategoryViewSet, basename='assignmentcategory')
-router.register(r'grade-scales', views.AssignmentGradeScaleViewSet, basename='assignmentscalescale')
-router.register(r'assignments', views.AssignmentViewSet, basename='assignment')
-router.register(r'student-assignments', views.StudentAssignmentViewSet, basename='studentassignment')
-router.register(r'groups', views.AssignmentGroupViewSet, basename='assignmentgroup')
-router.register(r'group-memberships', views.GroupMembershipViewSet, basename='groupmembership')
-router.register(r'comments', views.AssignmentCommentViewSet, basename='assignmentcomment')
+router.register(r'categories', AssignmentCategoryViewSet, basename='assignment-category')
+router.register(r'assignments', AssignmentViewSet, basename='assignment')
+router.register(r'student-assignments', StudentAssignmentViewSet, basename='student-assignment')
+router.register(r'groups', AssignmentGroupViewSet, basename='assignment-group')
+router.register(r'comments', AssignmentCommentViewSet, basename='assignment-comment')
+
+# ==================== URL PATTERNS ====================
 
 urlpatterns = [
-    # API routes from router
+    # ==================== MAIN API ROUTES ====================
+    
+    # Include router URLs (REST API endpoints)
+    # This handles POST /api/v1/assignments/ automatically
     path('', include(router.urls)),
     
-    # ==================== DASHBOARD & ANALYTICS ====================
-    path('dashboard/', views.assignment_dashboard, name='assignment-dashboard'),
-    path('teacher-stats/', views.teacher_assignment_stats, name='teacher-assignment-stats'),
-    path('student-progress/', views.student_progress_report, name='student-progress-all'),
-    path('student-progress/<uuid:student_id>/', views.student_progress_report, name='student-progress'),
+    # ==================== DASHBOARD AND OVERVIEW ====================
     
-    # ==================== BULK OPERATIONS ====================
-    path('assignments/bulk-create/', views.AssignmentViewSet.as_view({'post': 'bulk_create'}), name='bulk-create-assignments'),
-    path('assignments/bulk-update/', views.AssignmentViewSet.as_view({'post': 'bulk_update'}), name='bulk-update-assignments'),
-    path('student-assignments/bulk-grade/', views.StudentAssignmentViewSet.as_view({'post': 'bulk_grade'}), name='bulk-grade-assignments'),
-    path('student-assignments/import-grades/', views.StudentAssignmentViewSet.as_view({'post': 'import_grades'}), name='import-grades'),
+    path('dashboard/', assignment_dashboard, name='assignment-dashboard'),
+    path('teacher-stats/', teacher_assignment_stats, name='teacher-assignment-stats'),
+    path('upcoming-deadlines/', upcoming_deadlines, name='upcoming-deadlines'),
+    path('calendar/', assignment_calendar, name='assignment-calendar'),
+    path('timeline/', assignment_timeline, name='assignment-timeline'),
+    path('search/', assignment_search, name='assignment-search'),
     
-    # ==================== EXPORT ====================
-    path('assignments/export/', views.AssignmentViewSet.as_view({'get': 'export'}), name='export-assignments'),
-    path('student-assignments/export-grades/', views.StudentAssignmentViewSet.as_view({'get': 'export_grades'}), name='export-grades'),
+    # ==================== STUDENT-SPECIFIC ENDPOINTS ====================
     
-    # ==================== CUSTOM ENDPOINTS ====================
+    path('progress-report/', student_progress_report, name='student-progress-report'),
+    path('progress-report/<uuid:student_id>/', student_progress_report, name='student-progress-report-by-id'),
+    path('notifications/', notifications, name='assignment-notifications'),
     
-    # Assignment endpoints
-    path('assignments/upcoming/', views.AssignmentViewSet.as_view({'get': 'upcoming'}), name='upcoming-assignments'),
-    path('assignments/overdue/', views.AssignmentViewSet.as_view({'get': 'overdue'}), name='overdue-assignments'),
-    path('assignments/notifications/', views.AssignmentViewSet.as_view({'get': 'notifications'}), name='assignment-notifications'),
-    path('assignments/my-assignments/', views.AssignmentViewSet.as_view({'get': 'my_assignments'}), name='my-assignments'),
+    # ==================== CUSTOM ACTIONS (via router or explicit) ====================
     
-    # Student assignment endpoints
-    path('student-assignments/pending-grading/', views.StudentAssignmentViewSet.as_view({'get': 'pending_grading'}), name='pending-grading'),
-    path('student-assignments/my-submissions/', views.StudentAssignmentViewSet.as_view({'get': 'my_submissions'}), name='my-submissions'),
-    path('student-assignments/by-assignment/', views.StudentAssignmentViewSet.as_view({'get': 'by_assignment'}), name='student-assignments-by-assignment'),
-    path('student-assignments/by-student/', views.StudentAssignmentViewSet.as_view({'get': 'by_student'}), name='student-assignments-by-student'),
-    path('student-assignments/by-status/', views.StudentAssignmentViewSet.as_view({'get': 'by_status'}), name='student-assignments-by-status'),
-    path('student-assignments/late-submissions/', views.StudentAssignmentViewSet.as_view({'get': 'late_submissions'}), name='late-submissions'),
+    # These actions are already available through the router as:
+    # POST /api/v1/assignments/{id}/publish/
+    # POST /api/v1/assignments/{id}/close/
+    # POST /api/v1/assignments/{id}/duplicate/
+    # GET /api/v1/assignments/{id}/stats/
+    # GET /api/v1/assignments/{id}/submissions/
+    # POST /api/v1/assignments/bulk-create/
+    # GET /api/v1/assignments/export/
     
-    # ==================== ACTION ENDPOINTS ====================
+    # Student assignment actions (via router):
+    # POST /api/v1/student-assignments/{id}/submit/
+    # POST /api/v1/student-assignments/{id}/grade/
     
-    # These are automatically included by DRF router, but here are the explicit paths for reference:
-    # Assignment actions (auto-generated by router but can be accessed as):
-    # /api/v1/assignments/assignments/{id}/publish/
-    # /api/v1/assignments/assignments/{id}/unpublish/
-    # /api/v1/assignments/assignments/{id}/close/
-    # /api/v1/assignments/assignments/{id}/duplicate/
-    # /api/v1/assignments/assignments/{id}/stats/
-    # /api/v1/assignments/assignments/{id}/submissions/
-    # /api/v1/assignments/assignments/{id}/analytics/
-    # /api/v1/assignments/assignments/{id}/comments/
-    # /api/v1/assignments/assignments/{id}/upload-attachment/
+    # ==================== GRADING OPERATIONS ====================
     
-    # Student assignment actions (auto-generated by router but can be accessed as):
-    # /api/v1/assignments/student-assignments/{id}/submit/
-    # /api/v1/assignments/student-assignments/{id}/grade/
-    # /api/v1/assignments/student-assignments/{id}/allow-resubmission/
-    # /api/v1/assignments/student-assignments/{id}/return-for-revision/
-    # /api/v1/assignments/student-assignments/{id}/submission-history/
-    # /api/v1/assignments/student-assignments/{id}/upload-attachment/
+    path('assignments/<uuid:assignment_id>/bulk-grade/', bulk_grade, name='assignment-bulk-grade'),
+    path('assignments/<uuid:assignment_id>/import-grades/', import_grades, name='assignment-import-grades'),
+    path('assignments/<uuid:assignment_id>/export-grades/', export_grades, name='assignment-export-grades'),
+    
+    # ==================== ANALYTICS AND REPORTS ====================
+    
+    path('assignments/<uuid:assignment_id>/analytics/', assignment_analytics, name='assignment-analytics'),
+    path('class-performance-report/', class_performance_report, name='class-performance-report'),
+    path('class-performance-report/<uuid:classroom_id>/', class_performance_report, name='class-performance-report-by-id'),
+    
+    # ==================== GROUP MANAGEMENT ====================
+    
+    path('assignments/<uuid:assignment_id>/all-groups/', get_assignment_groups, name='assignment-all-groups'),
+    path('groups/<uuid:group_id>/join/', join_assignment_group, name='assignment-group-join'),
+    path('groups/<uuid:group_id>/leave/', leave_assignment_group, name='assignment-group-leave'),
+    path('groups/<uuid:group_id>/transfer-leadership/', transfer_group_leadership, name='assignment-group-transfer-leadership'),
+    
+    # ==================== COMMENTS AND COMMUNICATION ====================
+    
+    path('assignments/<uuid:assignment_id>/create-comment/', create_assignment_comment, name='assignment-create-comment'),
+    
+    # ==================== REMINDERS AND NOTIFICATIONS ====================
+    
+    path('assignments/<uuid:assignment_id>/create-reminder/', create_assignment_reminder, name='assignment-create-reminder'),
+    path('assignments/<uuid:assignment_id>/send-reminders/', send_assignment_reminders, name='assignment-send-reminders'),
+    
+    # ==================== BATCH OPERATIONS ====================
+    
+    path('assignments/export-template/', export_assignment_template, name='assignment-export-template'),
+    path('assignments/batch-update-status/', batch_update_assignment_status, name='assignment-batch-update-status'),
+    
+    # ==================== SYSTEM AND ADMIN ENDPOINTS ====================
+    
+    path('health-check/', assignments_health_check, name='assignments-health-check'),
+    path('system-stats/', system_stats, name='assignment-system-stats'),
+    path('assignments/<uuid:assignment_id>/fix-student-assignments/', fix_student_assignments, name='fix-student-assignments'),
+    path('recalculate-statistics/', recalculate_assignment_statistics, name='recalculate-assignment-statistics'),
+
+
+
+    path('debug-urls/', DebugURLsView.as_view(), name='debug-urls'),
 ]
 
-# ==================== URL PATTERN SUMMARY ====================
-"""
-This URLs file creates the following endpoints:
+# ==================== URL NAMESPACE ====================
 
-BASIC CRUD ENDPOINTS:
-GET     /api/v1/assignments/categories/                    - List all categories
-POST    /api/v1/assignments/categories/                    - Create new category
-GET     /api/v1/assignments/categories/{id}/              - Get category details
-PUT     /api/v1/assignments/categories/{id}/              - Update category
-DELETE  /api/v1/assignments/categories/{id}/              - Delete category
-
-GET     /api/v1/assignments/grade-scales/                  - List all grade scales
-POST    /api/v1/assignments/grade-scales/                  - Create new grade scale
-GET     /api/v1/assignments/grade-scales/{id}/            - Get grade scale details
-PUT     /api/v1/assignments/grade-scales/{id}/            - Update grade scale
-DELETE  /api/v1/assignments/grade-scales/{id}/            - Delete grade scale
-
-GET     /api/v1/assignments/assignments/                   - List all assignments
-POST    /api/v1/assignments/assignments/                   - Create new assignment
-GET     /api/v1/assignments/assignments/{id}/             - Get assignment details
-PUT     /api/v1/assignments/assignments/{id}/             - Update assignment
-DELETE  /api/v1/assignments/assignments/{id}/             - Delete assignment
-
-GET     /api/v1/assignments/student-assignments/           - List all student assignments
-POST    /api/v1/assignments/student-assignments/           - Create student assignment
-GET     /api/v1/assignments/student-assignments/{id}/     - Get student assignment details
-PUT     /api/v1/assignments/student-assignments/{id}/     - Update student assignment
-DELETE  /api/v1/assignments/student-assignments/{id}/     - Delete student assignment
-
-ASSIGNMENT CUSTOM ACTIONS:
-POST    /api/v1/assignments/assignments/{id}/publish/     - Publish assignment
-POST    /api/v1/assignments/assignments/{id}/unpublish/   - Unpublish assignment
-POST    /api/v1/assignments/assignments/{id}/close/       - Close assignment
-POST    /api/v1/assignments/assignments/{id}/duplicate/   - Duplicate assignment
-GET     /api/v1/assignments/assignments/{id}/stats/       - Get assignment statistics
-GET     /api/v1/assignments/assignments/{id}/submissions/ - Get all submissions
-GET     /api/v1/assignments/assignments/{id}/analytics/   - Get analytics
-GET     /api/v1/assignments/assignments/{id}/comments/    - Get comments
-POST    /api/v1/assignments/assignments/{id}/upload-attachment/ - Upload attachment
-
-STUDENT ASSIGNMENT CUSTOM ACTIONS:
-POST    /api/v1/assignments/student-assignments/{id}/submit/              - Submit assignment
-POST    /api/v1/assignments/student-assignments/{id}/grade/               - Grade assignment
-POST    /api/v1/assignments/student-assignments/{id}/allow-resubmission/  - Allow resubmission
-POST    /api/v1/assignments/student-assignments/{id}/return-for-revision/ - Return for revision
-GET     /api/v1/assignments/student-assignments/{id}/submission-history/  - Get submission history
-POST    /api/v1/assignments/student-assignments/{id}/upload-attachment/   - Upload submission attachment
-
-COLLECTION ENDPOINTS:
-GET     /api/v1/assignments/assignments/upcoming/          - Get upcoming assignments
-GET     /api/v1/assignments/assignments/overdue/           - Get overdue assignments
-GET     /api/v1/assignments/assignments/notifications/     - Get notifications
-GET     /api/v1/assignments/assignments/my-assignments/    - Get user's assignments
-GET     /api/v1/assignments/dashboard/                     - Get dashboard data
-GET     /api/v1/assignments/teacher-stats/                 - Get teacher statistics
-GET     /api/v1/assignments/student-progress/              - Get student progress (all)
-GET     /api/v1/assignments/student-progress/{student_id}/ - Get specific student progress
-
-BULK OPERATIONS:
-POST    /api/v1/assignments/assignments/bulk-create/       - Bulk create assignments
-POST    /api/v1/assignments/assignments/bulk-update/       - Bulk update assignments
-POST    /api/v1/assignments/student-assignments/bulk-grade/- Bulk grade assignments
-POST    /api/v1/assignments/student-assignments/import-grades/ - Import grades from CSV
-
-EXPORT ENDPOINTS:
-GET     /api/v1/assignments/assignments/export/            - Export assignments (CSV)
-GET     /api/v1/assignments/student-assignments/export-grades/ - Export grades (CSV)
-
-FILTER ENDPOINTS:
-GET     /api/v1/assignments/student-assignments/pending-grading/   - Get pending grading
-GET     /api/v1/assignments/student-assignments/my-submissions/    - Get user's submissions
-GET     /api/v1/assignments/student-assignments/by-assignment/     - Get by assignment ID
-GET     /api/v1/assignments/student-assignments/by-student/        - Get by student ID
-GET     /api/v1/assignments/student-assignments/by-status/         - Get by status
-GET     /api/v1/assignments/student-assignments/late-submissions/  - Get late submissions
-
-GROUPS AND COMMENTS:
-GET     /api/v1/assignments/groups/                        - List all groups
-POST    /api/v1/assignments/groups/                        - Create group
-GET     /api/v1/assignments/groups/{id}/                  - Get group details
-PUT     /api/v1/assignments/groups/{id}/                  - Update group
-DELETE  /api/v1/assignments/groups/{id}/                  - Delete group
-
-GET     /api/v1/assignments/group-memberships/             - List all memberships
-POST    /api/v1/assignments/group-memberships/             - Create membership
-GET     /api/v1/assignments/group-memberships/{id}/       - Get membership details
-PUT     /api/v1/assignments/group-memberships/{id}/       - Update membership
-DELETE  /api/v1/assignments/group-memberships/{id}/       - Delete membership
-
-GET     /api/v1/assignments/comments/                      - List all comments
-POST    /api/v1/assignments/comments/                      - Create comment
-GET     /api/v1/assignments/comments/{id}/                - Get comment details
-PUT     /api/v1/assignments/comments/{id}/                - Update comment
-DELETE  /api/v1/assignments/comments/{id}/                - Delete comment
-"""
+app_name = 'assignments'

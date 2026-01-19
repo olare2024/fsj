@@ -1185,7 +1185,7 @@ class PerformanceIndicator(BaseModel):  # FIXED: Now inherits from BaseModel
     
     teacher = models.ForeignKey(TeacherProfile, on_delete=models.CASCADE, related_name='performance_indicators')
     academic_year = models.ForeignKey('academics.AcademicYear', on_delete=models.CASCADE)
-    term = models.ForeignKey('academics.Term', on_delete=models.CASCADE, null=True, blank=True)
+    term = models.ForeignKey('academics.AcademicTerm', on_delete=models.CASCADE, null=True, blank=True)
     
     # Academic performance
     student_performance_average = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
@@ -1243,8 +1243,8 @@ class TeacherTransfer(BaseModel):
         ]
     )
     
-    from_school = models.ForeignKey('institutions.School', on_delete=models.CASCADE, related_name='outgoing_transfers')
-    to_school = models.ForeignKey('institutions.School', on_delete=models.CASCADE, related_name='incoming_transfers')
+    from_school = models.ForeignKey('administration.School', on_delete=models.CASCADE, related_name='outgoing_transfers')
+    to_school = models.ForeignKey('administration.School', on_delete=models.CASCADE, related_name='incoming_transfers')
     
     effective_date = models.DateField()
     reason = models.TextField()
@@ -1939,7 +1939,7 @@ class TeacherAssignment(BaseModel):
     teacher = models.ForeignKey(
         TeacherProfile,
         on_delete=models.CASCADE,
-        related_name='assignments',
+        related_name='assignments_for_teachers',
         verbose_name=_("Teacher")
     )
     
@@ -1967,7 +1967,7 @@ class TeacherAssignment(BaseModel):
     )
     
     term = models.ForeignKey(
-        'academics.Term',
+        'academics.AcademicTerm',
         on_delete=models.CASCADE,
         null=True,
         blank=True,
@@ -2040,7 +2040,7 @@ class TeacherAssignment(BaseModel):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='approved_assignments',
+        related_name='approved_assignments_assign',
         verbose_name=_("Approved By")
     )
     
@@ -2430,7 +2430,7 @@ class TeacherLeave(BaseModel):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='approved_leaves',
+        related_name='approved_leaves_in_school',
         verbose_name=_("Approved By")
     )
     

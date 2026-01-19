@@ -107,7 +107,7 @@ class TimetableEntry(models.Model):
     
     # Academic assignment
     subject = models.ForeignKey('academics.Subject', on_delete=models.CASCADE)
-    teacher = models.ForeignKey('accounts.TeacherProfile', on_delete=models.CASCADE)
+    teacher = models.ForeignKey('teachers.TeacherProfile', on_delete=models.CASCADE)
     class_assigned = models.ForeignKey('academics.Class', on_delete=models.CASCADE)
     
     # Location
@@ -137,7 +137,7 @@ class TimetableEntry(models.Model):
 class TeacherTimetable(models.Model):
     """Precomputed teacher timetable for quick access"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    teacher = models.ForeignKey('accounts.TeacherProfile', on_delete=models.CASCADE, related_name='TeacherTimetable_entries')
+    teacher = models.ForeignKey('teachers.TeacherProfile', on_delete=models.CASCADE, related_name='TeacherTimetable_entries')
     timetable_entry = models.ForeignKey(TimetableEntry, on_delete=models.CASCADE)
     
     # Denormalized fields for performance
@@ -261,7 +261,7 @@ class RoomBooking(models.Model):
     
     # Booking party
     booked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='room_bookings')
-    teacher = models.ForeignKey('accounts.TeacherProfile', on_delete=models.CASCADE, null=True, blank=True)
+    teacher = models.ForeignKey('teachers.TeacherProfile', on_delete=models.CASCADE, null=True, blank=True)
     class_assigned = models.ForeignKey('academics.Class', on_delete=models.CASCADE, null=True, blank=True)
     
     # Status
@@ -304,8 +304,8 @@ class TimetableAdjustment(models.Model):
     adjustment_type = models.CharField(max_length=20, choices=ADJUSTMENT_TYPES)
     
     # Adjustment details
-    original_teacher = models.ForeignKey('accounts.TeacherProfile', on_delete=models.CASCADE, related_name='original_adjustments')
-    substitute_teacher = models.ForeignKey('accounts.TeacherProfile', on_delete=models.CASCADE, null=True, blank=True, related_name='substitute_adjustments')
+    original_teacher = models.ForeignKey('teachers.TeacherProfile', on_delete=models.CASCADE, related_name='original_adjustments')
+    substitute_teacher = models.ForeignKey('teachers.TeacherProfile', on_delete=models.CASCADE, null=True, blank=True, related_name='substitute_adjustments')
     original_room = models.CharField(max_length=50, blank=True, null=True)
     new_room = models.CharField(max_length=50, blank=True, null=True)
     original_time = models.CharField(max_length=100, blank=True, null=True)
@@ -373,7 +373,7 @@ class SpecialSchedule(models.Model):
     
     # Affected entities
     affected_classes = models.ManyToManyField('academics.Class', blank=True)
-    affected_teachers = models.ManyToManyField('accounts.TeacherProfile', blank=True)
+    affected_teachers = models.ManyToManyField('teachers.TeacherProfile', blank=True)
     is_whole_school = models.BooleanField(default=False)
     
     # Regular timetable handling
@@ -457,7 +457,7 @@ class TeacherAvailability(models.Model):
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    teacher = models.ForeignKey('accounts.TeacherProfile', on_delete=models.CASCADE, related_name='availabilities')
+    teacher = models.ForeignKey('teachers.TeacherProfile', on_delete=models.CASCADE, related_name='availabilities')
     
     # Availability details
     availability_type = models.CharField(max_length=30, choices=AVAILABILITY_TYPES, default='regular')

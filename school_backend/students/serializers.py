@@ -9,7 +9,7 @@ from django.utils.translation import gettext_lazy as _
 from django.contrib.auth import get_user_model
 from django.apps import apps
 
-from accounts.serializers import UserSerializer, UserSimpleSerializer
+from accounts.serializers import UserSerializer, UserMinimalSerializer
 from accounts.models import User
 from .models import (
     StudentProfile, StudentEnrollment,

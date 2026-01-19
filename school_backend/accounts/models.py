@@ -1,105 +1,158 @@
-# accounts/models.py - COMPLETE CORRECTED VERSION
+# accounts/models.py - REFACTORED AND ORGANIZED VERSION
 
-from django.db import models
-from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
-from django.core.validators import RegexValidator, EmailValidator, MinLengthValidator
-from django.utils import timezone
-from django.core.exceptions import ValidationError
-from django.utils.translation import gettext_lazy as _
-from django.core.mail import send_mail
-from django.template.loader import render_to_string
-from django.utils.html import strip_tags
+import base64
+import logging
+import secrets
 import uuid
 from datetime import date, timedelta
+from io import BytesIO
+
 import pyotp
 import qrcode
-import base64
-from io import BytesIO
-from django.core.cache import cache
+import requests
 from django.conf import settings
-import secrets
-from django.urls import reverse
+from django.contrib.auth.models import (AbstractBaseUser, BaseUserManager,
+                                        PermissionsMixin)
+from django.core.cache import cache
+from django.core.exceptions import ValidationError
+from django.core.mail import send_mail
+from django.core.validators import (EmailValidator, MinLengthValidator,
+                                    RegexValidator)
+from django.db import models, transaction
 from django.db.models import Q
-import logging
-from django.db import transaction
+from django.template.loader import render_to_string
+from django.utils import timezone
+from django.utils.html import strip_tags
+from django.utils.translation import gettext_lazy as _
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# MANAGERS
+# CONSTANTS AND ENUMS
 # ============================================================================
 
-GENDER_CHOICES = [
-    ('male', 'Male'),
-    ('female', 'Female'),
-    ('other', 'Other'),
-    ('prefer_not_to_say', 'Prefer not to say'), 
-]
+class GenderChoices(models.TextChoices):
+    """Gender choices for users"""
+    MALE = 'male', _('Male')
+    FEMALE = 'female', _('Female')
+    OTHER = 'other', _('Other')
+    PREFER_NOT_TO_SAY = 'prefer_not_to_say', _('Prefer not to say')
+GENDER_CHOICES = GenderChoices
+
+class UserRole(models.TextChoices):
+    """User role choices"""
+    ADMIN = 'admin', _('System Administrator')
+    HEAD_TEACHER = 'head_teacher', _('Head Teacher')
+    CURRICULUM_COORDINATOR = 'curriculum_coordinator', _('Curriculum Coordinator')
+    TEACHER = 'teacher', _('Teacher')
+    OFFICE_STAFF = 'office_staff', _('Office Staff')
+    STUDENT = 'student', _('Student')
+    PARENT = 'parent', _('Parent')
+    LIBRARIAN = 'librarian', _('Librarian')
+    ACCOUNTANT = 'accountant', _('Accountant')
+    IT_SUPPORT = 'it_support', _('IT Support')
+    COUNSELOR = 'counselor', _('School Counselor')
 
 
+# Dashboard URL mappings - defined separately
+USER_ROLE_DASHBOARDS = {
+    UserRole.ADMIN: '/admin/admin-portal',
+    UserRole.HEAD_TEACHER: '/head-teacher/headteacher-portal',
+    UserRole.CURRICULUM_COORDINATOR: '/curriculum/curriculum-portal',
+    UserRole.TEACHER: '/teacher/teacher-portal',
+    UserRole.OFFICE_STAFF: '/staff/staff-portal',
+    UserRole.STUDENT: '/student/student-portal',
+    UserRole.PARENT: '/parent/parent-portal',
+    UserRole.LIBRARIAN: '/library/library-portal',
+    UserRole.ACCOUNTANT: '/finance/finance-portal',
+    UserRole.IT_SUPPORT: '/it/it-portal',
+    UserRole.COUNSELOR: '/counselor/counselor-portal',
+}
 
 
-class CustomUserManager(BaseUserManager):
-    """Custom manager for User model with email as username field"""
-    
-    def create_user(self, email, password=None, **extra_fields):
-        """
-        Create and save a regular user with the given email and password.
-        """
-        if not email:
-            raise ValueError(_('The Email field must be set'))
-        
-        email = self.normalize_email(email)
-        
-        # Set defaults
-        extra_fields.setdefault('is_staff', False)
-        extra_fields.setdefault('is_superuser', False)
-        extra_fields.setdefault('is_active', True)
-        extra_fields.setdefault('is_verified', False)
-        extra_fields.setdefault('is_approved', False)
-        
-        # Set role-specific defaults
-        role = extra_fields.get('role', 'student')
-        if role == 'student':
-            extra_fields.setdefault('is_staff', False)
-        elif role in ['admin', 'teacher', 'head_teacher', 'curriculum_coordinator']:
-            extra_fields.setdefault('is_staff', True)
-        
-        user = self.model(email=email, **extra_fields)
-        
-        if password:
-            user.set_password(password)
-        else:
-            user.set_unusable_password()
-        
-        user.save(using=self._db)
-        return user
-    
-    def create_superuser(self, email, password=None, **extra_fields):
-        """
-        Create and save a SuperUser with the given email and password.
-        """
-        extra_fields.setdefault('is_staff', True)
-        extra_fields.setdefault('is_superuser', True)
-        extra_fields.setdefault('is_active', True)
-        extra_fields.setdefault('is_verified', True)
-        extra_fields.setdefault('is_approved', True)
-        extra_fields.setdefault('role', 'admin')
-        
-        if extra_fields.get('is_staff') is not True:
-            raise ValueError(_('Superuser must have is_staff=True.'))
-        if extra_fields.get('is_superuser') is not True:
-            raise ValueError(_('Superuser must have is_superuser=True.'))
-        
-        return self.create_user(email, password, **extra_fields)
-    
-    def get_by_natural_key(self, email):
-        return self.get(email=email)
+def get_dashboard_url(role):
+    """Get dashboard URL for a given role"""
+    return USER_ROLE_DASHBOARDS.get(role, '/dashboard')
+
+
+class CurriculumChoices(models.TextChoices):
+    """Curriculum choices"""
+    CBC = 'cbc', _('CBC - Competency Based Curriculum')
+    ICSE = 'icse', _('ICSE - Indian Certificate of Secondary Education')
+    AMERICAN = 'american', _('American Curriculum')
+    BRITISH = 'british', _('British Curriculum')
+    MONTESSORI = 'montessori', _('Montessori')
+    COMBINED = 'combined', _('Combined Curriculum')
+    IGCSE = 'igcse', _('IGCSE')
+    IB = 'ib', _('International Baccalaureate')
+
+
+class HouseChoices(models.TextChoices):
+    """House system choices"""
+    UNITY = 'unity', _('Unity House')
+    COURAGE = 'courage', _('Courage House')
+    WISDOM = 'wisdom', _('Wisdom House')
+    SUCCESS = 'success', _('Success House')
+    EXCELLENCE = 'excellence', _('Excellence House')
+    INTEGRITY = 'integrity', _('Integrity House')
+    BRAVERY = 'bravery', _('Bravery House')
+    HONOR = 'honor', _('Honor House')
+
+
+class BloodGroupChoices(models.TextChoices):
+    """Blood group choices"""
+    A_POSITIVE = 'a_positive', _('A+')
+    A_NEGATIVE = 'a_negative', _('A-')
+    B_POSITIVE = 'b_positive', _('B+')
+    B_NEGATIVE = 'b_negative', _('B-')
+    AB_POSITIVE = 'ab_positive', _('AB+')
+    AB_NEGATIVE = 'ab_negative', _('AB-')
+    O_POSITIVE = 'o_positive', _('O+')
+    O_NEGATIVE = 'o_negative', _('O-')
+
+
+class TwoFAMethodChoices(models.TextChoices):
+    """2FA method choices"""
+    EMAIL = 'email', _('Email')
+    AUTHENTICATOR = 'authenticator', _('Authenticator App')
+    SMS = 'sms', _('SMS')
+    VOICE = 'voice', _('Voice Call')
+
+
+class TokenTypeChoices(models.TextChoices):
+    """OTP token type choices"""
+    EMAIL_VERIFICATION = 'email_verification', _('Email Verification')
+    PHONE_VERIFICATION = 'phone_verification', _('Phone Verification')
+    PASSWORD_RESET = 'password_reset', _('Password Reset')
+    LOGIN_VERIFICATION = 'login_verification', _('Login Verification')
+    ACCOUNT_RECOVERY = 'account_recovery', _('Account Recovery')
+    TWO_FACTOR_BACKUP = 'two_factor_backup', _('2FA Backup')
+    ACCOUNT_APPROVAL = 'account_approval', _('Account Approval')
+
+
+class LoginStatusChoices(models.TextChoices):
+    """Login status choices"""
+    SUCCESS = 'success', _('Success')
+    FAILED = 'failed', _('Failed')
+    LOCKED = 'locked', _('Locked')
+    TWO_FACTOR_REQUIRED = 'two_factor_required', _('2FA Required')
+    TWO_FACTOR_VERIFIED = 'two_factor_verified', _('2FA Verified')
+    PASSWORD_RESET = 'password_reset', _('Password Reset')
+    ACCOUNT_RECOVERY = 'account_recovery', _('Account Recovery')
+
+
+class SessionStatusChoices(models.TextChoices):
+    """Login session status choices"""
+    PENDING_OTP = 'pending_otp', _('Pending OTP Verification')
+    VERIFIED = 'verified', _('OTP Verified')
+    EXPIRED = 'expired', _('Expired')
+    FAILED = 'failed', _('OTP Verification Failed')
+    REVOKED = 'revoked', _('Session Revoked')
 
 
 # ============================================================================
-# BASE MODEL
+# BASE CLASSES AND MIXINS
 # ============================================================================
 
 class BaseModel(models.Model):
@@ -126,11 +179,15 @@ class BaseModel(models.Model):
     def get_active_objects(cls):
         """Get all active objects"""
         return cls.objects.filter(is_active=True)
+    
+    @classmethod
+    def bulk_update_status(cls, ids, field, value):
+        """Bulk update status of objects"""
+        with transaction.atomic():
+            updated = cls.objects.filter(id__in=ids).update(**{field: value})
+            logger.info(f"Bulk updated {updated} {cls.__name__} objects: {field}={value}")
+            return updated
 
-
-# ============================================================================
-# MIXINS
-# ============================================================================
 
 class ContactInfoMixin(models.Model):
     """Mixin for contact information fields"""
@@ -157,6 +214,13 @@ class ContactInfoMixin(models.Model):
     
     class Meta:
         abstract = True
+    
+    @property
+    def formatted_phone(self):
+        """Get formatted phone number"""
+        if self.phone_number:
+            return f"+{self.phone_number}" if not self.phone_number.startswith('+') else self.phone_number
+        return None
 
 
 class EmergencyContactMixin(models.Model):
@@ -193,19 +257,10 @@ class EmergencyContactMixin(models.Model):
 
 class MedicalInfoMixin(models.Model):
     """Mixin for medical information"""
-    class BloodGroup(models.TextChoices):
-        A_POSITIVE = 'a_positive', _('A+')
-        A_NEGATIVE = 'a_negative', _('A-')
-        B_POSITIVE = 'b_positive', _('B+')
-        B_NEGATIVE = 'b_negative', _('B-')
-        AB_POSITIVE = 'ab_positive', _('AB+')
-        AB_NEGATIVE = 'ab_negative', _('AB-')
-        O_POSITIVE = 'o_positive', _('O+')
-        O_NEGATIVE = 'o_negative', _('O-')
     
     blood_group = models.CharField(
         max_length=15, 
-        choices=BloodGroup.choices, 
+        choices=BloodGroupChoices.choices, 
         blank=True,
         verbose_name=_("Blood Group")
     )
@@ -221,6 +276,92 @@ class MedicalInfoMixin(models.Model):
 
 
 # ============================================================================
+# MANAGERS
+# ============================================================================
+
+class CustomUserManager(BaseUserManager):
+    """Custom manager for User model with email as username field"""
+    
+    def create_user(self, email, password=None, **extra_fields):
+        """
+        Create and save a regular user with the given email and password.
+        """
+        if not email:
+            raise ValueError(_('The Email field must be set'))
+        
+        email = self.normalize_email(email)
+        
+        # Set defaults
+        extra_fields.setdefault('is_staff', False)
+        extra_fields.setdefault('is_superuser', False)
+        extra_fields.setdefault('is_active', True)
+        extra_fields.setdefault('is_verified', False)
+        extra_fields.setdefault('is_approved', False)
+        
+        # Set role-specific defaults
+        role = extra_fields.get('role', UserRole.STUDENT)
+        if role in [UserRole.ADMIN, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR, 
+                   UserRole.TEACHER, UserRole.ACCOUNTANT, UserRole.IT_SUPPORT]:
+            extra_fields.setdefault('is_staff', True)
+        
+        user = self.model(email=email, **extra_fields)
+        
+        if password:
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
+        
+        user.save(using=self._db)
+        return user
+    
+    def create_superuser(self, email, password=None, **extra_fields):
+        """
+        Create and save a SuperUser with the given email and password.
+        """
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        extra_fields.setdefault('is_active', True)
+        extra_fields.setdefault('is_verified', True)
+        extra_fields.setdefault('is_approved', True)
+        extra_fields.setdefault('role', UserRole.ADMIN)
+        
+        if extra_fields.get('is_staff') is not True:
+            raise ValueError(_('Superuser must have is_staff=True.'))
+        if extra_fields.get('is_superuser') is not True:
+            raise ValueError(_('Superuser must have is_superuser=True.'))
+        
+        return self.create_user(email, password, **extra_fields)
+    
+    def get_by_natural_key(self, email):
+        return self.get(email=email)
+    
+    def get_active_users(self):
+        """Get all active users"""
+        return self.filter(is_active=True)
+    
+    def get_users_by_role(self, role):
+        """Get users by role"""
+        return self.filter(role=role, is_active=True)
+    
+    def get_staff_members(self):
+        """Get all staff members"""
+        staff_roles = [
+            UserRole.ADMIN, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR,
+            UserRole.TEACHER, UserRole.OFFICE_STAFF, UserRole.LIBRARIAN,
+            UserRole.ACCOUNTANT, UserRole.IT_SUPPORT, UserRole.COUNSELOR
+        ]
+        return self.filter(role__in=staff_roles, is_active=True)
+    
+    def get_students(self):
+        """Get all students"""
+        return self.filter(role=UserRole.STUDENT, is_active=True)
+    
+    def get_parents(self):
+        """Get all parents"""
+        return self.filter(role=UserRole.PARENT, is_active=True)
+
+
+# ============================================================================
 # MAIN USER MODEL
 # ============================================================================
 
@@ -230,61 +371,6 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
     Enhanced Custom User Model for Delvok Academy Management System
     with Dashboard Redirection Support
     """
-    
-    # Role Constants with Dashboard URLs
-    class Role(models.TextChoices):
-        ADMIN = 'admin', _('System Administrator')
-        HEAD_TEACHER = 'head_teacher', _('Head Teacher')
-        CURRICULUM_COORDINATOR = 'curriculum_coordinator', _('Curriculum Coordinator')
-        TEACHER = 'teacher', _('Teacher')
-        OFFICE_STAFF = 'office_staff', _('Office Staff')
-        STUDENT = 'student', _('Student')
-        PARENT = 'parent', _('Parent')
-        LIBRARIAN = 'librarian', _('Librarian')
-        ACCOUNTANT = 'accountant', _('Accountant')
-        IT_SUPPORT = 'it_support', _('IT Support')
-        COUNSELOR = 'counselor', _('School Counselor')
-    
-    # Dashboard URL mappings
-    DASHBOARD_URLS = {
-        Role.ADMIN: '/admin/admin-portal',
-        Role.HEAD_TEACHER: '/head-teacher/headteacher-portal',
-        Role.CURRICULUM_COORDINATOR: '/curriculum/curriculum-portal',
-        Role.TEACHER: '/teacher/teacher-portal',
-        Role.OFFICE_STAFF: '/staff/staff-portal',
-        Role.STUDENT: '/student/student-portal',
-        Role.PARENT: '/parent/parent-portal',
-        Role.LIBRARIAN: '/library/library-portal',
-        Role.ACCOUNTANT: '/finance/finance-portal',
-        Role.IT_SUPPORT: '/it/it-portal',
-        Role.COUNSELOR: '/counselor/counselor-portal',
-    }
-    
-    class Curriculum(models.TextChoices):
-        CBC = 'cbc', _('CBC - Competency Based Curriculum')
-        ICSE = 'icse', _('ICSE - Indian Certificate of Secondary Education')
-        AMERICAN = 'american', _('American Curriculum')
-        BRITISH = 'british', _('British Curriculum')
-        MONTESSORI = 'montessori', _('Montessori')
-        COMBINED = 'combined', _('Combined Curriculum')
-        IGCSE = 'igcse', _('IGCSE')
-        IB = 'ib', _('International Baccalaureate')
-    
-    class House(models.TextChoices):
-        UNITY = 'unity', _('Unity House')
-        COURAGE = 'courage', _('Courage House')
-        WISDOM = 'wisdom', _('Wisdom House')
-        SUCCESS = 'success', _('Success House')
-        EXCELLENCE = 'excellence', _('Excellence House')
-        INTEGRITY = 'integrity', _('Integrity House')
-        BRAVERY = 'bravery', _('Bravery House')
-        HONOR = 'honor', _('Honor House')
-    
-    class Gender(models.TextChoices):
-        MALE = 'male', _('Male')
-        FEMALE = 'female', _('Female')
-        OTHER = 'other', _('Other')
-        PREFER_NOT_TO_SAY = 'prefer_not_to_say', _('Prefer not to say')
     
     # === Core Identification Fields ===
     email = models.EmailField(
@@ -331,8 +417,8 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
     # === Role and Access Control ===
     role = models.CharField(
         max_length=25, 
-        choices=Role.choices, 
-        default=Role.STUDENT, 
+        choices=UserRole.choices, 
+        default=UserRole.STUDENT, 
         verbose_name=_("User Role")
     )
     is_staff = models.BooleanField(default=False, verbose_name=_("Staff Status"))
@@ -353,7 +439,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
     )
     gender = models.CharField(
         max_length=20, 
-        choices=Gender.choices, 
+        choices=GenderChoices.choices, 
         blank=True,
         verbose_name=_("Gender")
     )
@@ -388,7 +474,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
     # === Academic Information ===
     primary_curriculum = models.CharField(
         max_length=15, 
-        choices=Curriculum.choices, 
+        choices=CurriculumChoices.choices, 
         blank=True, 
         null=True,
         verbose_name=_("Primary Curriculum")
@@ -407,7 +493,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
     )
     house = models.CharField(
         max_length=20, 
-        choices=House.choices, 
+        choices=HouseChoices.choices, 
         blank=True, 
         null=True,
         verbose_name=_("House")
@@ -532,7 +618,8 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
         verbose_name=_("Last Login IP")
     )
     last_login_user_agent = models.TextField(
-        blank=True, 
+        blank=True,
+        null=True, 
         verbose_name=_("Last Login User Agent")
     )
     last_activity = models.DateTimeField(
@@ -629,27 +716,30 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
             ),
         ]
 
+    # ====================
+    # CORE USER METHODS
+    # ====================
+    
     def __str__(self):
         return f"{self.get_full_name()} ({self.email})"
-
-    # === Core User Methods ===
+    
     def get_full_name(self):
         """Return the full name of the user"""
         if self.middle_name:
             return f"{self.first_name} {self.middle_name} {self.last_name}".strip()
         return f"{self.first_name} {self.last_name}".strip()
-
+    
     def get_short_name(self):
         """Return the short name for the user (first name)"""
         return self.first_name
-
+    
     def get_initials(self):
         """Return user initials"""
         initials = self.first_name[0] if self.first_name else ''
         if self.last_name:
             initials += self.last_name[0]
         return initials.upper()
-
+    
     def email_user(self, subject, message, from_email=None, **kwargs):
         """Send email to this user"""
         html_message = kwargs.pop('html_message', None)
@@ -666,7 +756,11 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
         except Exception as e:
             logger.error(f"Failed to send email to {self.email}: {e}")
             return False
-
+    
+    # ====================
+    # VALIDATION METHODS
+    # ====================
+    
     def validate_password_strength(self, password):
         """Validate password strength"""
         errors = []
@@ -685,15 +779,47 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
         if errors:
             raise ValidationError(errors)
         return True
-
-    # === Profile Completion Methods ===
-    def check_profile_completion(self):
+    
+    def clean(self):
+        """Custom validation for the model"""
+        errors = {}
+        
+        # Email validation
+        if self.email:
+            existing_user = User.objects.filter(email=self.email)
+            if self.pk:  # If updating, exclude self
+                existing_user = existing_user.exclude(pk=self.pk)
+            if existing_user.exists():
+                errors['email'] = _('A user with this email already exists.')
+        
+        # Age validation for students
+        if self.role == UserRole.STUDENT and self.date_of_birth:
+            age = self.age
+            if age and age < 3:
+                errors['date_of_birth'] = _('Student must be at least 3 years old.')
+            if age and age > 25:
+                errors['date_of_birth'] = _('Student age seems unrealistic.')
+        
+        # Password validation if provided
+        if self.password and len(self.password) > 0:
+            try:
+                self.validate_password_strength(self.password)
+            except ValidationError as e:
+                errors['password'] = e.messages
+        
+        if errors:
+            raise ValidationError(errors)
+    
+    # ====================
+    # PROFILE COMPLETION
+    # ====================
+    
+    def check_profile_completion(self, force_check=False):
         """Check if user has completed profile requirements"""
-        if self.profile_completed:
+        if self.profile_completed and not force_check:
             return True
         
         required_fields = self._get_required_fields_for_role()
-        
         requirements_met = {}
         all_requirements_met = True
         
@@ -710,30 +836,38 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
             if not is_met:
                 all_requirements_met = False
         
-        self.profile_requirements_met = requirements_met
+
+        try:
+            import json
+
+            #Test if it's valid JSON
+            json.dumps(requirements_met)
+            self.profile_requirements_met = requirements_met
+        except (TypeError, ValueError):
+            self.profile_requirements_met = {}
         
         if all_requirements_met:
             self.mark_profile_completed()
             return True
         
         return False
-
+    
     def _get_required_fields_for_role(self):
         """Get required fields based on user role"""
         required_fields = ['first_name', 'last_name', 'email', 'phone_number']
         
-        if self.role == self.Role.STUDENT:
+        if self.role == UserRole.STUDENT:
             required_fields.extend([
                 'admission_number', 'grade_level', 'current_class', 
                 'date_of_birth', 'parent_name', 'parent_phone'
             ])
-        elif self.role in [self.Role.TEACHER, self.Role.HEAD_TEACHER, self.Role.CURRICULUM_COORDINATOR]:
+        elif self.role in [UserRole.TEACHER, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR]:
             required_fields.extend(['staff_id', 'department', 'designation'])
-        elif self.role == self.Role.PARENT:
+        elif self.role == UserRole.PARENT:
             required_fields.extend(['parent_name', 'parent_phone'])
         
         return required_fields
-
+    
     def _get_field_display_name(self, field_name):
         """Get display name for a field"""
         field_display_names = {
@@ -752,7 +886,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
             'parent_phone': _('Parent Phone'),
         }
         return field_display_names.get(field_name, field_name.replace('_', ' ').title())
-
+    
     def mark_profile_completed(self):
         """Mark profile as completed"""
         self.profile_completed = True
@@ -766,7 +900,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
             'profile_completion_date',
             'profile_requirements_met'
         ])
-
+    
     def get_missing_profile_fields(self):
         """Get list of missing required profile fields"""
         if self.profile_completed:
@@ -783,78 +917,112 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
                 })
         
         return missing_fields
-
+    
     def get_profile_completion_percentage(self):
         """Calculate profile completion percentage"""
+        cache_key = f"profile_completion_{self.id}"
+        cached = cache.get(cache_key)
+        
+        if cached is not None:
+            return cached
+        
         if self.profile_completed:
-            return 100
+            result = 100
+        else:
+            if not self.profile_requirements_met:
+                self.check_profile_completion()
+            
+            total_required = 0
+            completed = 0
+            
+            for field, data in self.profile_requirements_met.items():
+                if data.get('required', True):
+                    total_required += 1
+                    if data.get('met', False):
+                        completed += 1
+            
+            if total_required == 0:
+                result = 100
+            else:
+                result = int((completed / total_required) * 100)
         
-        if not self.profile_requirements_met:
-            self.check_profile_completion()
+        cache.set(cache_key, result, 300)
+        return result
+    
+    def update_profile_completion_status(self):
+        """Update profile completion status and return missing fields"""
+        was_completed = self.profile_completed
         
-        total_required = 0
-        completed = 0
+        self.check_profile_completion(force_check=True)
         
+        missing_fields = []
         for field, data in self.profile_requirements_met.items():
-            if data.get('required', True):
-                total_required += 1
-                if data.get('met', False):
-                    completed += 1
+            if data.get('required', True) and not data.get('met', False):
+                missing_fields.append({
+                    'field': field,
+                    'display_name': data.get('display_name', field),
+                    'required': True
+                })
         
-        if total_required == 0:
-            return 100
+        if not was_completed and self.profile_completed:
+            self.profile_completion_date = timezone.now()
+            self.save(update_fields=['profile_completion_date'])
         
-        return int((completed / total_required) * 100)
-
-    # === Dashboard & Redirection Methods ===
+        return {
+            'profile_completed': self.profile_completed,
+            'completion_percentage': self.get_profile_completion_percentage(),
+            'missing_fields': missing_fields,
+            'requirements_met': self.profile_requirements_met,
+            'just_completed': not was_completed and self.profile_completed
+        }
+    
+    # ====================
+    # DASHBOARD & REDIRECTION
+    # ====================
+    
     def get_dashboard_url(self):
         """Get the appropriate dashboard URL based on user role"""
-        return self.DASHBOARD_URLS.get(self.role, '/dashboard')
-
+        return get_dashboard_url(self.role)
+    
     def get_redirect_url_after_login(self):
-        """
-        Get redirect URL after successful login/2FA verification
-        """
-        # Check if user needs to complete profile
+        """Get redirect URL after successful login/2FA verification"""
         if not self.profile_completed:
             return '/complete-profile'
         
-        # Check if user is suspended
         if self.is_suspended:
             return '/account-suspended'
         
-        # Check if user needs approval
         if not self.is_approved and self.requires_approval():
             return '/pending-approval'
         
-        # Check if password is expired
         if self.is_password_expired():
             return '/change-password?expired=true'
         
-        # Check if 2FA setup is required but not enabled
         if self.requires_2fa_setup and not self.has_2fa_enabled():
             return '/setup-2fa'
         
-        # Return role-specific dashboard
         return self.get_dashboard_url()
-
+    
     def requires_approval(self):
         """Check if user role requires manual approval"""
         return self.role in [
-            self.Role.TEACHER, 
-            self.Role.HEAD_TEACHER, 
-            self.Role.CURRICULUM_COORDINATOR,
-            self.Role.ACCOUNTANT,
-            self.Role.IT_SUPPORT,
-            self.Role.COUNSELOR
+            UserRole.TEACHER, 
+            UserRole.HEAD_TEACHER, 
+            UserRole.CURRICULUM_COORDINATOR,
+            UserRole.ACCOUNTANT,
+            UserRole.IT_SUPPORT,
+            UserRole.COUNSELOR
         ]
-
-    # === Authentication & Security Methods ===
+    
+    # ====================
+    # AUTHENTICATION & SECURITY
+    # ====================
+    
     def record_successful_login(self, ip_address, user_agent):
         """Record successful login attempt"""
         self.last_login = timezone.now()
-        self.last_login_ip = ip_address
-        self.last_login_user_agent = user_agent
+        self.last_login_ip = ip_address or '0.0.0.0'
+        self.last_login_user_agent = user_agent or ''
         self.login_count += 1
         self.failed_login_attempts = 0
         self.account_locked_until = None
@@ -865,20 +1033,20 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
             'last_activity'
         ])
         
-        # Record login history
         LoginHistory.record_login_attempt(
             user=self,
-            ip_address=ip_address,
-            user_agent=user_agent,
-            status=LoginHistory.LoginStatus.SUCCESS
+            ip_address=ip_address or '0.0.0.0',
+            user_agent=user_agent or '',
+            status=LoginStatusChoices.SUCCESS
         )
-
+        
+        cache.delete(f"profile_completion_{self.id}")
+    
     def record_failed_login(self, ip_address=None, user_agent=None, reason=""):
         """Record failed login attempt and lock account if necessary"""
         self.failed_login_attempts += 1
         self.last_activity = timezone.now()
         
-        # Lock account after 5 failed attempts for 30 minutes
         if self.failed_login_attempts >= 5:
             self.account_locked_until = timezone.now() + timedelta(minutes=30)
         
@@ -886,66 +1054,64 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
             'failed_login_attempts', 'last_activity', 'account_locked_until'
         ])
         
-        # Record failed login history
         if ip_address:
             LoginHistory.record_login_attempt(
                 user=self,
-                ip_address=ip_address,
+                ip_address=ip_address or '0.0.0.0',
                 user_agent=user_agent or '',
-                status=LoginHistory.LoginStatus.FAILED,
+                status=LoginStatusChoices.FAILED,
                 failure_reason=reason or "Invalid credentials"
             )
-
+    
     def is_account_locked(self):
         """Check if account is currently locked"""
         if self.account_locked_until:
             if timezone.now() < self.account_locked_until:
                 return True
             else:
-                # Auto-unlock if lock time has passed
                 self.unlock_account()
         return False
-
+    
     def unlock_account(self):
         """Unlock user account"""
         self.failed_login_attempts = 0
         self.account_locked_until = None
         self.save(update_fields=['failed_login_attempts', 'account_locked_until'])
-
+    
     def set_password(self, raw_password):
         """Override set_password to track password change"""
-        # Validate password strength
         self.validate_password_strength(raw_password)
         
         super().set_password(raw_password)
         self.password_changed_at = timezone.now()
         self.save(update_fields=['password', 'password_changed_at'])
-
+    
     def is_password_expired(self):
         """Check if password needs to be changed (90 days)"""
         if self.password_changed_at:
             return timezone.now() > self.password_changed_at + timedelta(days=90)
         return False
-
-    # === Email Verification Methods ===
+    
+    # ====================
+    # EMAIL VERIFICATION
+    # ====================
+    
     def send_verification_email(self, request=None):
         """Send email verification link"""
+        from django.urls import reverse
+        
         token = OTPToken.create_otp(
             user=self,
-            token_type=OTPToken.TokenType.EMAIL_VERIFICATION,
+            token_type=TokenTypeChoices.EMAIL_VERIFICATION,
             purpose="Email verification"
         )
         
-        # Create verification URL
-        from django.urls import reverse
         verification_url = reverse('verify-email', kwargs={'token': token.token})
         if request:
             from django.http import HttpRequest
             if isinstance(request, HttpRequest):
-                from django.urls import reverse
                 verification_url = request.build_absolute_uri(verification_url)
         
-        # Send email
         subject = _("Verify your email address - Delvok Academy")
         html_message = render_to_string('accounts/email_verification.html', {
             'user': self,
@@ -957,33 +1123,33 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
         
         self.email_user(subject, plain_message, html_message=html_message)
         return token
-
-    # === Password Reset Methods ===
+    
+    # ====================
+    # PASSWORD RESET
+    # ====================
+    
     def initiate_password_reset(self, request=None):
         """Initiate password reset process"""
-        # Delete existing password reset tokens
+        from django.urls import reverse
+        
         self.otp_tokens.filter(
-            token_type=OTPToken.TokenType.PASSWORD_RESET,
+            token_type=TokenTypeChoices.PASSWORD_RESET,
             is_used=False
         ).update(is_used=True)
         
-        # Create new token
         token = OTPToken.create_otp(
             user=self,
-            token_type=OTPToken.TokenType.PASSWORD_RESET,
+            token_type=TokenTypeChoices.PASSWORD_RESET,
             purpose="Password reset",
             validity_minutes=30
         )
         
-        # Create reset URL
-        from django.urls import reverse
         reset_url = reverse('password-reset-confirm', kwargs={'token': token.token})
         if request:
             from django.http import HttpRequest
             if isinstance(request, HttpRequest):
                 reset_url = request.build_absolute_uri(reset_url)
         
-        # Send email
         subject = _("Password Reset Request - Delvok Academy")
         html_message = render_to_string('accounts/password_reset_email.html', {
             'user': self,
@@ -995,117 +1161,127 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
         
         self.email_user(subject, plain_message, html_message=html_message)
         return token
-
-    # === Permission & Role Methods ===
+    
+    # ====================
+    # PERMISSIONS & ROLES
+    # ====================
+    
     def get_permissions(self):
         """Get user permissions for frontend AuthContext"""
+        cache_key = f"user_permissions_{self.id}"
+        cached = cache.get(cache_key)
+        
+        if cached is not None:
+            return cached
+        
         permissions = []
         
-        # Role-based permissions
-        if self.role == self.Role.ADMIN:
+        if self.role == UserRole.ADMIN:
             permissions.extend(['*', 'users.manage', 'system.manage', 'finance.manage', 'reports.manage'])
-        elif self.role == self.Role.ACCOUNTANT:
+        elif self.role == UserRole.ACCOUNTANT:
             permissions.extend(['finance.view', 'finance.manage', 'reports.view', 'reports.generate'])
-        elif self.role == self.Role.TEACHER:
+        elif self.role == UserRole.TEACHER:
             permissions.extend(['students.view', 'attendance.manage', 'grades.manage', 'lessons.manage'])
-        elif self.role == self.Role.STUDENT:
+        elif self.role == UserRole.STUDENT:
             permissions.extend(['profile.view', 'grades.view', 'attendance.view', 'courses.view'])
-        elif self.role == self.Role.PARENT:
+        elif self.role == UserRole.PARENT:
             permissions.extend(['profile.view', 'children.view', 'grades.view', 'attendance.view'])
-        elif self.role == self.Role.HEAD_TEACHER:
+        elif self.role == UserRole.HEAD_TEACHER:
             permissions.extend(['students.manage', 'teachers.manage', 'attendance.manage', 'grades.manage', 'reports.view'])
-        elif self.role == self.Role.IT_SUPPORT:
+        elif self.role == UserRole.IT_SUPPORT:
             permissions.extend(['system.view', 'users.manage', 'tickets.manage'])
         
+        cache.set(cache_key, permissions, 300)
         return permissions
-
+    
     def get_feature_flags(self):
         """Get feature flags for frontend AuthContext"""
+        cache_key = f"feature_flags_{self.id}"
+        cached = cache.get(cache_key)
+        
+        if cached is not None:
+            return cached
+        
         flags = {
             'canViewDashboard': True,
-            'canExportData': self.role in [self.Role.ADMIN, self.Role.ACCOUNTANT, self.Role.HEAD_TEACHER],
-            'canManageStudents': self.role in [self.Role.ADMIN, self.Role.TEACHER, self.Role.HEAD_TEACHER],
-            'canManageFinance': self.role in [self.Role.ADMIN, self.Role.ACCOUNTANT],
-            'canGenerateReports': self.role in [self.Role.ADMIN, self.Role.ACCOUNTANT, self.Role.HEAD_TEACHER],
-            'canManageUsers': self.role in [self.Role.ADMIN, self.Role.HEAD_TEACHER],
-            'canManageSystem': self.role in [self.Role.ADMIN, self.Role.IT_SUPPORT],
-            'canManageCurriculum': self.role in [self.Role.ADMIN, self.Role.CURRICULUM_COORDINATOR, self.Role.HEAD_TEACHER],
-            'canViewAnalytics': self.role in [self.Role.ADMIN, self.Role.HEAD_TEACHER, self.Role.ACCOUNTANT],
-            'canSendNotifications': self.role in [self.Role.ADMIN, self.Role.HEAD_TEACHER, self.Role.TEACHER],
-            'canUploadDocuments': self.role in [self.Role.ADMIN, self.Role.TEACHER, self.Role.STUDENT, self.Role.PARENT],
+            'canExportData': self.role in [UserRole.ADMIN, UserRole.ACCOUNTANT, UserRole.HEAD_TEACHER],
+            'canManageStudents': self.role in [UserRole.ADMIN, UserRole.TEACHER, UserRole.HEAD_TEACHER],
+            'canManageFinance': self.role in [UserRole.ADMIN, UserRole.ACCOUNTANT],
+            'canGenerateReports': self.role in [UserRole.ADMIN, UserRole.ACCOUNTANT, UserRole.HEAD_TEACHER],
+            'canManageUsers': self.role in [UserRole.ADMIN, UserRole.HEAD_TEACHER],
+            'canManageSystem': self.role in [UserRole.ADMIN, UserRole.IT_SUPPORT],
+            'canManageCurriculum': self.role in [UserRole.ADMIN, UserRole.CURRICULUM_COORDINATOR, UserRole.HEAD_TEACHER],
+            'canViewAnalytics': self.role in [UserRole.ADMIN, UserRole.HEAD_TEACHER, UserRole.ACCOUNTANT],
+            'canSendNotifications': self.role in [UserRole.ADMIN, UserRole.HEAD_TEACHER, UserRole.TEACHER],
+            'canUploadDocuments': self.role in [UserRole.ADMIN, UserRole.TEACHER, UserRole.STUDENT, UserRole.PARENT],
         }
+        
+        cache.set(cache_key, flags, 300)
         return flags
-
-    # === Utility Methods ===
-    def clean(self):
-        """Custom validation for the model"""
-        errors = {}
+    
+    def has_permission(self, permission_codename):
+        """Check if user has specific permission"""
+        if self.is_superuser or self.role == UserRole.ADMIN:
+            return True
         
-        # Email validation
-        if self.email:
-            existing_user = User.objects.filter(email=self.email)
-            if self.pk:  # If updating, exclude self
-                existing_user = existing_user.exclude(pk=self.pk)
-            if existing_user.exists():
-                errors['email'] = _('A user with this email already exists.')
-        
-        # Role-specific validation
-        if self.pk:  # Only for existing users
-            if self.role == self.Role.STUDENT and not self.admission_number:
-                errors['admission_number'] = _('Admission number is required for students.')
-            
-            if self.role in [self.Role.TEACHER, self.Role.HEAD_TEACHER, self.Role.CURRICULUM_COORDINATOR] and not self.staff_id:
-                errors['staff_id'] = _('Staff ID is required for staff members.')
-        
-        # Age validation for students
-        if self.role == self.Role.STUDENT and self.date_of_birth:
-            age = self.age
-            if age and age < 3:
-                errors['date_of_birth'] = _('Student must be at least 3 years old.')
-            if age and age > 25:
-                errors['date_of_birth'] = _('Student age seems unrealistic.')
-        
-        # Password validation if provided
-        if self.password and len(self.password) > 0:
-            try:
-                self.validate_password_strength(self.password)
-            except ValidationError as e:
-                errors['password'] = e.messages
-        
-        if errors:
-            raise ValidationError(errors)
-
+        permissions = self.get_permissions()
+        return permission_codename in permissions or '*' in permissions
+    
+    def can_access_feature(self, feature_name):
+        """Check if user can access specific feature"""
+        feature_flags = self.get_feature_flags()
+        return feature_flags.get(feature_name, False)
+    
+    # ====================
+    # SAVE METHOD
+    # ====================
+    
     def save(self, *args, **kwargs):
         """Override save method to handle automatic field population"""
         is_new = self._state.adding
         
-        # Auto-generate identifiers if needed for new users
+        # Auto-generate identifiers BEFORE validation for new users
         if is_new:
-            if self.role == self.Role.STUDENT and not self.admission_number:
+            if self.role == UserRole.STUDENT and not self.admission_number:
                 self.admission_number = self.generate_admission_number()
             
-            if self.role in [self.Role.TEACHER, self.Role.HEAD_TEACHER, self.Role.CURRICULUM_COORDINATOR, 
-                            self.Role.ACCOUNTANT, self.Role.IT_SUPPORT, self.Role.COUNSELOR,
-                            self.Role.LIBRARIAN, self.Role.OFFICE_STAFF] and not self.staff_id:
+            staff_roles = [
+                UserRole.TEACHER, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR,
+                UserRole.ACCOUNTANT, UserRole.IT_SUPPORT, UserRole.COUNSELOR,
+                UserRole.LIBRARIAN, UserRole.OFFICE_STAFF, UserRole.ADMIN
+            ]
+            if self.role in staff_roles and not self.staff_id:
+                self.staff_id = self.generate_staff_id()
+        
+        # For existing users, ensure required identifiers exist
+        if not is_new:
+            if self.role == UserRole.STUDENT and not self.admission_number:
+                self.admission_number = self.generate_admission_number()
+            
+            staff_roles = [
+                UserRole.TEACHER, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR,
+                UserRole.ACCOUNTANT, UserRole.IT_SUPPORT, UserRole.COUNSELOR,
+                UserRole.LIBRARIAN, UserRole.OFFICE_STAFF, UserRole.ADMIN
+            ]
+            if self.role in staff_roles and not self.staff_id:
                 self.staff_id = self.generate_staff_id()
         
         # Set is_staff based on role
         if not self.is_staff:
             self.is_staff = self.role in [
-                self.Role.ADMIN, self.Role.HEAD_TEACHER, self.Role.CURRICULUM_COORDINATOR,
-                self.Role.TEACHER, self.Role.ACCOUNTANT, self.Role.IT_SUPPORT, self.Role.COUNSELOR,
-                self.Role.LIBRARIAN, self.Role.OFFICE_STAFF
+                UserRole.ADMIN, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR,
+                UserRole.TEACHER, UserRole.ACCOUNTANT, UserRole.IT_SUPPORT, UserRole.COUNSELOR,
+                UserRole.LIBRARIAN, UserRole.OFFICE_STAFF
             ]
         
         # Set academic year if not set (for students)
-        if self.role == self.Role.STUDENT and not self.academic_year:
+        if self.role == UserRole.STUDENT and not self.academic_year:
             self.academic_year = self.get_current_academic_year()
         
         # Track profile updates for existing users
         if not is_new:
             try:
                 original = User.objects.get(pk=self.pk)
-                # Check if any profile fields changed
                 profile_fields = ['first_name', 'last_name', 'middle_name', 'phone_number', 'address']
                 for field in profile_fields:
                     if getattr(original, field) != getattr(self, field):
@@ -1114,20 +1290,35 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
             except User.DoesNotExist:
                 pass
         
+        # Run validation
+        try:
+            self.full_clean()
+        except ValidationError as e:
+            logger.error(f"Validation error saving User: {e}")
+            raise
+        
         super().save(*args, **kwargs)
-
+        
+        # Clear relevant caches
+        cache.delete(f"profile_completion_{self.id}")
+        cache.delete(f"user_permissions_{self.id}")
+        cache.delete(f"feature_flags_{self.id}")
+    
+    # ====================
+    # UTILITY METHODS
+    # ====================
+    
     def generate_admission_number(self):
         """Generate unique admission number"""
         year = timezone.now().year
         last_student = User.objects.filter(
-            role=self.Role.STUDENT,
+            role=UserRole.STUDENT,
             admission_number__isnull=False
         ).order_by('-admission_number').first()
         
         new_number = 1
         if last_student and last_student.admission_number:
             try:
-                # Extract the number part from format like DEL-STU-2024-0001
                 parts = last_student.admission_number.split('-')
                 if len(parts) == 4:
                     last_number = int(parts[-1])
@@ -1136,27 +1327,27 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
                 pass
             
         return f"DEL-STU-{year}-{new_number:04d}"
-
+    
     def generate_staff_id(self):
         """Generate unique staff ID"""
         year = timezone.now().year
         role_prefix = {
-            self.Role.TEACHER: 'TCH',
-            self.Role.HEAD_TEACHER: 'HT',
-            self.Role.CURRICULUM_COORDINATOR: 'CC',
-            self.Role.ACCOUNTANT: 'ACC',
-            self.Role.ADMIN: 'ADM',
-            self.Role.IT_SUPPORT: 'IT',
-            self.Role.COUNSELOR: 'COU',
-            self.Role.LIBRARIAN: 'LIB',
-            self.Role.OFFICE_STAFF: 'OFF'
+            UserRole.TEACHER: 'TCH',
+            UserRole.HEAD_TEACHER: 'HT',
+            UserRole.CURRICULUM_COORDINATOR: 'CC',
+            UserRole.ACCOUNTANT: 'ACC',
+            UserRole.ADMIN: 'ADM',
+            UserRole.IT_SUPPORT: 'IT',
+            UserRole.COUNSELOR: 'COU',
+            UserRole.LIBRARIAN: 'LIB',
+            UserRole.OFFICE_STAFF: 'OFF'
         }.get(self.role, 'EMP')
         
         last_staff = User.objects.filter(
             role__in=[
-                self.Role.TEACHER, self.Role.HEAD_TEACHER, self.Role.CURRICULUM_COORDINATOR,
-                self.Role.ACCOUNTANT, self.Role.ADMIN, self.Role.IT_SUPPORT, self.Role.COUNSELOR,
-                self.Role.LIBRARIAN, self.Role.OFFICE_STAFF
+                UserRole.TEACHER, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR,
+                UserRole.ACCOUNTANT, UserRole.ADMIN, UserRole.IT_SUPPORT, UserRole.COUNSELOR,
+                UserRole.LIBRARIAN, UserRole.OFFICE_STAFF
             ],
             staff_id__isnull=False
         ).order_by('-staff_id').first()
@@ -1172,25 +1363,22 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
                 pass
             
         return f"DEL-{role_prefix}-{year}-{new_number:04d}"
-
+    
     def get_current_academic_year(self):
         """Get current academic year in format YYYY-YYYY"""
         current_year = timezone.now().year
         current_month = timezone.now().month
         
-        # Academic year typically runs from September to August
         if current_month >= 9:  # September to December
             return f"{current_year}-{current_year + 1}"
         else:  # January to August
             return f"{current_year - 1}-{current_year}"
-
-    # === Session Management ===
+    
     def update_activity(self):
         """Update last activity timestamp"""
         self.last_activity = timezone.now()
         self.save(update_fields=['last_activity'])
-
-    # === Data Export & GDPR Compliance ===
+    
     def export_data(self, include_sensitive=False):
         """Export user data for GDPR compliance"""
         data = {
@@ -1232,40 +1420,68 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
             }
         
         return data
-
-    # === Parent-Child Relationship Methods ===
+    
     def get_children(self):
         """Get children for parent users"""
-        if self.role == self.Role.PARENT:
+        if self.role == UserRole.PARENT:
             return User.objects.filter(
-                role=self.Role.STUDENT,
+                role=UserRole.STUDENT,
                 parent_email=self.email
             )
         return User.objects.none()
-
+    
     def get_parents(self):
         """Get parents for student users"""
-        if self.role == self.Role.STUDENT and self.parent_email:
+        if self.role == UserRole.STUDENT and self.parent_email:
             return User.objects.filter(
-                role=self.Role.PARENT,
+                role=UserRole.PARENT,
                 email=self.parent_email
             )
         return User.objects.none()
-
-    # === Bulk Operations ===
-    @classmethod
-    def bulk_update_status(cls, user_ids, status_field, status_value):
-        """Bulk update user status"""
-        with transaction.atomic():
-            users = cls.objects.filter(id__in=user_ids)
-            update_count = users.update(**{status_field: status_value})
-            
-            # Log the action
-            logger.info(f"Bulk updated {update_count} users: {status_field}={status_value}")
-            
-            return update_count
-
-    # === Property Methods ===
+    
+    def get_dashboard_data(self):
+        """Get dashboard data for frontend"""
+        dashboard_data = {
+            'user': {
+                'id': str(self.id),
+                'email': self.email,
+                'first_name': self.first_name,
+                'last_name': self.last_name,
+                'role': self.role,
+                'role_display': self.get_role_display(),
+                'profile_picture': self.profile_picture.url if self.profile_picture else None,
+                'profile_completed': self.profile_completed,
+                'is_verified': self.is_verified,
+                'is_approved': self.is_approved,
+            },
+            'dashboard_url': self.get_dashboard_url(),
+            'permissions': self.get_permissions(),
+            'feature_flags': self.get_feature_flags(),
+        }
+        
+        # Add role-specific data
+        if self.role == UserRole.STUDENT:
+            dashboard_data['student_info'] = {
+                'admission_number': self.admission_number,
+                'grade_level': self.grade_level,
+                'current_class': self.current_class,
+                'house': self.house,
+                'academic_year': self.academic_year,
+            }
+        elif self.role in [UserRole.TEACHER, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR]:
+            dashboard_data['teacher_info'] = {
+                'staff_id': self.staff_id,
+                'department': self.department,
+                'designation': self.designation,
+                'years_of_experience': self.years_of_experience,
+            }
+        
+        return dashboard_data
+    
+    # ====================
+    # PROPERTIES
+    # ====================
+    
     @property
     def age(self):
         """Calculate current age"""
@@ -1275,17 +1491,17 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
                 (today.month, today.day) < (self.date_of_birth.month, self.date_of_birth.day)
             )
         return None
-
+    
     @property
     def display_name(self):
         """Get display name with role"""
         return f"{self.get_full_name()} ({self.get_role_display()})"
-
+    
     @property
     def identifier(self):
         """Get primary identifier"""
         return self.admission_number or self.staff_id or self.email
-
+    
     @property
     def years_of_service(self):
         """Calculate years of service for staff"""
@@ -1295,19 +1511,19 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
                 (today.month, today.day) < (self.employment_date.month, self.employment_date.day)
             )
         return None
-
+    
     @property
     def requires_2fa_setup(self):
         """Check if user should setup 2FA (admins and accountants)"""
-        return self.role in [self.Role.ADMIN, self.Role.ACCOUNTANT, self.Role.IT_SUPPORT]
-
+        return self.role in [UserRole.ADMIN, UserRole.ACCOUNTANT, UserRole.IT_SUPPORT]
+    
     @property
     def is_online(self):
         """Check if user is currently online (active in last 15 minutes)"""
         if self.last_activity:
             return timezone.now() - self.last_activity < timedelta(minutes=15)
         return False
-
+    
     @property
     def profile_completion_percentage(self):
         """Calculate profile completion percentage"""
@@ -1317,57 +1533,74 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
     def is_teacher(self):
         """Check if user is a teacher or has teacher privileges"""
         return self.role in [
-            self.Role.TEACHER,
-            self.Role.HEAD_TEACHER,
-            self.Role.CURRICULUM_COORDINATOR,
-            self.Role.ADMIN
+            UserRole.TEACHER,
+            UserRole.HEAD_TEACHER,
+            UserRole.CURRICULUM_COORDINATOR,
+            UserRole.ADMIN
         ]
     
     @property
     def is_student(self):
         """Check if user is a student"""
-        return self.role == self.Role.STUDENT
+        return self.role == UserRole.STUDENT
     
     @property
     def is_parent(self):
         """Check if user is a parent"""
-        return self.role == self.Role.PARENT
+        return self.role == UserRole.PARENT
     
     @property
     def is_staff_member(self):
         """Check if user is any type of staff"""
         return self.role in [
-            self.Role.ADMIN,
-            self.Role.HEAD_TEACHER,
-            self.Role.CURRICULUM_COORDINATOR,
-            self.Role.TEACHER,
-            self.Role.OFFICE_STAFF,
-            self.Role.LIBRARIAN,
-            self.Role.ACCOUNTANT,
-            self.Role.IT_SUPPORT,
-            self.Role.COUNSELOR
+            UserRole.ADMIN,
+            UserRole.HEAD_TEACHER,
+            UserRole.CURRICULUM_COORDINATOR,
+            UserRole.TEACHER,
+            UserRole.OFFICE_STAFF,
+            UserRole.LIBRARIAN,
+            UserRole.ACCOUNTANT,
+            UserRole.IT_SUPPORT,
+            UserRole.COUNSELOR
         ]
     
     @property
     def is_finance_user(self):
         """Check if user has finance access"""
-        return self.role in [self.Role.ADMIN, self.Role.ACCOUNTANT]
+        return self.role in [UserRole.ADMIN, UserRole.ACCOUNTANT]
     
     @property
     def is_management(self):
         """Check if user is in management role"""
-        return self.role in [self.Role.ADMIN, self.Role.HEAD_TEACHER, self.Role.CURRICULUM_COORDINATOR]
+        return self.role in [UserRole.ADMIN, UserRole.HEAD_TEACHER, UserRole.CURRICULUM_COORDINATOR]
     
     @property
     def has_document_upload_access(self):
         """Check if user can upload documents"""
         return self.role in [
-            self.Role.ADMIN,
-            self.Role.TEACHER,
-            self.Role.HEAD_TEACHER,
-            self.Role.STUDENT,
-            self.Role.PARENT
+            UserRole.ADMIN,
+            UserRole.TEACHER,
+            UserRole.HEAD_TEACHER,
+            UserRole.STUDENT,
+            UserRole.PARENT
         ]
+    
+    def has_2fa_enabled(self):
+        """Check if user has 2FA enabled"""
+        try:
+            return self.two_factor_auth.is_enabled
+        except TwoFactorAuth.DoesNotExist:
+            return False
+    
+    @property
+    def cached_permissions(self):
+        """Get cached permissions"""
+        return self.get_permissions()
+    
+    @property
+    def cached_feature_flags(self):
+        """Get cached feature flags"""
+        return self.get_feature_flags()
 
 
 # ============================================================================
@@ -1376,6 +1609,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel,
 
 class UserProfile(BaseModel):
     """Enhanced User profile model for additional user information"""
+    
     user = models.OneToOneField(
         User, 
         on_delete=models.CASCADE, 
@@ -1430,7 +1664,7 @@ class UserProfile(BaseModel):
 
     def __str__(self):
         return f"Profile for {self.user.email}"
-
+    
     def add_achievement(self, title, description, date_achieved, category=None):
         """Add an achievement to user profile"""
         achievement = {
@@ -1447,7 +1681,7 @@ class UserProfile(BaseModel):
         
         self.achievements.append(achievement)
         self.save()
-
+    
     def add_skill(self, skill_name, proficiency_level='intermediate', category=None):
         """Add a skill to user profile"""
         skill = {
@@ -1466,18 +1700,12 @@ class UserProfile(BaseModel):
 
 
 # ============================================================================
-# AUTHENTICATION & SECURITY MODELS
+# AUTHENTICATION MODELS
 # ============================================================================
 
 class TwoFactorAuth(BaseModel):
     """Enhanced 2FA model with session management for dashboard redirection"""
     
-    class Method(models.TextChoices):
-        EMAIL = 'email', _('Email')
-        AUTHENTICATOR = 'authenticator', _('Authenticator App')
-        SMS = 'sms', _('SMS')
-        VOICE = 'voice', _('Voice Call')
-
     user = models.OneToOneField(
         User, 
         on_delete=models.CASCADE, 
@@ -1487,19 +1715,19 @@ class TwoFactorAuth(BaseModel):
     is_enabled = models.BooleanField(default=False)
     primary_method = models.CharField(
         max_length=20, 
-        choices=Method.choices, 
-        default=Method.EMAIL
+        choices=TwoFAMethodChoices.choices, 
+        default=TwoFAMethodChoices.EMAIL
     )
     backup_codes = models.JSONField(default=list, blank=True)
     last_used = models.DateTimeField(null=True, blank=True)
     recovery_email = models.EmailField(blank=True)
     recovery_phone = models.CharField(max_length=17, blank=True)
     last_backup_code_generated = models.DateTimeField(null=True, blank=True)
-
+    
     # Session management for OTP verification flow
-    pending_session_token = models.CharField(max_length=100, blank=True)
+    pending_session_token = models.CharField(max_length=300, blank=True)
     pending_session_expiry = models.DateTimeField(null=True, blank=True)
-    pending_redirect_url = models.CharField(max_length=200, blank=True)
+    pending_redirect_url = models.CharField(max_length=500, blank=True)
 
     class Meta:
         verbose_name = _("Two Factor Authentication")
@@ -1510,26 +1738,26 @@ class TwoFactorAuth(BaseModel):
 
     def __str__(self):
         return f"2FA for {self.user.email}"
-
+    
     def save(self, *args, **kwargs):
         """Override save to generate secret key if not set"""
         if not self.secret_key:
             self.secret_key = pyotp.random_base32()
         super().save(*args, **kwargs)
-
+    
     def generate_secret(self):
         """Generate a new secret key"""
         self.secret_key = pyotp.random_base32()
         self.save()
         return self.secret_key
-
+    
     def create_pending_session(self, session_token, redirect_url=None):
         """Create a pending session for OTP verification"""
         self.pending_session_token = session_token
         self.pending_session_expiry = timezone.now() + timedelta(minutes=10)
         self.pending_redirect_url = redirect_url or self.user.get_dashboard_url()
         self.save()
-
+    
     def verify_pending_session(self, session_token, otp_code):
         """Verify OTP and pending session"""
         if (not self.pending_session_token or 
@@ -1540,19 +1768,18 @@ class TwoFactorAuth(BaseModel):
         if not self.verify_otp(otp_code):
             return False, "Invalid OTP code"
         
-        # Session verified successfully
         redirect_url = self.pending_redirect_url
         self.clear_pending_session()
         
         return True, redirect_url
-
+    
     def clear_pending_session(self):
         """Clear pending session data"""
         self.pending_session_token = ""
         self.pending_session_expiry = None
         self.pending_redirect_url = ""
         self.save()
-
+    
     def generate_provisioning_uri(self):
         """Generate URI for QR code"""
         if not self.secret_key:
@@ -1562,7 +1789,7 @@ class TwoFactorAuth(BaseModel):
             name=self.user.email, 
             issuer_name="Delvok Academy"
         )
-
+    
     def generate_qr_code(self):
         """Generate QR code as base64"""
         try:
@@ -1583,7 +1810,7 @@ class TwoFactorAuth(BaseModel):
         except Exception as e:
             logger.error(f"Error generating QR code: {e}")
             return ""
-
+    
     def verify_otp(self, otp, window=2):
         """Verify OTP code with extended window for time sync issues"""
         if not self.is_enabled:
@@ -1598,7 +1825,7 @@ class TwoFactorAuth(BaseModel):
             self.last_used = timezone.now()
             self.save(update_fields=['last_used'])
         return is_valid
-
+    
     def generate_backup_codes(self, count=10):
         """Generate backup codes with timestamp"""
         backup_codes = [secrets.token_hex(4).upper() for _ in range(count)]
@@ -1612,7 +1839,7 @@ class TwoFactorAuth(BaseModel):
         self.last_backup_code_generated = timezone.now()
         self.save()
         return backup_codes
-
+    
     def verify_backup_code(self, code):
         """Verify backup code and mark as used"""
         for backup_code in self.backup_codes:
@@ -1622,11 +1849,11 @@ class TwoFactorAuth(BaseModel):
                 self.save()
                 return True
         return False
-
+    
     def get_unused_backup_codes(self):
         """Get list of unused backup codes"""
         return [bc for bc in self.backup_codes if not bc.get('used', False)]
-
+    
     def disable_2fa(self):
         """Disable 2FA and clear all data"""
         self.is_enabled = False
@@ -1639,17 +1866,218 @@ class TwoFactorAuth(BaseModel):
         self.save()
 
 
+class LoginSession(BaseModel):
+    """Model to track login sessions with OTP verification"""
+    
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='login_sessions'
+    )
+    session_token = models.CharField(
+        max_length=64, 
+        unique=True, 
+        verbose_name=_("Session Token")
+    )
+    status = models.CharField(
+        max_length=20, 
+        choices=SessionStatusChoices.choices, 
+        default=SessionStatusChoices.PENDING_OTP,
+        verbose_name=_("Status")
+    )
+    ip_address = models.GenericIPAddressField(
+        null=True, 
+        blank=True, 
+        verbose_name=_("IP Address")
+    )
+    user_agent = models.TextField(
+        blank=True, 
+        verbose_name=_("User Agent")
+    )
+    device_info = models.JSONField(
+        default=dict, 
+        blank=True, 
+        verbose_name=_("Device Information")
+    )
+    otp_sent_at = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        verbose_name=_("OTP Sent At")
+    )
+    otp_verified_at = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        verbose_name=_("OTP Verified At")
+    )
+    expires_at = models.DateTimeField(
+        verbose_name=_("Expires At")
+    )
+    last_activity = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        verbose_name=_("Last Activity")
+    )
+    jwt_refresh_token = models.TextField(
+        blank=True, 
+        verbose_name=_("JWT Refresh Token")
+    )
+    jwt_access_token = models.TextField(
+        blank=True, 
+        verbose_name=_("JWT Access Token")
+    )
+    
+    class Meta:
+        verbose_name = _("Login Session")
+        verbose_name_plural = _("Login Sessions")
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['session_token']),
+            models.Index(fields=['user', 'status']),
+            models.Index(fields=['expires_at']),
+            models.Index(fields=['status']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.email} - {self.status} - {self.created_at}"
+    
+    @property
+    def is_active(self):
+        """Check if session is active"""
+        return (
+            self.status == SessionStatusChoices.VERIFIED and 
+            timezone.now() < self.expires_at
+        )
+    
+    @property
+    def is_expired(self):
+        """Check if session is expired"""
+        return timezone.now() >= self.expires_at
+    
+    @property
+    def otp_is_valid(self):
+        """Check if OTP is still valid"""
+        if not self.otp_sent_at:
+            return False
+        return timezone.now() < self.otp_sent_at + timedelta(minutes=5)
+    
+    def generate_session_token(self):
+        """Generate a unique session token"""
+        self.session_token = secrets.token_urlsafe(48)
+        return self.session_token
+    
+    def send_otp(self, method='email'):
+        """Send OTP for this login session"""
+        otp_token = OTPToken.create_otp(
+            user=self.user,
+            token_type=TokenTypeChoices.LOGIN_VERIFICATION,
+            purpose="Login verification",
+            ip_address=self.ip_address,
+            user_agent=self.user_agent,
+            validity_minutes=5
+        )
+        
+        self.otp_sent_at = timezone.now()
+        self.save()
+        
+        if method == 'email':
+            self._send_otp_email(otp_token)
+        elif method == 'sms':
+            self._send_otp_sms(otp_token)
+        
+        return otp_token
+    
+    def _send_otp_email(self, otp_token):
+        """Send OTP via email"""
+        subject = _("Login Verification Code - Delvok Academy")
+        html_message = render_to_string('accounts/login_otp_email.html', {
+            'user': self.user,
+            'otp': otp_token.token,
+            'expiry_minutes': 5,
+            'device_info': self.device_info,
+            'ip_address': self.ip_address
+        })
+        plain_message = strip_tags(html_message)
+        
+        try:
+            send_mail(
+                subject,
+                plain_message,
+                settings.DEFAULT_FROM_EMAIL,
+                [self.user.email],
+                html_message=html_message,
+                fail_silently=False
+            )
+        except Exception as e:
+            logger.error(f"Failed to send OTP email: {e}")
+    
+    def _send_otp_sms(self, otp_token):
+        """Send OTP via SMS"""
+        # Implement SMS sending logic here
+        pass
+    
+    def verify_otp(self, otp_code):
+        """Verify OTP code"""
+        if not self.otp_is_valid:
+            self.status = SessionStatusChoices.EXPIRED
+            self.save()
+            return False, _("OTP has expired. Please request a new one.")
+        
+        try:
+            otp_token = OTPToken.objects.get(
+                user=self.user,
+                token=otp_code,
+                token_type=TokenTypeChoices.LOGIN_VERIFICATION,
+                is_used=False,
+                expires_at__gt=timezone.now()
+            )
+            
+            otp_token.mark_used()
+            
+            self.status = SessionStatusChoices.VERIFIED
+            self.otp_verified_at = timezone.now()
+            self.expires_at = timezone.now() + timedelta(hours=12)
+            self.save()
+            
+            return True, _("OTP verified successfully.")
+            
+        except OTPToken.DoesNotExist:
+            self.record_failed_attempt()
+            return False, _("Invalid OTP code.")
+    
+    def record_failed_attempt(self):
+        """Record failed OTP attempt"""
+        pass
+    
+    def revoke(self):
+        """Revoke this login session"""
+        self.status = SessionStatusChoices.REVOKED
+        self.save()
+    
+    @classmethod
+    def create_pending_session(cls, user, ip_address, user_agent, device_info=None):
+        """Create a new pending login session"""
+        cls.objects.filter(
+            user=user,
+            status=SessionStatusChoices.PENDING_OTP,
+            expires_at__lt=timezone.now()
+        ).update(status=SessionStatusChoices.EXPIRED)
+        
+        session = cls.objects.create(
+            user=user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            device_info=device_info or {},
+            expires_at=timezone.now() + timedelta(minutes=10)
+        )
+        
+        session.generate_session_token()
+        session.save()
+        
+        return session
+
+
 class OTPToken(BaseModel):
     """Enhanced OTP Token model for email/SMS verification and password reset"""
-    
-    class TokenType(models.TextChoices):
-        EMAIL_VERIFICATION = 'email_verification', _('Email Verification')
-        PHONE_VERIFICATION = 'phone_verification', _('Phone Verification')
-        PASSWORD_RESET = 'password_reset', _('Password Reset')
-        LOGIN_VERIFICATION = 'login_verification', _('Login Verification')
-        ACCOUNT_RECOVERY = 'account_recovery', _('Account Recovery')
-        TWO_FACTOR_BACKUP = 'two_factor_backup', _('2FA Backup')
-        ACCOUNT_APPROVAL = 'account_approval', _('Account Approval')
     
     user = models.ForeignKey(
         User, 
@@ -1659,7 +2087,7 @@ class OTPToken(BaseModel):
     token = models.CharField(max_length=6, verbose_name=_("OTP Token"))
     token_type = models.CharField(
         max_length=20, 
-        choices=TokenType.choices, 
+        choices=TokenTypeChoices.choices, 
         verbose_name=_("Token Type")
     )
     purpose = models.CharField(max_length=100, blank=True, verbose_name=_("Purpose"))
@@ -1668,6 +2096,13 @@ class OTPToken(BaseModel):
     used_at = models.DateTimeField(null=True, blank=True, verbose_name=_("Used At"))
     ip_address = models.GenericIPAddressField(null=True, blank=True, verbose_name=_("Request IP"))
     user_agent = models.TextField(blank=True, verbose_name=_("User Agent"))
+    login_session = models.ForeignKey(
+        'LoginSession',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='otp_tokens'
+    )
     
     class Meta:
         verbose_name = _("OTP Token")
@@ -1677,6 +2112,7 @@ class OTPToken(BaseModel):
             models.Index(fields=['token', 'is_used', 'expires_at']),
             models.Index(fields=['user', 'token_type']),
             models.Index(fields=['created_at']),
+            models.Index(fields=['login_session']),
         ]
 
     def __str__(self):
@@ -1691,7 +2127,7 @@ class OTPToken(BaseModel):
         self.is_used = True
         self.used_at = timezone.now()
         self.save()
-
+    
     def clean(self):
         """Validate token expiration"""
         if self.expires_at and self.expires_at <= timezone.now():
@@ -1700,17 +2136,15 @@ class OTPToken(BaseModel):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
-
+    
     @classmethod
-    def create_otp(cls, user, token_type, purpose="", ip_address=None, user_agent="", validity_minutes=10):
+    def create_otp(cls, user, token_type, purpose="", ip_address=None, user_agent="", validity_minutes=10, login_session=None):
         """Create a new OTP token"""
-        # Clean up expired tokens
         cls.objects.filter(
             user=user, 
             expires_at__lt=timezone.now()
         ).delete()
         
-        # Generate random 6-digit token
         token = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
         
         otp = cls.objects.create(
@@ -1720,22 +2154,28 @@ class OTPToken(BaseModel):
             purpose=purpose,
             expires_at=timezone.now() + timedelta(minutes=validity_minutes),
             ip_address=ip_address,
-            user_agent=user_agent
+            user_agent=user_agent,
+            login_session=login_session
         )
         
         return otp
-
+    
     @classmethod
-    def verify_otp(cls, user, token, token_type):
+    def verify_otp(cls, user, token, token_type, login_session=None):
         """Verify OTP token"""
         try:
-            otp = cls.objects.get(
-                user=user,
-                token=token,
-                token_type=token_type,
-                is_used=False,
-                expires_at__gt=timezone.now()
-            )
+            query_params = {
+                'user': user,
+                'token': token,
+                'token_type': token_type,
+                'is_used': False,
+                'expires_at__gt': timezone.now()
+            }
+            
+            if login_session:
+                query_params['login_session'] = login_session
+            
+            otp = cls.objects.get(**query_params)
             otp.mark_used()
             return True, "OTP verified successfully"
         except cls.DoesNotExist:
@@ -1745,21 +2185,12 @@ class OTPToken(BaseModel):
 class LoginHistory(BaseModel):
     """Enhanced Login history tracking for security monitoring"""
     
-    class LoginStatus(models.TextChoices):
-        SUCCESS = 'success', _('Success')
-        FAILED = 'failed', _('Failed')
-        LOCKED = 'locked', _('Locked')
-        TWO_FACTOR_REQUIRED = 'two_factor_required', _('2FA Required')
-        TWO_FACTOR_VERIFIED = 'two_factor_verified', _('2FA Verified')
-        PASSWORD_RESET = 'password_reset', _('Password Reset')
-        ACCOUNT_RECOVERY = 'account_recovery', _('Account Recovery')
-    
     user = models.ForeignKey(
         User, 
         on_delete=models.CASCADE, 
         related_name='login_history'
     )
-    ip_address = models.GenericIPAddressField(verbose_name=_("IP Address"))
+    ip_address = models.GenericIPAddressField(null=True,blank=True,verbose_name=_("IP Address"))
     user_agent = models.TextField(blank=True, verbose_name=_("User Agent"))
     location = models.CharField(max_length=100, blank=True, verbose_name=_("Location"))
     device_type = models.CharField(max_length=50, blank=True, verbose_name=_("Device Type"))
@@ -1767,15 +2198,15 @@ class LoginHistory(BaseModel):
     platform = models.CharField(max_length=50, blank=True, verbose_name=_("Platform"))
     login_status = models.CharField(
         max_length=20, 
-        choices=LoginStatus.choices, 
+        choices=LoginStatusChoices.choices, 
         verbose_name=_("Login Status")
     )
-    failure_reason = models.CharField(max_length=100, blank=True, verbose_name=_("Failure Reason"))
+    failure_reason = models.CharField(max_length=100, blank=True, null=True, verbose_name=_("Failure Reason"))
     session_key = models.CharField(max_length=100, blank=True, verbose_name=_("Session Key"))
     two_fa_method = models.CharField(
         max_length=20, 
         blank=True, 
-        choices=TwoFactorAuth.Method.choices, 
+        choices=TwoFAMethodChoices.choices, 
         verbose_name=_("2FA Method")
     )
     country = models.CharField(max_length=50, blank=True, verbose_name=_("Country"))
@@ -1799,13 +2230,11 @@ class LoginHistory(BaseModel):
     @classmethod
     def record_login_attempt(cls, user, ip_address, user_agent, status, failure_reason='', session_key='', two_fa_method=''):
         """Record login attempt with enhanced location detection"""
-        # Parse user agent for device information
+        if ip_address is None:
+            ip_address = '0.0.0.0'
+
         device_info = cls.parse_user_agent(user_agent)
-        
-        # Get location from IP (simplified version)
         location_info = cls.get_location_from_ip(ip_address)
-        
-        # Check for suspicious activity
         is_suspicious = cls.detect_suspicious_activity(user, ip_address, location_info)
         
         return cls.objects.create(
@@ -1881,41 +2310,65 @@ class LoginHistory(BaseModel):
     
     @staticmethod
     def get_location_from_ip(ip_address):
-        """Get location from IP address - simplified version"""
+        """Get location from IP address using external service"""
         location_info = {
             'location': '',
             'country': '',
-            'city': ''
+            'city': '',
+            'region': '',
+            'timezone': ''
         }
         
         if not ip_address or ip_address in ['127.0.0.1', 'localhost', '::1']:
             location_info['location'] = 'Localhost'
+            location_info['country'] = 'Local'
             return location_info
         
-        # For production, integrate with a proper IP geolocation service
-        # This is a simplified version
-        location_info['location'] = 'Unknown'
-        location_info['country'] = 'Unknown'
-        location_info['city'] = 'Unknown'
-            
+        try:
+            response = requests.get(f'https://ipapi.co/{ip_address}/json/', timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                
+                country = data.get('country_name', '')
+                city = data.get('city', '')
+                region = data.get('region', '')
+                
+                location_info['country'] = country or 'Unknown'
+                location_info['city'] = city or 'Unknown'
+                location_info['region'] = region or 'Unknown'
+                location_info['timezone'] = data.get('timezone', '')
+                
+                parts = []
+                if city:
+                    parts.append(city)
+                if region:
+                    parts.append(region)
+                if country:
+                    parts.append(country)
+                
+                location_info['location'] = ', '.join(parts) if parts else 'Unknown'
+                
+        except (requests.RequestException, ValueError, KeyError) as e:
+            logger.warning(f"Failed to get location for IP {ip_address}: {e}")
+            location_info['location'] = 'Unknown'
+            location_info['country'] = 'Unknown'
+            location_info['city'] = 'Unknown'
+        
         return location_info
     
     @staticmethod
     def detect_suspicious_activity(user, ip_address, location_info):
         """Detect potentially suspicious login activity"""
-        # Check if this is a new location for the user
         recent_logins = LoginHistory.objects.filter(
             user=user,
             created_at__gte=timezone.now() - timedelta(days=30)
         ).exclude(ip_address=ip_address)
         
         if recent_logins.exists():
-            # User has logged in from different IPs recently
             unique_ips = recent_logins.values('ip_address').distinct().count()
-            if unique_ips >= 3:  # Logged in from 3+ different IPs in 30 days
+            if unique_ips >= 3:
                 return True
         
-        # Check if location is very different from usual
         usual_country = recent_logins.exclude(country='').values('country').annotate(
             count=models.Count('country')
         ).order_by('-count').first()
@@ -1927,3 +2380,109 @@ class LoginHistory(BaseModel):
             return True
             
         return False
+
+
+class EmailVerification(BaseModel):
+    """Model for email verification tokens"""
+    
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='email_verifications'
+    )
+    token = models.CharField(
+        max_length=64, 
+        unique=True, 
+        verbose_name=_("Verification Token")
+    )
+    is_used = models.BooleanField(default=False, verbose_name=_("Is Used"))
+    expires_at = models.DateTimeField(verbose_name=_("Expires At"))
+    used_at = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        verbose_name=_("Used At")
+    )
+    
+    class Meta:
+        verbose_name = _("Email Verification")
+        verbose_name_plural = _("Email Verifications")
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token', 'is_used']),
+            models.Index(fields=['user', 'is_used']),
+            models.Index(fields=['expires_at']),
+        ]
+    
+    def __str__(self):
+        return f"Email verification for {self.user.email}"
+    
+    @property
+    def is_valid(self):
+        """Check if token is still valid"""
+        return not self.is_used and timezone.now() < self.expires_at
+    
+    def mark_used(self):
+        """Mark token as used"""
+        self.is_used = True
+        self.used_at = timezone.now()
+        self.save()
+    
+    @classmethod
+    def create_verification_token(cls, user):
+        """Create a new email verification token"""
+        cls.objects.filter(user=user).delete()
+        
+        token = secrets.token_urlsafe(32)
+        expires_at = timezone.now() + timedelta(hours=24)
+        
+        return cls.objects.create(
+            user=user,
+            token=token,
+            expires_at=expires_at
+        )
+    
+    @classmethod
+    def verify_token(cls, token):
+        """Verify email verification token"""
+        try:
+            verification = cls.objects.get(
+                token=token,
+                is_used=False,
+                expires_at__gt=timezone.now()
+            )
+            
+            verification.mark_used()
+            
+            user = verification.user
+            user.email_verified = True
+            user.is_verified = user.is_verified or True
+            user.save()
+            
+            return True, user, _("Email verified successfully")
+            
+        except cls.DoesNotExist:
+            return False, None, _("Invalid or expired verification token")
+
+
+class OTPSession(models.Model):
+    """Store OTP sessions in database instead of cache"""
+    session_token = models.UUIDField(unique=True, default=uuid.uuid4)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    email = models.EmailField()
+    otp_code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    verified = models.BooleanField(default=False)
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['session_token']),
+            models.Index(fields=['expires_at']),
+        ]
+    
+    def is_valid(self):
+        return not self.verified and timezone.now() < self.expires_at
+    
+    def mark_verified(self):
+        self.verified = True
+        self.save()

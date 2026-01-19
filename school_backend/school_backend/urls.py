@@ -32,12 +32,15 @@ urlpatterns = [
     
     # API Routes - Version 1 (Consistent structure)
     path('api/v1/auth/', include('accounts.urls')),
-    path('api/v1/finance/', include('finance.urls')),
-    path('api/v1/students/', include('students.urls')),
-    path('api/v1/teachers/', include('teachers.urls')),
     path('api/v1/academics/', include('academics.urls')),
     path('api/v1/assignments/', include('assignments.urls')),
     path('api/v1/attendance/', include('attendance.urls')),
+    path('api/v1/finance/', include('finance.urls')),
+     path('api/v1/downloads/', include('downloads.urls')),
+    path('api/v1/students/', include('students.urls')),
+    path('api/v1/teachers/', include('teachers.urls')),
+    path('api/v1/analytics/', include('analytics.urls')),
+    
     path('api/v1/grading/', include('grading.urls')),
     path('api/v1/library/', include('library.urls')),
     path('api/v1/notes/', include('notes.urls')),

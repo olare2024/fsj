@@ -1,6 +1,6 @@
 """
 Attendance models for school management system.
-Fixed all Django system check errors.
+Fixed all Django system check errors - NO duplicate related_name conflicts.
 """
 
 from django.db import models
@@ -27,7 +27,7 @@ class StudentAttendance(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     student = models.ForeignKey('students.StudentProfile', on_delete=models.CASCADE, 
-                                related_name='new_attendance_records')
+                                related_name='student_attendances')
     class_enrolled = models.ForeignKey('academics.Class', on_delete=models.CASCADE)
     academic_year = models.ForeignKey('academics.AcademicYear', on_delete=models.CASCADE)
     term = models.ForeignKey('academics.AcademicTerm', on_delete=models.CASCADE, 
@@ -51,12 +51,12 @@ class StudentAttendance(models.Model):
     parent_notified = models.BooleanField(default=False)
     parent_notification_time = models.DateTimeField(null=True, blank=True)
     
-    # Record keeping
+    # Record keeping - UNIQUE related_name for each ForeignKey
     recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
-                                    null=True, related_name='our_recorded_attendances')
+                                    null=True, related_name='recorded_student_attendances')
     verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
                                     null=True, blank=True, 
-                                    related_name='verified_attendances')
+                                    related_name='verified_student_attendances')
     verification_time = models.DateTimeField(null=True, blank=True)
     
     notes = models.TextField(blank=True, null=True)
@@ -68,7 +68,6 @@ class StudentAttendance(models.Model):
         verbose_name = "Student Attendance"
         verbose_name_plural = "Student Attendance Records"
         unique_together = ['student', 'date', 'session']
-        # FIXED: Changed to safe ordering that works with any StudentProfile structure
         ordering = ['-date', 'student_id']
         indexes = [
             models.Index(fields=['date', 'class_enrolled']),
@@ -136,17 +135,22 @@ class TeacherAttendance(models.Model):
     
     # Leave details (if applicable)
     leave_application = models.ForeignKey(
-        'teachers.TeacherLeaveApplication', 
+        'teachers.TeacherLeave', 
         on_delete=models.SET_NULL, 
         null=True, 
         blank=True,
-        related_name='attendance_teacher_attendances'  # Unique related_name
+        related_name='teacher_attendance_leave_applications'  # UNIQUE related_name
     )
     
-    # Record keeping
-    notes = models.TextField(blank=True, null=True)
+    # Record keeping - UNIQUE related_name for each ForeignKey
     recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
-                                    null=True)
+                                    null=True, blank=True, 
+                                    related_name='recorded_teacher_attendances')
+    verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
+                                    null=True, blank=True, 
+                                    related_name='verified_teacher_attendances')  # CHANGED: UNIQUE
+    
+    notes = models.TextField(blank=True, null=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -155,7 +159,6 @@ class TeacherAttendance(models.Model):
         verbose_name = "Teacher Attendance"
         verbose_name_plural = "Teacher Attendance Records"
         unique_together = ['teacher', 'date']
-        # FIXED: Changed to safe ordering
         ordering = ['-date', 'teacher_id']
         indexes = [
             models.Index(fields=['date', 'status']),
@@ -201,7 +204,7 @@ class StaffAttendance(models.Model):
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     staff_member = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, 
-                                     related_name='staff_attendance')
+                                     related_name='staff_attendance_records')  # UNIQUE
     staff_category = models.CharField(max_length=20, choices=STAFF_CATEGORIES)
     
     # Attendance details
@@ -214,7 +217,7 @@ class StaffAttendance(models.Model):
     # Record keeping
     notes = models.TextField(blank=True, null=True)
     recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
-                                    null=True, related_name='recorded_staff_attendance')
+                                    null=True, related_name='recorded_staff_attendance')  # UNIQUE
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -313,7 +316,7 @@ class AttendanceRule(models.Model):
     
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
-                                   null=True)
+                                   null=True, related_name='created_attendance_rules')  # UNIQUE
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -358,7 +361,7 @@ class AttendanceReport(models.Model):
     
     # Metadata
     generated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
-                                     null=True)
+                                     null=True, related_name='generated_attendance_reports')  # UNIQUE
     is_published = models.BooleanField(default=False)
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -383,12 +386,14 @@ class AttendanceException(models.Model):
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    student = models.ForeignKey('students.StudentProfile', on_delete=models.CASCADE, 
-                                null=True, blank=True)
+    
+    # Use settings.AUTH_USER_MODEL for consistency - FIXED ForeignKey issue
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, 
+                                null=True, blank=True, related_name='student_exceptions')
     teacher = models.ForeignKey('teachers.TeacherProfile', on_delete=models.CASCADE, 
-                                null=True, blank=True)
+                                null=True, blank=True, related_name='teacher_exceptions')
     staff_member = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, 
-                                     null=True, blank=True)
+                                     null=True, blank=True, related_name='staff_exceptions')
     
     # Exception details
     exception_type = models.CharField(max_length=20, choices=EXCEPTION_TYPES)
@@ -398,9 +403,10 @@ class AttendanceException(models.Model):
     supporting_document = models.FileField(upload_to='attendance/exceptions/', 
                                            blank=True, null=True)
     
-    # Approval
+    # Approval - FIXED: Use UNIQUE related_name
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
-                                    null=True, related_name='approved_exceptions')
+                                    null=True, related_name='approved_attendance_exceptions')  # UNIQUE
+    
     approved_date = models.DateTimeField(null=True, blank=True)
     is_approved = models.BooleanField(default=False)
     
@@ -420,10 +426,7 @@ class AttendanceException(models.Model):
         """Safe string representation for exception"""
         try:
             if self.student:
-                if hasattr(self.student, 'user'):
-                    target = self.student.user.get_full_name()
-                else:
-                    target = f"Student {self.student.id}"
+                target = self.student.get_full_name()
             elif self.teacher:
                 if hasattr(self.teacher, 'user'):
                     target = self.teacher.user.get_full_name()
@@ -448,7 +451,8 @@ class BulkAttendanceUpload(models.Model):
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, 
+                                    related_name='uploaded_attendance_files')  # UNIQUE
     academic_year = models.ForeignKey('academics.AcademicYear', on_delete=models.CASCADE)
     
     # Upload details

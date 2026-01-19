@@ -1,1241 +1,859 @@
 # assignments/serializers.py
-import uuid
-import datetime
 from rest_framework import serializers
-from django.utils.translation import gettext_lazy as _
+from django.contrib.auth import get_user_model
 from django.utils import timezone
+from datetime import timedelta
 import logging
-from django.utils.dateparse import parse_datetime
-from django.db import transaction
 from .models import (
-    Assignment, StudentAssignment, AssignmentCategory, AssignmentGradeScale,
-    AssignmentGroup, GroupMembership, AssignmentComment, AssignmentAnalytics
+    Assignment, StudentAssignment, AssignmentCategory,
+    AssignmentGroup, GroupMembership, AssignmentComment,
+    AssignmentAnalytics, AssignmentReminder
 )
-from academics.models import AcademicYear, AcademicTerm, Subject, Class, Stream
-from curriculum.models import Curriculum
-from .serializers_student_assignment import StudentAssignmentMiniSerializer
+from academics.models import Subject, Class, AcademicYear, AcademicTerm
 from accounts.models import User
-
 
 logger = logging.getLogger(__name__)
 
-# FIXED IMPORTS - with proper error handling and fallbacks
-try:
-    from academics.serializers import (
-        SubjectSerializer, 
-        ClassSerializer as ClassRoomSerializer,
-        AcademicYearSerializer,
-        StudentProfileMinimalSerializer as StudentSerializer,
-        TeacherProfileMinimalSerializer as TeacherSerializer,
-        AcademicTermSerializer as TermSerializer
-    )
-except ImportError as e:
-    # Create fallback serializers if imports fail
-    class SubjectSerializer(serializers.Serializer):
-        id = serializers.UUIDField(read_only=True)
-        name = serializers.CharField(read_only=True)
-        code = serializers.CharField(read_only=True)
-    
-    class ClassRoomSerializer(serializers.Serializer):
-        id = serializers.UUIDField(read_only=True)
-        name = serializers.CharField(read_only=True)
-        display_name = serializers.CharField(read_only=True)
-    
-    class AcademicYearSerializer(serializers.Serializer):
-        id = serializers.UUIDField(read_only=True)
-        name = serializers.CharField(read_only=True)
-        start_date = serializers.DateField(read_only=True)
-        end_date = serializers.DateField(read_only=True)
-    
-    class StudentSerializer(serializers.Serializer):
-        id = serializers.UUIDField(read_only=True)
-        full_name = serializers.CharField(read_only=True)
-        admission_number = serializers.CharField(read_only=True)
-    
-    class TeacherSerializer(serializers.Serializer):
-        id = serializers.UUIDField(read_only=True)
-        full_name = serializers.CharField(read_only=True)
-        teacher_id = serializers.CharField(read_only=True)
-    
-    class TermSerializer(serializers.Serializer):
-        id = serializers.UUIDField(read_only=True)
-        name = serializers.CharField(read_only=True)
-        start_date = serializers.DateField(read_only=True)
-        end_date = serializers.DateField(read_only=True)
-
-# StreamSerializer fallback (in case it doesn't exist)
-class StreamSerializer(serializers.Serializer):
-    id = serializers.UUIDField(read_only=True)
-    name = serializers.CharField(read_only=True)
-    code = serializers.CharField(read_only=True)
-
-# Import from accounts with fallback
-try:
-    from accounts.serializers import CustomUserSerializer, UserSerializer
-except ImportError:
-    class CustomUserSerializer(serializers.Serializer):
-        id = serializers.UUIDField(read_only=True)
-        email = serializers.EmailField(read_only=True)
-        first_name = serializers.CharField(read_only=True)
-        last_name = serializers.CharField(read_only=True)
-        full_name = serializers.CharField(read_only=True)
-    
-    UserSerializer = CustomUserSerializer
-
-class PrimaryKeyRelatedUUIDField(serializers.PrimaryKeyRelatedField):
-    """PrimaryKeyRelatedField with explicit UUID handling"""
-    
-    def __init__(self, **kwargs):
-        kwargs['pk_field'] = serializers.UUIDField()
-        super().__init__(**kwargs)
-    
-    def to_internal_value(self, data):
-        try:
-            # Convert string to UUID if needed
-            if isinstance(data, str):
-                data = uuid.UUID(data)
-            return super().to_internal_value(data)
-        except (ValueError, TypeError):
-            raise serializers.ValidationError(_("Invalid UUID format"))
-    
-    def to_representation(self, value):
-        # Return the UUID string for representation
-        if isinstance(value, str):
-            return value
-        return str(value.id)
+User = get_user_model()
 
 
-class AssignmentSerializer(serializers.ModelSerializer):
-    """
-    Basic assignment serializer for foreign key relationships and simple listings
-    Used by other apps like teachers app - READ ONLY
-    """
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    teacher_name = serializers.CharField(source='teacher.get_full_name', read_only=True)
-    classroom_name = serializers.CharField(source='classroom.display_name', read_only=True)
-    days_until_due = serializers.SerializerMethodField()
-    is_overdue = serializers.SerializerMethodField()
-    submission_stats = serializers.SerializerMethodField()
+# ==================== BASE SERIALIZERS ====================
+
+class UserMinimalSerializer(serializers.ModelSerializer):
+    """Minimal user serializer for display purposes"""
+    full_name = serializers.SerializerMethodField()
     
     class Meta:
-        model = Assignment
-        fields = [
-            'id', 'title', 'assignment_type', 'description', 'subject', 'subject_name',
-            'teacher', 'teacher_name', 'classroom', 'classroom_name', 'stream',
-            'due_date', 'total_marks', 'passing_marks', 'status', 'difficulty_level',
-            'days_until_due', 'is_overdue', 'submission_stats', 'created_at', 'published_at'
-        ]
-        read_only_fields = fields  # Make all fields read-only
+        model = User
+        fields = ['id', 'first_name', 'last_name', 'email', 'full_name', 'profile_picture']
+        read_only_fields = fields
     
-    def get_days_until_due(self, obj):
-        """Calculate days until due date"""
-        if obj.due_date:
-            current_time = timezone.now()
-            if obj.due_date > current_time:
-                delta = obj.due_date - current_time
-                return delta.days
-            else:
-                return 0
-        return None
-    
-    def get_is_overdue(self, obj):
-        """Check if assignment is overdue"""
-        if obj.due_date:
-            return timezone.now() > obj.due_date
-        return False
-    
-    def get_submission_stats(self, obj):
-        return obj.submission_stats
+    def get_full_name(self, obj):
+        return obj.get_full_name()
 
-class AssignmentCreateUpdateSerializer(serializers.ModelSerializer):
-    """
-    Serializer for creating and updating assignments
-    Handles foreign key relationships properly
-    """
-    # Explicit foreign key fields for create/update
-    academic_year = serializers.PrimaryKeyRelatedField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    term = serializers.PrimaryKeyRelatedField(
-        queryset=AcademicTerm.objects.all(),
-        required=True
-    )
-    subject = serializers.PrimaryKeyRelatedField(
-        queryset=Subject.objects.all(),
-        required=True
-    )
-    teacher = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(role='teacher'),
-        required=True
-    )
-    classroom = serializers.PrimaryKeyRelatedField(
-        queryset=Class.objects.all(),
-        required=False,
-        allow_null=True
-    )
-    stream = serializers.PrimaryKeyRelatedField(
-        queryset=Stream.objects.all(),
-        required=False,
-        allow_null=True
-    )
-    category = serializers.PrimaryKeyRelatedField(
-        queryset=AssignmentCategory.objects.all(),
-        required=False,
-        allow_null=True
-    )
-    
-    # Read-only fields for display
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    term_name = serializers.CharField(source='term.name', read_only=True)
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    teacher_name = serializers.CharField(source='teacher.get_full_name', read_only=True)
-    classroom_name = serializers.CharField(source='classroom.display_name', read_only=True)
-    stream_name = serializers.CharField(source='stream.name', read_only=True)
-    
-    # Computed fields
-    days_until_due = serializers.SerializerMethodField()
-    is_overdue = serializers.SerializerMethodField()
-    can_be_published = serializers.SerializerMethodField()
-    
+
+class SubjectMinimalSerializer(serializers.ModelSerializer):
+    """Minimal subject serializer"""
     class Meta:
-        model = Assignment
-        fields = [
-            # Basic info
-            'id', 'title', 'description', 'assignment_type', 'category',
-            
-            # Academic context
-            'subject', 'subject_name', 'teacher', 'teacher_name',
-            'classroom', 'classroom_name', 'stream', 'stream_name',
-            'academic_year', 'academic_year_name', 'term', 'term_name',
-            'curriculum',
-            
-            # Assignment details
-            'due_date', 'total_marks', 'passing_marks', 'difficulty_level',
-            'estimated_completion_time',
-            
-            # Content
-            'instructions', 'learning_objectives', 'resources', 'rubric',
-            
-            # Competencies
-            'competencies', 'core_competencies',
-            
-            # Attachments
-            'attachment', 'additional_files',
-            
-            # Settings
-            'allow_late_submission', 'late_submission_penalty',
-            'allow_resubmission', 'max_resubmissions',
-            'require_approval', 'is_group_assignment', 'max_group_size',
-            
-            # Status
-            'status', 'published_at', 'closed_at',
-            
-            # Analytics (read-only)
-            'views_count', 'average_score', 'completion_rate',
-            
-            # Approval
-            'approved_by', 'approved_at',
-            
-            # Computed fields
-            'days_until_due', 'is_overdue', 'can_be_published',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = [
-            'created_at', 'updated_at', 'published_at', 'closed_at',
-            'approved_at', 'views_count', 'average_score', 'completion_rate',
-            'academic_year_name', 'term_name', 'subject_name', 'teacher_name',
-            'classroom_name', 'stream_name'
-        ]
-    
-    def get_days_until_due(self, obj):
-        """Calculate days until due date"""
-        if obj.due_date:
-            current_time = timezone.now()
-            if obj.due_date > current_time:
-                delta = obj.due_date - current_time
-                return delta.days
-            else:
-                return 0
-        return None
-    
-    def get_is_overdue(self, obj):
-        """Check if assignment is overdue"""
-        if obj.due_date:
-            return timezone.now() > obj.due_date
-        return False
-    
-    def get_can_be_published(self, obj):
-        """Check if assignment can be published"""
-        return obj.can_be_published
-    
-    def validate(self, data):
-        """Custom validation"""
-        errors = {}
-        
-        # Ensure due_date is in the future
-        if 'due_date' in data and data['due_date'] <= timezone.now():
-            errors['due_date'] = _('Due date must be in the future.')
-        
-        # Ensure passing_marks <= total_marks
-        if 'passing_marks' in data and 'total_marks' in data:
-            if data['passing_marks'] > data['total_marks']:
-                errors['passing_marks'] = _('Passing marks cannot exceed total marks.')
-        
-        # Validate group assignment settings
-        if data.get('is_group_assignment', False):
-            if data.get('max_group_size', 1) < 2:
-                errors['max_group_size'] = _('Group assignments require at least 2 students per group.')
-            if not data.get('classroom'):
-                errors['classroom'] = _('Group assignments require a classroom to be specified.')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
-    
-    def create(self, validated_data):
-        """Override create to handle assignment creation"""
-        try:
-            # Set created_by if not provided
-            if 'created_by' not in validated_data and self.context.get('request'):
-                validated_data['created_by'] = self.context['request'].user
-            
-            # Create the assignment
-            assignment = Assignment.objects.create(**validated_data)
-            
-            # If assignment is published, create student assignments
-            if assignment.status == Assignment.StatusChoices.PUBLISHED and assignment.classroom:
-                assignment.create_student_assignments()
-            
-            return assignment
-            
-        except Exception as e:
-            raise serializers.ValidationError({
-                'non_field_errors': [f'Failed to create assignment: {str(e)}']
-            })
-    
-    def update(self, instance, validated_data):
-        """Override update to handle status changes"""
-        try:
-            # Handle status transitions
-            old_status = instance.status
-            new_status = validated_data.get('status', old_status)
-            
-            # If publishing for the first time
-            if (new_status == Assignment.StatusChoices.PUBLISHED and 
-                old_status != Assignment.StatusChoices.PUBLISHED):
-                validated_data['published_at'] = timezone.now()
-                
-                # Create student assignments if not already created
-                if instance.classroom:
-                    instance.create_student_assignments()
-            
-            # If closing
-            if (new_status in [Assignment.StatusChoices.CLOSED, Assignment.StatusChoices.GRADED] and
-                old_status not in [Assignment.StatusChoices.CLOSED, Assignment.StatusChoices.GRADED]):
-                validated_data['closed_at'] = timezone.now()
-            
-            return super().update(instance, validated_data)
-            
-        except Exception as e:
-            raise serializers.ValidationError({
-                'non_field_errors': [f'Failed to update assignment: {str(e)}']
-            })
+        model = Subject
+        fields = ['id', 'name', 'code', 'classification']
+        read_only_fields = fields
 
+
+class ClassroomMinimalSerializer(serializers.ModelSerializer):
+    """Minimal classroom serializer"""
+    class Meta:
+        model = Class
+        fields = ['id', 'name', 'room_number', 'capacity']
+        read_only_fields = fields
+
+
+class StreamMinimalSerializer(serializers.ModelSerializer):
+    """Minimal stream serializer"""
+    class Meta:
+        model = Class
+        fields = ['id', 'name', 'code']
+        read_only_fields = fields
+
+
+class AcademicYearMinimalSerializer(serializers.ModelSerializer):
+    """Minimal academic year serializer"""
+    class Meta:
+        model = AcademicYear
+        fields = ['id', 'name', 'code', 'start_date', 'end_date', 'is_current']
+        read_only_fields = fields
+
+
+class AcademicTermMinimalSerializer(serializers.ModelSerializer):
+    """Minimal academic term serializer"""
+    class Meta:
+        model = AcademicTerm
+        fields = ['id', 'name', 'term_number', 'start_date', 'end_date', 'is_current']
+        read_only_fields = fields
+
+
+# ==================== ASSIGNMENT CATEGORY SERIALIZERS ====================
 
 class AssignmentCategorySerializer(serializers.ModelSerializer):
+    """Full Assignment Category serializer"""
     assignment_count = serializers.SerializerMethodField()
     
     class Meta:
         model = AssignmentCategory
-        fields = '__all__'
-        read_only_fields = ['created_at', 'updated_at']
+        fields = [
+            'id', 'name', 'description', 'color', 'icon',
+            'curriculum', 'education_level', 'assignment_count',
+            'is_active', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'assignment_count']
     
     def get_assignment_count(self, obj):
         return obj.assignment_set.count()
 
 
-class AssignmentGradeScaleSerializer(serializers.ModelSerializer):
+class AssignmentCategoryCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating assignment categories"""
     class Meta:
-        model = AssignmentGradeScale
-        fields = '__all__'
+        model = AssignmentCategory
+        fields = [
+            'name', 'description', 'color', 'icon',
+            'curriculum', 'education_level', 'is_active'
+        ]
+    
+    def validate_color(self, value):
+        """Validate hex color code"""
+        if not value.startswith('#'):
+            raise serializers.ValidationError("Color must be a hex code starting with #")
+        return value
+    
+    def validate_name(self, value):
+        """Ensure category name is unique"""
+        if AssignmentCategory.objects.filter(name__iexact=value).exists():
+            raise serializers.ValidationError("A category with this name already exists")
+        return value
 
 
-class AssignmentAnalyticsSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AssignmentAnalytics
-        fields = '__all__'
-
+# ==================== ASSIGNMENT SERIALIZERS ====================
 
 class AssignmentListSerializer(serializers.ModelSerializer):
-    """Serializer for assignment listing (optimized for performance)"""
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    teacher_name = serializers.CharField(source='teacher.get_full_name', read_only=True)
-    classroom_name = serializers.CharField(source='classroom.display_name', read_only=True)
-    term_name = serializers.CharField(source='term.name', read_only=True)
+    """List view serializer for assignments"""
+    subject = SubjectMinimalSerializer(read_only=True)
+    teacher = UserMinimalSerializer(read_only=True)
+    classroom = ClassroomMinimalSerializer(read_only=True)
+    stream = StreamMinimalSerializer(read_only=True)
+    academic_year = AcademicYearMinimalSerializer(read_only=True)
+    term = AcademicTermMinimalSerializer(read_only=True)
+    category = AssignmentCategorySerializer(read_only=True)
     
-    # Statistics
-    submission_stats = serializers.SerializerMethodField()
+    # Dynamic fields
     days_until_due = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
+    is_due_soon = serializers.SerializerMethodField()
+    submission_stats = serializers.SerializerMethodField()
     
     class Meta:
         model = Assignment
         fields = [
-            'id', 'title', 'assignment_type', 'subject', 'subject_name',
-            'teacher', 'teacher_name', 'classroom', 'classroom_name',
-            'term', 'term_name', 'due_date', 'total_marks', 'status',
-            'difficulty_level', 'submission_stats', 'days_until_due', 'is_overdue',
-            'created_at', 'published_at'
+            'id', 'title', 'description', 'assignment_type', 'category',
+            'subject', 'teacher', 'classroom', 'stream',
+            'academic_year', 'term', 'curriculum',
+            'due_date', 'total_marks', 'passing_marks', 'difficulty_level',
+            'estimated_completion_time', 'status', 'is_group_assignment',
+            'views_count', 'average_score', 'completion_rate',
+            'days_until_due', 'is_overdue', 'is_due_soon',
+            'submission_stats', 'created_at', 'published_at'
         ]
-    
-    def get_submission_stats(self, obj):
-        return obj.get_submission_stats()
+        read_only_fields = fields
     
     def get_days_until_due(self, obj):
-        """Calculate days until due date - FIXED VERSION"""
-        if obj.due_date:
-            current_time = timezone.now()
-            
-            if obj.due_date > current_time:
-                delta = obj.due_date - current_time
-                return delta.days
-            else:
-                return 0
-        return None
+        return obj.days_until_due
     
     def get_is_overdue(self, obj):
-        """Check if assignment is overdue - FIXED VERSION"""
-        if obj.due_date:
-            return timezone.now() > obj.due_date
-        return False
+        return obj.is_overdue
+    
+    def get_is_due_soon(self, obj):
+        return obj.is_due_soon
+    
+    def get_submission_stats(self, obj):
+        return obj.submission_stats
 
 
 class AssignmentDetailSerializer(serializers.ModelSerializer):
-    """Detailed serializer for single assignment"""
-    subject_details = SubjectSerializer(read_only=True, source='subject')
-    teacher_details = TeacherSerializer(read_only=True, source='teacher')
-    classroom_details = ClassRoomSerializer(read_only=True, source='classroom')
-    stream_details = StreamSerializer(read_only=True, source='stream')
-    term_details = TermSerializer(read_only=True, source='term')
-    academic_year_details = AcademicYearSerializer(read_only=True, source='academic_year')
-    category_details = AssignmentCategorySerializer(read_only=True, source='category')
-    created_by_details = CustomUserSerializer(read_only=True, source='created_by')
-    analytics_details = AssignmentAnalyticsSerializer(read_only=True, source='analytics')
+    """Detailed view serializer for assignments"""
+    subject = SubjectMinimalSerializer(read_only=True)
+    teacher = UserMinimalSerializer(read_only=True)
+    classroom = ClassroomMinimalSerializer(read_only=True)
+    stream = StreamMinimalSerializer(read_only=True)
+    academic_year = AcademicYearMinimalSerializer(read_only=True)
+    term = AcademicTermMinimalSerializer(read_only=True)
+    category = AssignmentCategorySerializer(read_only=True)
+    created_by = UserMinimalSerializer(read_only=True)
+    approved_by = UserMinimalSerializer(read_only=True)
     
-    # Statistics
-    submission_stats = serializers.SerializerMethodField()
-    average_score = serializers.SerializerMethodField()
-    completion_rate = serializers.SerializerMethodField()
+    # Dynamic fields
     days_until_due = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
-    total_students = serializers.SerializerMethodField()
-    
-    # Student-specific data (for student users)
-    student_submission = serializers.SerializerMethodField()
+    is_due_soon = serializers.SerializerMethodField()
+    submission_stats = serializers.SerializerMethodField()
+    grade_summary = serializers.SerializerMethodField()
+    can_be_published = serializers.SerializerMethodField()
+    requires_approval = serializers.SerializerMethodField()
+    teacher_stats = serializers.SerializerMethodField()
     
     class Meta:
         model = Assignment
         fields = [
-            'id', 'title', 'description', 'assignment_type', 'category', 'category_details',
-            'subject', 'subject_details', 'teacher', 'teacher_details',
-            'classroom', 'classroom_details', 'stream', 'stream_details',
-            'academic_year', 'academic_year_details', 'term', 'term_details',
-            'curriculum', 'due_date', 'total_marks', 'passing_marks',
-            'difficulty_level', 'estimated_completion_time', 'instructions',
-            'learning_objectives', 'resources', 'rubric', 'attachment',
-            'additional_files', 'allow_late_submission', 'late_submission_penalty',
+            'id', 'title', 'description', 'assignment_type', 'category',
+            'subject', 'teacher', 'classroom', 'stream',
+            'academic_year', 'term', 'curriculum',
+            'due_date', 'total_marks', 'passing_marks', 'difficulty_level',
+            'estimated_completion_time', 'instructions', 'learning_objectives',
+            'resources', 'rubric', 'competencies', 'core_competencies',
+            'created_by', 'attachment', 'additional_files',
+            'allow_late_submission', 'late_submission_penalty',
             'allow_resubmission', 'max_resubmissions', 'require_approval',
-            'is_group_assignment', 'max_group_size', 'status', 'published_at',
-            'closed_at', 'created_at', 'updated_at', 'created_by', 'created_by_details',
-            'views_count', 'average_score', 'completion_rate', 'submission_stats',
-            'days_until_due', 'is_overdue', 'total_students', 'student_submission',
-            'analytics_details'
+            'is_group_assignment', 'max_group_size',
+            'status', 'published_at', 'closed_at',
+            'views_count', 'average_score', 'completion_rate',
+            'approved_by', 'approved_at',
+            'days_until_due', 'is_overdue', 'is_due_soon',
+            'submission_stats', 'grade_summary', 'can_be_published',
+            'requires_approval', 'teacher_stats',
+            'created_at', 'updated_at'
         ]
-        read_only_fields = [
-            'created_at', 'updated_at', 'published_at', 'closed_at',
-            'views_count', 'average_score', 'completion_rate'
-        ]
-    
-    def get_submission_stats(self, obj):
-        return obj.get_submission_stats()
-    
-    def get_average_score(self, obj):
-        return obj.get_average_score()
-    
-    def get_completion_rate(self, obj):
-        return obj.get_completion_rate()
+        read_only_fields = fields
     
     def get_days_until_due(self, obj):
-        """Calculate days until due date - FIXED VERSION"""
-        if obj.due_date:
-            current_time = timezone.now()
-            
-            if obj.due_date > current_time:
-                delta = obj.due_date - current_time
-                return delta.days
-            else:
-                return 0
-        return None
+        return obj.days_until_due
     
     def get_is_overdue(self, obj):
-        """Check if assignment is overdue - FIXED VERSION"""
-        if obj.due_date:
-            return timezone.now() > obj.due_date
-        return False
+        return obj.is_overdue
     
-    def get_total_students(self, obj):
-        return obj.get_total_students()
+    def get_is_due_soon(self, obj):
+        return obj.is_due_soon
     
-    def get_student_submission(self, obj):
-        """Get current student's submission if exists"""
-        request = self.context.get('request')
-        if request and request.user.is_authenticated:
-            # Check if user has student profile
-            if hasattr(request.user, 'student_profile'):
-                student = request.user.student_profile
-                try:
-                    submission = obj.student_assignments.filter(student=student).first()
-                    if submission:
-                        return StudentAssignmentMiniSerializer(submission, context=self.context).data
-                except Exception:
-                    return None
-        return None
+    def get_submission_stats(self, obj):
+        return obj.submission_stats
+    
+    def get_grade_summary(self, obj):
+        return obj.grade_summary
+    
+    def get_can_be_published(self, obj):
+        return obj.can_be_published
+    
+    def get_requires_approval(self, obj):
+        return obj.requires_approval
+    
+    def get_teacher_stats(self, obj):
+        return obj.get_teacher_stats()
 
 
 class AssignmentCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating assignments with comprehensive validation and UUID support"""
-    
-    # ===== EXPLICITLY DEFINE UUID FOREIGN KEYS =====
-    # Use standard PrimaryKeyRelatedField - Django REST Framework handles UUIDs automatically
-    academic_year = serializers.PrimaryKeyRelatedField(
-        queryset=AcademicYear.objects.filter(is_active=True),
-        required=True
-    )
-    term = serializers.PrimaryKeyRelatedField(
-        queryset=AcademicTerm.objects.filter(is_active=True),
-        required=True
-    )
-    subject = serializers.PrimaryKeyRelatedField(
-        queryset=Subject.objects.filter(is_active=True),
-        required=True
-    )
-    classroom = serializers.PrimaryKeyRelatedField(
-        queryset=Class.objects.filter(is_active=True),
-        required=True
-    )
-    teacher = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(role='teacher'),
-        required=True
-    )
-
+    """Serializer for creating assignments"""
     class Meta:
         model = Assignment
         fields = [
-            'title', 'description', 'assignment_type', 'category', 'subject',
-            'teacher', 'classroom', 'stream', 'academic_year', 'term', 'curriculum',
-            'due_date', 'total_marks', 'passing_marks', 'difficulty_level',
-            'estimated_completion_time', 'instructions', 'learning_objectives',
-            'resources', 'rubric', 'attachment', 'allow_late_submission',
-            'late_submission_penalty', 'allow_resubmission', 'max_resubmissions',
-            'require_approval', 'is_group_assignment', 'max_group_size', 'status'
+            'title', 'description', 'assignment_type', 'category',
+            'subject', 'classroom', 'stream', 'academic_year', 'term',
+            'curriculum', 'due_date', 'total_marks', 'passing_marks',
+            'difficulty_level', 'estimated_completion_time',
+            'instructions', 'learning_objectives', 'resources', 'rubric',
+            'competencies', 'core_competencies',
+            'allow_late_submission', 'late_submission_penalty',
+            'allow_resubmission', 'max_resubmissions', 'require_approval',
+            'is_group_assignment', 'max_group_size', 'status'
         ]
-        extra_kwargs = {
-            'status': {'default': 'draft'},
-            'allow_late_submission': {'default': True},
-            'allow_resubmission': {'default': False},
-            'max_resubmissions': {'default': 1},
-            'require_approval': {'default': False},
-            'is_group_assignment': {'default': False},
-            'max_group_size': {'default': 4},
-            'late_submission_penalty': {'default': 0},
-        }
-    
-    def to_internal_value(self, data):
-        """Convert incoming data - handle UUID string conversion for PrimaryKeyRelatedField"""
-        # Debug incoming data
-        logger.debug(f"to_internal_value received data: {data}")
-        
-        # Create a mutable copy
-        data_copy = data.copy()
-        
-        # Handle UUID fields - ensure they're in the correct format
-        uuid_fields = ['academic_year', 'term', 'subject', 'classroom', 'teacher', 'stream', 'category']
-        
-        for field in uuid_fields:
-            if field in data_copy and data_copy[field]:
-                try:
-                    # If it's already a string, try to parse it as UUID
-                    if isinstance(data_copy[field], str):
-                        # Check if it's already a valid UUID string
-                        uuid_value = uuid.UUID(data_copy[field])
-                        # Keep it as string (PrimaryKeyRelatedField expects string)
-                        data_copy[field] = str(uuid_value)
-                        logger.debug(f"Converted {field} to UUID string: {data_copy[field]}")
-                    elif isinstance(data_copy[field], uuid.UUID):
-                        # Convert UUID object to string
-                        data_copy[field] = str(data_copy[field])
-                except (ValueError, TypeError, AttributeError) as e:
-                    logger.warning(f"Invalid UUID format for {field}: {data_copy[field]} - {e}")
-                    # Let the serializer validation handle the error
-        
-        # Call parent method
-        result = super().to_internal_value(data_copy)
-        logger.debug(f"to_internal_value returning: {result}")
-        return result
     
     def validate(self, data):
-        """Comprehensive validation for assignment creation"""
-        request = self.context.get('request')
-        errors = {}
+        """Validate assignment data"""
+        # Ensure due date is in the future
+        if data.get('due_date') and data['due_date'] < timezone.now():
+            raise serializers.ValidationError({
+                'due_date': 'Due date must be in the future'
+            })
         
-        # Debug validated data
-        logger.debug(f"validate received data: {data}")
-        
-        # ===== TEACHER PERMISSION VALIDATION =====
-        if request and hasattr(request, 'user'):
-            user = request.user
-            
-            # Check if user has teacher permissions
-            if not self._user_is_teacher(user):
+        # Ensure passing marks are less than total marks
+        if data.get('passing_marks') and data.get('total_marks'):
+            if data['passing_marks'] > data['total_marks']:
                 raise serializers.ValidationError({
-                    'permission': "Only teachers can create assignments"
+                    'passing_marks': 'Passing marks cannot exceed total marks'
                 })
         
-        # ===== REQUIRED FIELD VALIDATION =====
-        required_fields = ['title', 'subject', 'academic_year', 'term', 'due_date', 'teacher']
-        for field in required_fields:
-            if field not in data:
-                errors[field] = f'{field.replace("_", " ").title()} is required.'
+        # Validate group assignment settings
+        if data.get('is_group_assignment'):
+            if not data.get('classroom'):
+                raise serializers.ValidationError({
+                    'classroom': 'Group assignments require a classroom'
+                })
+            if data.get('max_group_size', 1) < 2:
+                raise serializers.ValidationError({
+                    'max_group_size': 'Group assignments require at least 2 students per group'
+                })
         
-        # ===== DATE VALIDATION =====
-        if 'due_date' in data:
-            due_date = data['due_date']
-            current_time = timezone.now()
-            
-            # Handle if due_date is a string (from frontend)
-            if isinstance(due_date, str):
-                try:
-                    from django.utils.dateparse import parse_datetime
-                    due_date = parse_datetime(due_date)
-                    if not due_date:
-                        errors['due_date'] = 'Invalid date format.'
-                except (ValueError, TypeError):
-                    errors['due_date'] = 'Invalid date format.'
-            
-            if not errors.get('due_date'):
-                # Check if due_date is a date (no time component)
-                if isinstance(due_date, datetime.date) and not isinstance(due_date, datetime.datetime):
-                    # Convert date to datetime for comparison
-                    due_datetime = datetime.datetime.combine(due_date, datetime.time(23, 59, 59))
-                    due_datetime = timezone.make_aware(due_datetime)
-                    due_date = due_datetime
-                
-                # Check if due date is in the past
-                if due_date < current_time:
-                    errors['due_date'] = 'Due date cannot be in the past.'
-                
-                # Check if due date is too far in the future (optional)
-                max_future_days = 365  # 1 year maximum
-                if (due_date - current_time).days > max_future_days:
-                    errors['due_date'] = f'Due date cannot be more than {max_future_days} days in the future.'
-                
-                # Update the data with properly formatted datetime
-                data['due_date'] = due_date
-        
-        # ===== MARKS VALIDATION =====
-        if 'total_marks' in data:
-            total_marks = data['total_marks']
-            
-            # Check total marks range
-            if total_marks <= 0:
-                errors['total_marks'] = 'Total marks must be greater than 0.'
-            elif total_marks > 1000:  # Reasonable maximum
-                errors['total_marks'] = 'Total marks cannot exceed 1000.'
-        
-        if 'passing_marks' in data and 'total_marks' in data:
-            passing_marks = data['passing_marks']
-            total_marks = data['total_marks']
-            
-            if passing_marks < 0:
-                errors['passing_marks'] = 'Passing marks cannot be negative.'
-            elif passing_marks > total_marks:
-                errors['passing_marks'] = 'Passing marks cannot exceed total marks.'
-            elif passing_marks == 0 and total_marks > 0:
-                # Warning but not error (allow zero passing marks if intentional)
-                data['passing_marks'] = 0
-        
-        # ===== DIFFICULTY LEVEL VALIDATION =====
-        if 'difficulty_level' in data:
-            difficulty = data['difficulty_level']
-            valid_difficulties = ['easy', 'medium', 'hard', 'advanced']
-            if difficulty not in valid_difficulties:
-                errors['difficulty_level'] = f'Invalid difficulty level. Must be one of: {", ".join(valid_difficulties)}'
-        
-        # ===== COMPLETION TIME VALIDATION =====
-        if 'estimated_completion_time' in data:
-            completion_time = data['estimated_completion_time']
-            if completion_time <= 0:
-                errors['estimated_completion_time'] = 'Estimated completion time must be greater than 0 minutes.'
-            elif completion_time > 10080:  # 1 week in minutes
-                errors['estimated_completion_time'] = 'Estimated completion time cannot exceed 1 week (10080 minutes).'
-        
-        # ===== GROUP ASSIGNMENT VALIDATION =====
-        if 'is_group_assignment' in data and data['is_group_assignment']:
-            if 'max_group_size' not in data:
-                errors['max_group_size'] = 'Maximum group size is required for group assignments.'
-            elif data['max_group_size'] < 2:
-                errors['max_group_size'] = 'Group size must be at least 2 for group assignments.'
-            elif data['max_group_size'] > 10:
-                errors['max_group_size'] = 'Group size cannot exceed 10 members.'
-        
-        # ===== RESUBMISSION VALIDATION =====
-        if 'allow_resubmission' in data and data['allow_resubmission']:
-            if 'max_resubmissions' not in data:
-                errors['max_resubmissions'] = 'Maximum resubmissions is required when allowing resubmissions.'
-            elif data['max_resubmissions'] < 1:
-                errors['max_resubmissions'] = 'Maximum resubmissions must be at least 1.'
-            elif data['max_resubmissions'] > 10:
-                errors['max_resubmissions'] = 'Maximum resubmissions cannot exceed 10.'
-        
-        # ===== LATE SUBMISSION PENALTY VALIDATION =====
-        if 'late_submission_penalty' in data:
-            penalty = data['late_submission_penalty']
-            if penalty < 0:
-                errors['late_submission_penalty'] = 'Penalty cannot be negative.'
-            elif penalty > 100:
-                errors['late_submission_penalty'] = 'Penalty cannot exceed 100%.'
-        
-        # ===== ATTACHMENT VALIDATION =====
-        if 'attachment' in data and data['attachment']:
-            attachment = data['attachment']
-            max_size = 50 * 1024 * 1024  # 50MB
-            allowed_extensions = ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt', 
-                                  '.jpg', '.jpeg', '.png', '.zip', '.rar']
-            
-            if attachment.size > max_size:
-                errors['attachment'] = f'File size cannot exceed {max_size // (1024*1024)}MB.'
-            
-            import os
-            ext = os.path.splitext(attachment.name)[1].lower()
-            if ext not in allowed_extensions:
-                errors['attachment'] = f'Invalid file type. Allowed types: {", ".join(allowed_extensions)}'
-        
-        # ===== STATUS VALIDATION =====
-        if 'status' in data:
-            status_value = data['status']
-            valid_statuses = ['draft', 'published', 'closed']
-            if status_value not in valid_statuses:
-                errors['status'] = f'Invalid status. Must be one of: {", ".join(valid_statuses)}'
-        
-        # ===== CURRICULUM VALIDATION =====
-        if 'curriculum' in data:
-            curriculum = data['curriculum']
-            valid_curricula = ['cbc', 'icse', 'american', 'british', 'montessori', 
-                               'combined', 'igcse', 'ib']
-            if curriculum not in valid_curricula:
-                errors['curriculum'] = f'Invalid curriculum. Must be one of: {", ".join(valid_curricula)}'
-        
-        # ===== THROW ERRORS IF ANY =====
-        if errors:
-            logger.error(f"Validation errors: {errors}")
-            raise serializers.ValidationError(errors)
-        
-        logger.debug(f"Validation passed for data: {data}")
         return data
     
-    def _user_is_teacher(self, user):
-        """
-        Safe method to check if user is a teacher.
-        Handles both User model with is_teacher property and without.
-        """
-        # Method 1: Check if user has is_teacher property
-        if hasattr(user, 'is_teacher'):
-            return user.is_teacher
-        
-        # Method 2: Check role directly
-        if hasattr(user, 'role'):
-            # Convert to string and lowercase for safe comparison
-            user_role = str(user.role).lower()
-            teacher_roles = [
-                'teacher',
-                'head_teacher', 
-                'curriculum_coordinator',
-                'admin'
-            ]
-            return user_role in teacher_roles
-        
-        # Method 3: Check if user is staff (admin/teacher)
-        if hasattr(user, 'is_staff'):
-            return user.is_staff
-        
-        return False
-    
     def create(self, validated_data):
-        """Create assignment with automatic field population"""
+        """Create assignment with teacher and created_by"""
         request = self.context.get('request')
-        
-        logger.info(f"Creating assignment with data: {validated_data}")
-        
-        # ===== SET CREATED BY =====
-        if request and request.user.is_authenticated:
+        if request and request.user:
+            validated_data['teacher'] = request.user
             validated_data['created_by'] = request.user
-            logger.info(f"Set created_by to: {request.user.id}")
         
-        # ===== SET PUBLISHED DATE IF STATUS IS PUBLISHED =====
-        if validated_data.get('status') == 'published':
-            validated_data['published_at'] = timezone.now()
-            logger.info("Set published_at to current time")
+        # Set default status to draft if not provided
+        if 'status' not in validated_data:
+            validated_data['status'] = 'draft'
         
-        # ===== LOG FOREIGN KEY VALUES =====
-        for field in ['academic_year', 'term', 'subject', 'classroom', 'teacher']:
-            if field in validated_data:
-                value = validated_data[field]
-                logger.info(f"{field}: {value} (type: {type(value).__name__})")
-                if hasattr(value, 'id'):
-                    logger.info(f"{field} ID: {value.id}")
+        assignment = Assignment.objects.create(**validated_data)
         
-        # ===== CREATE THE ASSIGNMENT =====
-        try:
-            with transaction.atomic():
-                logger.info("Starting assignment creation transaction")
-                
-                # Create the assignment
-                assignment = super().create(validated_data)
-                logger.info(f"Assignment created with ID: {assignment.id}")
-                
-                # ===== CREATE STUDENT ASSIGNMENTS (if published) =====
-                if assignment.status == 'published':
-                    logger.info("Assignment is published, creating student assignments")
-                    self._create_student_assignments(assignment)
-                
-                # ===== CREATE ANALYTICS RECORD =====
-                AssignmentAnalytics.objects.create(assignment=assignment)
-                logger.info("Created analytics record")
-                
-                # ===== LOG THE CREATION =====
-                logger.info(f"Assignment '{assignment.title}' (ID: {assignment.id}) created successfully by {request.user.email if request and request.user else 'unknown'}")
-                
-                return assignment
-                
-        except Exception as e:
-            logger.error(f"Failed to create assignment: {str(e)}", exc_info=True)
-            raise serializers.ValidationError({
-                'non_field_errors': f'Failed to create assignment: {str(e)}'
-            })
-    
-    def _create_student_assignments(self, assignment):
-        """Create student assignments for all students in the classroom"""
-        from academics.models import StudentEnrollment
+        # Log creation
+        logger.info(f"Assignment created: {assignment.title} by {request.user if request else 'Unknown'}")
         
-        if not assignment.classroom:
-            logger.warning(f"No classroom specified for assignment {assignment.id}, skipping student assignment creation")
-            return
-        
-        try:
-            # Get all active enrollments in this class
-            enrollments = StudentEnrollment.objects.filter(
-                class_enrolled=assignment.classroom,
-                status='active',
-                is_active=True
-            )
-            
-            if not enrollments.exists():
-                logger.warning(f"No active students found in classroom {assignment.classroom.display_name}")
-                return
-            
-            student_assignments = []
-            for enrollment in enrollments:
-                student_assignments.append(StudentAssignment(
-                    assignment=assignment,
-                    student=enrollment.student,
-                    status='pending'
-                ))
-            
-            # Bulk create for performance
-            StudentAssignment.objects.bulk_create(student_assignments)
-            logger.info(f"Created {len(student_assignments)} student assignments for assignment {assignment.id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to create student assignments: {str(e)}")
-            # Don't raise error, assignment creation should still succeed
-    
-    def to_representation(self, instance):
-        """Custom representation for created assignments"""
-        representation = super().to_representation(instance)
-        
-        # Add additional computed fields
-        representation['days_until_due'] = self._get_days_until_due(instance)
-        representation['is_overdue'] = self._get_is_overdue(instance)
-        representation['student_count'] = self._get_student_count(instance)
-        
-        return representation
-    
-    def _get_days_until_due(self, instance):
-        """Calculate days until due date - FIXED VERSION"""
-        if instance.due_date:
-            current_time = timezone.now()
-            
-            if instance.due_date > current_time:
-                delta = instance.due_date - current_time
-                return delta.days
-            else:
-                return 0
-        return None
-    
-    def _get_is_overdue(self, instance):
-        """Check if assignment is overdue - FIXED VERSION"""
-        if instance.due_date:
-            return timezone.now() > instance.due_date
-        return False
-    
-    def _get_student_count(self, instance):
-        """Get number of students assigned"""
-        try:
-            return instance.student_assignments.count()
-        except Exception:
-            return 0
-            
+        return assignment
+
+
 class AssignmentUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating assignments"""
     class Meta:
         model = Assignment
         fields = [
             'title', 'description', 'assignment_type', 'category',
-            'due_date', 'total_marks', 'passing_marks', 'difficulty_level',
-            'estimated_completion_time', 'instructions', 'learning_objectives',
-            'resources', 'rubric', 'attachment', 'allow_late_submission',
-            'late_submission_penalty', 'allow_resubmission', 'max_resubmissions',
-            'require_approval', 'is_group_assignment', 'max_group_size', 'status'
+            'subject', 'classroom', 'stream', 'academic_year', 'term',
+            'curriculum', 'due_date', 'total_marks', 'passing_marks',
+            'difficulty_level', 'estimated_completion_time',
+            'instructions', 'learning_objectives', 'resources', 'rubric',
+            'competencies', 'core_competencies',
+            'allow_late_submission', 'late_submission_penalty',
+            'allow_resubmission', 'max_resubmissions', 'require_approval',
+            'is_group_assignment', 'max_group_size', 'status'
         ]
     
     def validate(self, data):
         """Validate update data"""
-        if 'due_date' in data:
-            due_date = data['due_date']
-            current_time = timezone.now()
-            
-            # Handle if due_date is a string
-            if isinstance(due_date, str):
-                try:
-                    from django.utils.dateparse import parse_datetime
-                    due_date = parse_datetime(due_date)
-                    if not due_date:
-                        raise serializers.ValidationError({
-                            'due_date': 'Invalid date format.'
-                        })
-                except (ValueError, TypeError):
-                    raise serializers.ValidationError({
-                        'due_date': 'Invalid date format.'
-                    })
-            
-            # Check if due_date is a date (no time component)
-            if isinstance(due_date, datetime.date) and not isinstance(due_date, datetime.datetime):
-                # Convert date to datetime for comparison
-                due_datetime = datetime.datetime.combine(due_date, datetime.time(23, 59, 59))
-                due_datetime = timezone.make_aware(due_datetime)
-                due_date = due_datetime
-            
-            # Check if due date is in the past
-            if due_date < current_time:
-                raise serializers.ValidationError({
-                    'due_date': 'Due date cannot be in the past.'
-                })
-            
-            # Update the data with properly formatted datetime
-            data['due_date'] = due_date
-        
+        # Get the instance being updated
         instance = self.instance
-        if 'passing_marks' in data and 'total_marks' in data:
-            if data['passing_marks'] > data['total_marks']:
-                raise serializers.ValidationError({
-                    'passing_marks': 'Passing marks cannot exceed total marks.'
-                })
-        elif 'passing_marks' in data and instance:
-            if data['passing_marks'] > instance.total_marks:
-                raise serializers.ValidationError({
-                    'passing_marks': 'Passing marks cannot exceed total marks.'
-                })
-        elif 'total_marks' in data and instance:
-            if instance.passing_marks > data['total_marks']:
-                raise serializers.ValidationError({
-                    'total_marks': 'Total marks cannot be less than current passing marks.'
-                })
+        
+        # Check if assignment can be modified (not closed or archived)
+        if instance.status in ['closed', 'graded', 'archived']:
+            raise serializers.ValidationError({
+                'status': f'Cannot modify assignment with status: {instance.get_status_display()}'
+            })
+        
+        # Validate due date
+        if data.get('due_date') and data['due_date'] < timezone.now():
+            raise serializers.ValidationError({
+                'due_date': 'Due date must be in the future'
+            })
         
         return data
 
 
+# ==================== STUDENT ASSIGNMENT SERIALIZERS ====================
+
 class StudentAssignmentMiniSerializer(serializers.ModelSerializer):
-    """Mini serializer for student assignment (for listings)"""
-    student_name = serializers.SerializerMethodField()
-    student_admission_no = serializers.SerializerMethodField()
+    """Minimal student assignment serializer for lists"""
+    student = UserMinimalSerializer(read_only=True)
+    assignment = serializers.SerializerMethodField()
+    
+    # Dynamic fields
     percentage = serializers.SerializerMethodField()
     is_late = serializers.SerializerMethodField()
     days_late = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = StudentAssignment
-        fields = [
-            'id', 'student', 'student_name', 'student_admission_no', 'status',
-            'submission_date', 'marks_obtained', 'final_marks', 'grade',
-            'percentage', 'is_late', 'days_late', 'version', 'graded_at'
-        ]
-    
-    def get_student_name(self, obj):
-        try:
-            return obj.student.user.get_full_name()
-        except Exception:
-            return "Unknown Student"
-    
-    def get_student_admission_no(self, obj):
-        try:
-            return obj.student.admission_number
-        except Exception:
-            return "N/A"
-    
-    def get_percentage(self, obj):
-        if obj.marks_obtained and obj.assignment.total_marks:
-            return (obj.marks_obtained / obj.assignment.total_marks) * 100
-        return None
-    
-    def get_is_late(self, obj):
-        if obj.submission_date and obj.assignment.due_date:
-            return obj.submission_date > obj.assignment.due_date
-        return False
-    
-    def get_days_late(self, obj):
-        if obj.submission_date and obj.assignment.due_date and obj.submission_date > obj.assignment.due_date:
-            return (obj.submission_date - obj.assignment.due_date).days
-        return 0
-
-
-class StudentAssignmentDetailSerializer(serializers.ModelSerializer):
-    """Detailed serializer for student assignment"""
-    assignment_details = AssignmentListSerializer(read_only=True, source='assignment')
-    student_details = StudentSerializer(read_only=True, source='student')
-    graded_by_details = TeacherSerializer(read_only=True, source='graded_by')
-    group_details = serializers.SerializerMethodField()
-    
-    # Computed fields
-    percentage = serializers.SerializerMethodField()
-    is_late = serializers.SerializerMethodField()
-    days_late = serializers.SerializerMethodField()
-    days_remaining = serializers.SerializerMethodField()
     can_resubmit = serializers.SerializerMethodField()
     
     class Meta:
         model = StudentAssignment
         fields = [
-            'id', 'assignment', 'assignment_details', 'student', 'student_details',
-            'group', 'group_details', 'is_group_submission', 'submission_date',
-            'submission_text', 'submission_file', 'submission_files', 'word_count',
-            'character_count', 'version', 'previous_version', 'marks_obtained',
-            'penalty_points', 'final_marks', 'grade', 'grade_points',
-            'teacher_feedback', 'rubric_scores', 'audio_feedback', 'status',
-            'graded_at', 'graded_by', 'graded_by_details', 'time_spent',
-            'last_accessed', 'draft_saved', 'created_at', 'updated_at',
-            'percentage', 'is_late', 'days_late', 'days_remaining', 'can_resubmit'
+            'id', 'assignment', 'student', 'status',
+            'submission_date', 'marks_obtained', 'final_marks', 'grade',
+            'percentage', 'is_late', 'days_late', 'can_resubmit',
+            'graded_at', 'created_at'
         ]
-        read_only_fields = [
-            'created_at', 'updated_at', 'graded_at', 'percentage',
-            'is_late', 'days_late', 'can_resubmit'
-        ]
+        read_only_fields = fields
     
-    def get_group_details(self, obj):
+    def get_assignment(self, obj):
+        return {
+            'id': str(obj.assignment.id),
+            'title': obj.assignment.title,
+            'subject': obj.assignment.subject.name if obj.assignment.subject else None,
+            'total_marks': obj.assignment.total_marks
+        }
+    
+    def get_percentage(self, obj):
+        return obj.percentage
+    
+    def get_is_late(self, obj):
+        return obj.is_late
+    
+    def get_days_late(self, obj):
+        return obj.days_late
+    
+    def get_can_resubmit(self, obj):
+        return obj.can_resubmit
+
+
+class StudentAssignmentDetailSerializer(serializers.ModelSerializer):
+    """Detailed student assignment serializer"""
+    student = UserMinimalSerializer(read_only=True)
+    assignment = AssignmentListSerializer(read_only=True)
+    group = serializers.SerializerMethodField()
+    graded_by = UserMinimalSerializer(read_only=True)
+    
+    # Dynamic fields
+    percentage = serializers.SerializerMethodField()
+    is_late = serializers.SerializerMethodField()
+    days_late = serializers.SerializerMethodField()
+    can_resubmit = serializers.SerializerMethodField()
+    submission_files_list = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = StudentAssignment
+        fields = [
+            'id', 'assignment', 'student', 'group', 'is_group_submission',
+            'status', 'submission_date', 'submission_text',
+            'submission_file', 'submission_files', 'submission_files_list',
+            'word_count', 'character_count', 'version', 'previous_version',
+            'marks_obtained', 'penalty_points', 'final_marks', 'grade',
+            'grade_points', 'teacher_feedback', 'rubric_scores', 'audio_feedback',
+            'graded_by', 'graded_at', 'time_spent', 'last_accessed', 'draft_saved',
+            'percentage', 'is_late', 'days_late', 'can_resubmit',
+            'ip_address', 'user_agent', 'created_at', 'updated_at'
+        ]
+        read_only_fields = fields
+    
+    def get_group(self, obj):
         if obj.group:
             return {
-                'id': obj.group.id,
+                'id': str(obj.group.id),
                 'name': obj.group.name,
-                'leader': obj.group.leader.user.get_full_name() if obj.group.leader else "No Leader"
+                'leader': obj.group.leader.get_full_name() if obj.group.leader else None
             }
         return None
     
     def get_percentage(self, obj):
-        if obj.marks_obtained and obj.assignment.total_marks:
-            return (obj.marks_obtained / obj.assignment.total_marks) * 100
-        return None
+        return obj.percentage
     
     def get_is_late(self, obj):
-        if obj.submission_date and obj.assignment.due_date:
-            return obj.submission_date > obj.assignment.due_date
-        return False
+        return obj.is_late
     
     def get_days_late(self, obj):
-        if obj.submission_date and obj.assignment.due_date and obj.submission_date > obj.assignment.due_date:
-            return (obj.submission_date - obj.assignment.due_date).days
-        return 0
-    
-    def get_days_remaining(self, obj):
-        """Calculate days remaining until due date - FIXED VERSION"""
-        if obj.assignment.due_date:
-            current_time = timezone.now()
-            
-            if obj.assignment.due_date > current_time:
-                delta = obj.assignment.due_date - current_time
-                return delta.days
-            else:
-                return 0
-        return None
+        return obj.days_late
     
     def get_can_resubmit(self, obj):
-        if obj.assignment.allow_resubmission:
-            if obj.version < obj.assignment.max_resubmissions:
-                return True
-        return False
+        return obj.can_resubmit
+    
+    def get_submission_files_list(self, obj):
+        """Return a more structured list of submission files"""
+        if obj.submission_files and isinstance(obj.submission_files, list):
+            return obj.submission_files
+        return []
 
 
 class StudentAssignmentSubmitSerializer(serializers.ModelSerializer):
     """Serializer for submitting assignments"""
     class Meta:
         model = StudentAssignment
-        fields = ['submission_text', 'submission_file', 'submission_files', 'time_spent']
+        fields = [
+            'submission_text', 'submission_file',
+            'submission_files', 'time_spent'
+        ]
     
     def validate(self, data):
-        """Validate submission"""
+        """Validate submission data"""
         instance = self.instance
         
-        if instance.status in ['graded', 'closed']:
-            raise serializers.ValidationError(
-                "Cannot submit. Assignment is already graded or closed."
-            )
+        # Check if assignment is open for submission
+        if instance.assignment.status not in ['published', 'in_progress']:
+            raise serializers.ValidationError({
+                'assignment': 'Assignment is not open for submission'
+            })
         
-        if not instance.assignment.allow_late_submission and instance.assignment.is_overdue:
-            raise serializers.ValidationError(
-                "Late submissions are not allowed for this assignment."
-            )
+        # Check if student has already submitted
+        if instance.status in ['submitted', 'late', 'graded', 'resubmitted']:
+            raise serializers.ValidationError({
+                'status': 'Assignment has already been submitted'
+            })
+        
+        # Check if submission is allowed (not returned for revision)
+        if instance.status == 'returned' and not instance.can_resubmit:
+            raise serializers.ValidationError({
+                'status': 'Resubmission limit reached'
+            })
+        
+        # Validate that at least one submission method is provided
+        if not any([data.get('submission_text'), data.get('submission_file'), data.get('submission_files')]):
+            raise serializers.ValidationError({
+                'submission': 'At least one submission method is required (text, file, or files)'
+            })
         
         return data
     
     def update(self, instance, validated_data):
-        """Handle submission with IP and user agent tracking"""
-        request = self.context.get('request')
+        """Update student assignment with submission"""
+        # Set submission date
+        validated_data['submission_date'] = timezone.now()
         
-        instance.submission_text = validated_data.get('submission_text', instance.submission_text)
-        instance.submission_file = validated_data.get('submission_file', instance.submission_file)
-        instance.submission_files = validated_data.get('submission_files', instance.submission_files)
-        instance.time_spent = validated_data.get('time_spent', instance.time_spent)
-        instance.submission_date = timezone.now()
-        instance.last_accessed = timezone.now()
-        
-        if request:
-            instance.ip_address = request.META.get('REMOTE_ADDR')
-            instance.user_agent = request.META.get('HTTP_USER_AGENT', '')
-        
-        # Set status based on submission time
-        if instance.submission_date > instance.assignment.due_date:
-            instance.status = 'late'
+        # Determine if submission is late
+        if validated_data['submission_date'] > instance.assignment.due_date:
+            validated_data['status'] = 'late'
         else:
-            instance.status = 'submitted'
+            validated_data['status'] = 'submitted'
         
-        instance.version += 1
+        # Update version if this is a resubmission
+        if instance.status == 'returned':
+            validated_data['version'] = instance.version + 1
+        
+        # Update the instance
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
         instance.save()
+        
+        # Log submission
+        logger.info(f"Assignment submitted by student: {instance.student.get_full_name()}")
+        
         return instance
 
 
 class StudentAssignmentGradeSerializer(serializers.ModelSerializer):
-    """Serializer for grading assignments"""
+    """Serializer for grading student assignments"""
     class Meta:
         model = StudentAssignment
-        fields = ['marks_obtained', 'penalty_points', 'grade', 'teacher_feedback', 'rubric_scores']
+        fields = [
+            'marks_obtained', 'penalty_points', 'teacher_feedback',
+            'rubric_scores', 'audio_feedback', 'grade'
+        ]
     
     def validate(self, data):
         """Validate grading data"""
-        marks_obtained = data.get('marks_obtained')
-        if marks_obtained is not None:
-            if marks_obtained > self.instance.assignment.total_marks:
+        instance = self.instance
+        
+        # Check if assignment can be graded
+        if instance.status not in ['submitted', 'late', 'returned', 'resubmitted']:
+            raise serializers.ValidationError({
+                'status': 'Only submitted assignments can be graded'
+            })
+        
+        # Validate marks
+        if data.get('marks_obtained'):
+            if data['marks_obtained'] > instance.assignment.total_marks:
                 raise serializers.ValidationError({
-                    'marks_obtained': f'Marks obtained cannot exceed total marks ({self.instance.assignment.total_marks}).'
+                    'marks_obtained': f'Marks obtained cannot exceed total marks ({instance.assignment.total_marks})'
+                })
+        
+        # Validate penalty points
+        if data.get('penalty_points'):
+            if data['penalty_points'] < 0:
+                raise serializers.ValidationError({
+                    'penalty_points': 'Penalty points cannot be negative'
                 })
         
         return data
     
     def update(self, instance, validated_data):
-        """Handle grading"""
+        """Update student assignment with grade"""
         request = self.context.get('request')
         
-        instance.marks_obtained = validated_data.get('marks_obtained', instance.marks_obtained)
-        instance.penalty_points = validated_data.get('penalty_points', instance.penalty_points)
-        instance.grade = validated_data.get('grade', instance.grade)
-        instance.teacher_feedback = validated_data.get('teacher_feedback', instance.teacher_feedback)
-        instance.rubric_scores = validated_data.get('rubric_scores', instance.rubric_scores)
-        instance.status = 'graded'
-        instance.graded_at = timezone.now()
+        # Set grading metadata
+        validated_data['status'] = 'graded'
+        validated_data['graded_at'] = timezone.now()
         
-        if request and hasattr(request.user, 'teacher_profile'):
-            instance.graded_by = request.user.teacher_profile
+        if request and request.user:
+            validated_data['graded_by'] = request.user
+        
+        # Update the instance
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
         
         instance.save()
+        
+        # Update assignment analytics
+        instance.assignment.update_analytics()
+        
+        # Log grading
+        logger.info(f"Assignment graded by teacher: {request.user.get_full_name() if request else 'Unknown'}")
+        
         return instance
 
 
+# ==================== ASSIGNMENT GROUP SERIALIZERS ====================
+
 class AssignmentGroupSerializer(serializers.ModelSerializer):
     """Serializer for assignment groups"""
-    leader_details = StudentSerializer(read_only=True, source='leader')
-    assignment_details = AssignmentListSerializer(read_only=True, source='assignment')
-    members_count = serializers.SerializerMethodField()
-    has_valid_size = serializers.SerializerMethodField()
-    members = serializers.SerializerMethodField()
+    assignment = AssignmentListSerializer(read_only=True)
+    leader = UserMinimalSerializer(read_only=True)
+    created_by = UserMinimalSerializer(read_only=True)
+    members = UserMinimalSerializer(many=True, read_only=True)
+    
+    # Dynamic fields
+    member_count = serializers.SerializerMethodField()
+    is_full = serializers.SerializerMethodField()
+    available_seats = serializers.SerializerMethodField()
     
     class Meta:
         model = AssignmentGroup
         fields = [
-            'id', 'name', 'assignment', 'assignment_details', 'leader', 'leader_details',
-            'members_count', 'has_valid_size', 'members', 'created_at', 'updated_at'
+            'id', 'name', 'assignment', 'leader', 'members',
+            'description', 'created_by', 'member_count', 'is_full',
+            'available_seats', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['created_at', 'updated_at']
+        read_only_fields = fields
     
-    def get_members_count(self, obj):
+    def get_member_count(self, obj):
         return obj.members.count()
     
-    def get_has_valid_size(self, obj):
-        return obj.members.count() <= obj.assignment.max_group_size
+    def get_is_full(self, obj):
+        return obj.is_full
     
-    def get_members(self, obj):
-        members = obj.members.all()
-        return StudentSerializer(members, many=True).data
+    def get_available_seats(self, obj):
+        return obj.available_seats
 
+
+class AssignmentGroupCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating assignment groups"""
+    class Meta:
+        model = AssignmentGroup
+        fields = ['name', 'assignment', 'description']
+    
+    def validate(self, data):
+        """Validate group creation"""
+        assignment = data.get('assignment')
+        request = self.context.get('request')
+        
+        if not assignment:
+            raise serializers.ValidationError({
+                'assignment': 'Assignment is required'
+            })
+        
+        # Check if assignment allows groups
+        if not assignment.is_group_assignment:
+            raise serializers.ValidationError({
+                'assignment': 'This assignment does not allow group work'
+            })
+        
+        # Check if user is a student
+        if request and not (hasattr(request.user, 'student_profile') or request.user.role == 'student'):
+            raise serializers.ValidationError({
+                'user': 'Only students can create groups'
+            })
+        
+        # Check if group name is unique for this assignment
+        if AssignmentGroup.objects.filter(
+            assignment=assignment,
+            name=data['name']
+        ).exists():
+            raise serializers.ValidationError({
+                'name': 'A group with this name already exists for this assignment'
+            })
+        
+        return data
+    
+    def create(self, validated_data):
+        """Create assignment group"""
+        request = self.context.get('request')
+        
+        # Set leader and created_by
+        if request and request.user:
+            validated_data['leader'] = request.user
+            validated_data['created_by'] = request.user
+        
+        # Create group
+        group = AssignmentGroup.objects.create(**validated_data)
+        
+        # Add creator as first member
+        if request and request.user:
+            GroupMembership.objects.create(
+                group=group,
+                student=request.user,
+                role='leader'
+            )
+        
+        logger.info(f"Assignment group created: {group.name}")
+        
+        return group
+
+
+# ==================== GROUP MEMBERSHIP SERIALIZERS ====================
 
 class GroupMembershipSerializer(serializers.ModelSerializer):
-    """Serializer for group membership"""
-    student_details = StudentSerializer(read_only=True, source='student')
-    group_details = AssignmentGroupSerializer(read_only=True, source='group')
+    """Serializer for group memberships"""
+    group = AssignmentGroupSerializer(read_only=True)
+    student = UserMinimalSerializer(read_only=True)
     
     class Meta:
         model = GroupMembership
-        fields = ['id', 'group', 'group_details', 'student', 'student_details', 'joined_at', 'is_active']
+        fields = [
+            'id', 'group', 'student', 'role', 'is_active',
+            'joined_at', 'created_at', 'updated_at'
+        ]
+        read_only_fields = fields
 
+
+class GroupMembershipCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating group memberships"""
+    class Meta:
+        model = GroupMembership
+        fields = ['group', 'student', 'role']
+    
+    def validate(self, data):
+        """Validate membership creation"""
+        group = data.get('group')
+        student = data.get('student')
+        
+        # Check if group is full
+        if group.is_full:
+            raise serializers.ValidationError({
+                'group': 'Group is full'
+            })
+        
+        # Check if student is already a member
+        if GroupMembership.objects.filter(group=group, student=student).exists():
+            raise serializers.ValidationError({
+                'student': 'Student is already a member of this group'
+            })
+        
+        # Check if student is eligible to join (same class as assignment)
+        if hasattr(student, 'student_profile'):
+            if student.student_profile.classroom != group.assignment.classroom:
+                raise serializers.ValidationError({
+                    'student': 'Student is not in the same class as this assignment'
+                })
+        
+        return data
+    
+    def create(self, validated_data):
+        """Create group membership"""
+        membership = GroupMembership.objects.create(**validated_data)
+        logger.info(f"Group membership created: {membership.student.get_full_name()} joined {membership.group.name}")
+        return membership
+
+
+# ==================== ASSIGNMENT COMMENT SERIALIZERS ====================
 
 class AssignmentCommentSerializer(serializers.ModelSerializer):
     """Serializer for assignment comments"""
-    author_details = CustomUserSerializer(read_only=True, source='author')
-    assignment_details = AssignmentListSerializer(read_only=True, source='assignment')
-    student_assignment_details = StudentAssignmentMiniSerializer(read_only=True, source='student_assignment')
+    author = UserMinimalSerializer(read_only=True)
+    assignment = AssignmentListSerializer(read_only=True)
+    student_assignment = StudentAssignmentMiniSerializer(read_only=True)
+    parent_comment = serializers.PrimaryKeyRelatedField(
+        queryset=AssignmentComment.objects.all(),
+        required=False,
+        allow_null=True
+    )
     replies = serializers.SerializerMethodField()
-    reply_count = serializers.SerializerMethodField()
     
     class Meta:
         model = AssignmentComment
         fields = [
-            'id', 'assignment', 'assignment_details', 'student_assignment', 'student_assignment_details',
-            'author', 'author_details', 'parent_comment', 'content', 'is_private',
-            'file_attachment', 'replies', 'reply_count', 'created_at', 'updated_at'
+            'id', 'assignment', 'student_assignment', 'author',
+            'parent_comment', 'content', 'is_private',
+            'file_attachment', 'replies', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['created_at', 'updated_at']
+        read_only_fields = ['id', 'author', 'created_at', 'updated_at', 'replies']
     
     def get_replies(self, obj):
         """Get nested replies"""
         replies = obj.replies.all()
         return AssignmentCommentSerializer(replies, many=True).data
     
-    def get_reply_count(self, obj):
-        return obj.replies.count()
+    def validate(self, data):
+        """Validate comment data"""
+        request = self.context.get('request')
+        
+        # Check if user has permission to create private comments
+        if data.get('is_private') and request:
+            if not (request.user.is_teacher or request.user.is_staff or request.user.is_superuser):
+                raise serializers.ValidationError({
+                    'is_private': 'Only teachers can create private comments'
+                })
+        
+        return data
     
     def create(self, validated_data):
-        """Set author to current user"""
-        validated_data['author'] = self.context['request'].user
-        return super().create(validated_data)
+        """Create assignment comment"""
+        request = self.context.get('request')
+        
+        if request and request.user:
+            validated_data['author'] = request.user
+        
+        comment = AssignmentComment.objects.create(**validated_data)
+        logger.info(f"Comment created by {comment.author.get_full_name()}")
+        
+        return comment
 
+
+# ==================== ASSIGNMENT ANALYTICS SERIALIZERS ====================
+
+class AssignmentAnalyticsSerializer(serializers.ModelSerializer):
+    """Serializer for assignment analytics"""
+    assignment = AssignmentListSerializer(read_only=True)
+    
+    # Dynamic fields
+    last_updated = serializers.SerializerMethodField()
+    analytics_summary = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = AssignmentAnalytics
+        fields = [
+            'id', 'assignment', 'total_views', 'unique_viewers',
+            'average_time_spent', 'common_issues', 'plagiarism_cases',
+            'average_completion_time', 'question_analysis',
+            'average_score', 'submission_rate', 'last_updated',
+            'analytics_summary', 'created_at', 'updated_at'
+        ]
+        read_only_fields = fields
+    
+    def get_last_updated(self, obj):
+        return obj.last_updated.strftime('%Y-%m-%d %H:%M:%S') if obj.last_updated else None
+    
+    def get_analytics_summary(self, obj):
+        return {
+            'total_views': obj.total_views,
+            'unique_viewers': obj.unique_viewers,
+            'average_time_spent': obj.average_time_spent,
+            'plagiarism_cases': obj.plagiarism_cases,
+            'average_score': float(obj.average_score) if obj.average_score else 0,
+            'submission_rate': float(obj.submission_rate) if obj.submission_rate else 0
+        }
+
+
+# ==================== ASSIGNMENT REMINDER SERIALIZERS ====================
+
+class AssignmentReminderSerializer(serializers.ModelSerializer):
+    """Serializer for assignment reminders"""
+    assignment = AssignmentListSerializer(read_only=True)
+    target_users = UserMinimalSerializer(many=True, read_only=True)
+    
+    # Dynamic fields
+    is_overdue = serializers.SerializerMethodField()
+    days_until_reminder = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = AssignmentReminder
+        fields = [
+            'id', 'assignment', 'reminder_type', 'reminder_date',
+            'message', 'sent', 'sent_at', 'target_users',
+            'send_to_all_students', 'is_overdue', 'days_until_reminder',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = fields
+    
+    def get_is_overdue(self, obj):
+        return obj.is_overdue
+    
+    def get_days_until_reminder(self, obj):
+        if obj.reminder_date and not obj.sent:
+            delta = obj.reminder_date - timezone.now()
+            return delta.days
+        return None
+
+
+class AssignmentReminderCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating assignment reminders"""
+    class Meta:
+        model = AssignmentReminder
+        fields = [
+            'assignment', 'reminder_type', 'reminder_date',
+            'message', 'target_users', 'send_to_all_students'
+        ]
+    
+    def validate(self, data):
+        """Validate reminder data"""
+        # Check if reminder date is in the future
+        if data.get('reminder_date') and data['reminder_date'] <= timezone.now():
+            raise serializers.ValidationError({
+                'reminder_date': 'Reminder date must be in the future'
+            })
+        
+        # Check if target_users or send_to_all_students is specified
+        if not data.get('send_to_all_students') and not data.get('target_users'):
+            raise serializers.ValidationError({
+                'target_users': 'Either specify target users or send to all students'
+            })
+        
+        return data
+
+
+# ==================== DASHBOARD & STATISTICS SERIALIZERS ====================
 
 class AssignmentDashboardSerializer(serializers.Serializer):
     """Serializer for assignment dashboard data"""
@@ -1244,17 +862,228 @@ class AssignmentDashboardSerializer(serializers.Serializer):
     submitted_assignments = serializers.IntegerField()
     graded_assignments = serializers.IntegerField()
     overdue_assignments = serializers.IntegerField()
-    average_score = serializers.DecimalField(max_digits=6, decimal_places=2)
+    average_score = serializers.FloatField()
     recent_assignments = AssignmentListSerializer(many=True)
     upcoming_deadlines = AssignmentListSerializer(many=True)
+    
+    class Meta:
+        fields = [
+            'total_assignments', 'pending_assignments',
+            'submitted_assignments', 'graded_assignments',
+            'overdue_assignments', 'average_score',
+            'recent_assignments', 'upcoming_deadlines'
+        ]
 
 
 class TeacherAssignmentStatsSerializer(serializers.Serializer):
     """Serializer for teacher assignment statistics"""
-    total_created = serializers.IntegerField()
-    published_count = serializers.IntegerField()
-    graded_count = serializers.IntegerField()
-    average_completion_rate = serializers.DecimalField(max_digits=5, decimal_places=2)
-    average_score = serializers.DecimalField(max_digits=6, decimal_places=2)
-    pending_grading = serializers.IntegerField()
-    subject_breakdown = serializers.JSONField()
+    teacher = serializers.DictField()
+    statistics = serializers.DictField()
+    subject_breakdown = serializers.ListField()
+    recent_assignments = AssignmentListSerializer(many=True)
+    
+    class Meta:
+        fields = ['teacher', 'statistics', 'subject_breakdown', 'recent_assignments']
+
+
+class StudentProgressReportSerializer(serializers.Serializer):
+    """Serializer for student progress report"""
+    student = serializers.DictField()
+    overall_stats = serializers.DictField()
+    subject_performance = serializers.ListField()
+    recent_submissions = StudentAssignmentMiniSerializer(many=True)
+    
+    class Meta:
+        fields = ['student', 'overall_stats', 'subject_performance', 'recent_submissions']
+
+
+# ==================== EXPORT SERIALIZERS ====================
+
+class AssignmentExportSerializer(serializers.ModelSerializer):
+    """Serializer for exporting assignments to CSV/Excel"""
+    subject_name = serializers.CharField(source='subject.name', read_only=True)
+    teacher_name = serializers.SerializerMethodField()
+    classroom_name = serializers.CharField(source='classroom.name', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    assignment_type_display = serializers.CharField(source='get_assignment_type_display', read_only=True)
+    
+    class Meta:
+        model = Assignment
+        fields = [
+            'id', 'title', 'subject_name', 'teacher_name', 'classroom_name',
+            'due_date', 'total_marks', 'passing_marks', 'status_display',
+            'assignment_type_display', 'created_at', 'published_at',
+            'average_score', 'completion_rate'
+        ]
+    
+    def get_teacher_name(self, obj):
+        return obj.teacher.get_full_name() if obj.teacher else ''
+
+
+class GradeExportSerializer(serializers.ModelSerializer):
+    """Serializer for exporting grades to CSV/Excel"""
+    student_name = serializers.SerializerMethodField()
+    admission_number = serializers.SerializerMethodField()
+    assignment_title = serializers.CharField(source='assignment.title', read_only=True)
+    subject_name = serializers.CharField(source='assignment.subject.name', read_only=True)
+    total_marks = serializers.DecimalField(source='assignment.total_marks', read_only=True, max_digits=6, decimal_places=2)
+    percentage = serializers.SerializerMethodField()
+    graded_by_name = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = StudentAssignment
+        fields = [
+            'student_name', 'admission_number', 'assignment_title',
+            'subject_name', 'total_marks', 'marks_obtained', 'percentage',
+            'grade', 'status', 'submission_date', 'graded_at',
+            'graded_by_name', 'teacher_feedback'
+        ]
+    
+    def get_student_name(self, obj):
+        return obj.student.get_full_name() if obj.student else ''
+    
+    def get_admission_number(self, obj):
+        return obj.student.admission_number if hasattr(obj.student, 'admission_number') else ''
+    
+    def get_percentage(self, obj):
+        return obj.percentage
+    
+    def get_graded_by_name(self, obj):
+        return obj.graded_by.get_full_name() if obj.graded_by else ''
+
+
+# ==================== BULK OPERATION SERIALIZERS ====================
+
+class BulkAssignmentCreateSerializer(serializers.Serializer):
+    """Serializer for bulk assignment creation"""
+    assignments = AssignmentCreateSerializer(many=True)
+    
+    class Meta:
+        fields = ['assignments']
+
+
+class BulkGradingSerializer(serializers.Serializer):
+    """Serializer for bulk grading"""
+    grading = serializers.ListField(
+        child=serializers.DictField(
+            child=serializers.CharField()
+        )
+    )
+    
+    class Meta:
+        fields = ['grading']
+
+
+class ImportGradesSerializer(serializers.Serializer):
+    """Serializer for importing grades"""
+    file = serializers.FileField()
+    
+    class Meta:
+        fields = ['file']
+
+
+# ==================== NOTIFICATION SERIALIZERS ====================
+
+class AssignmentNotificationSerializer(serializers.Serializer):
+    """Serializer for assignment notifications"""
+    type = serializers.CharField()
+    assignment_id = serializers.UUIDField()
+    assignment_title = serializers.CharField()
+    due_date = serializers.DateTimeField()
+    days_left = serializers.IntegerField(required=False)
+    days_overdue = serializers.IntegerField(required=False)
+    message = serializers.CharField()
+    priority = serializers.CharField()
+    
+    class Meta:
+        fields = [
+            'type', 'assignment_id', 'assignment_title',
+            'due_date', 'days_left', 'days_overdue',
+            'message', 'priority'
+        ]
+
+
+class CalendarEventSerializer(serializers.Serializer):
+    """Serializer for calendar events"""
+    id = serializers.UUIDField()
+    title = serializers.CharField()
+    start = serializers.DateTimeField()
+    end = serializers.DateTimeField()
+    allDay = serializers.BooleanField(default=True)
+    color = serializers.CharField()
+    textColor = serializers.CharField(default='#ffffff')
+    extendedProps = serializers.DictField()
+    
+    class Meta:
+        fields = [
+            'id', 'title', 'start', 'end', 'allDay',
+            'color', 'textColor', 'extendedProps'
+        ]
+
+
+# ==================== VALIDATION SERIALIZERS ====================
+
+class AssignmentValidationSerializer(serializers.Serializer):
+    """Serializer for assignment validation"""
+    field = serializers.CharField()
+    value = serializers.CharField()
+    is_valid = serializers.BooleanField()
+    message = serializers.CharField(required=False)
+    
+    class Meta:
+        fields = ['field', 'value', 'is_valid', 'message']
+
+
+class SubmissionValidationSerializer(serializers.Serializer):
+    """Serializer for submission validation"""
+    can_submit = serializers.BooleanField()
+    message = serializers.CharField(required=False)
+    deadline = serializers.DateTimeField(required=False)
+    is_late_allowed = serializers.BooleanField(default=False)
+    late_penalty = serializers.DecimalField(max_digits=5, decimal_places=2, required=False)
+    
+    class Meta:
+        fields = [
+            'can_submit', 'message', 'deadline',
+            'is_late_allowed', 'late_penalty'
+        ]
+
+
+
+
+# Add these to your serializers.py file
+
+class StudentProgressReportSerializer(serializers.Serializer):
+    """Serializer for student progress report."""
+    student = serializers.DictField()
+    overall_statistics = serializers.DictField()
+    subject_performance = serializers.ListField()
+    recent_assignments = serializers.ListField()
+    recommendations = serializers.ListField()
+
+
+class BatchUpdateStatusSerializer(serializers.Serializer):
+    """Serializer for batch updating assignment statuses."""
+    assignment_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        help_text="List of assignment IDs to update"
+    )
+    status = serializers.ChoiceField(
+        choices=['draft', 'published', 'in_progress', 'closed', 'graded'],
+        help_text="New status for the assignments"
+    )
+    reason = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Reason for the status change"
+    )
+
+
+class AssignmentAnalyticsSerializer(serializers.Serializer):
+    """Serializer for assignment analytics."""
+    assignment = serializers.DictField()
+    statistics = serializers.DictField()
+    score_distribution = serializers.DictField()
+    submission_analysis = serializers.DictField()
+    performance_by_gender = serializers.ListField()
+    generated_at = serializers.DateTimeField()

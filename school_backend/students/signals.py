@@ -1,7 +1,7 @@
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from students.models import StudentEnrollment
-from academics.models import Class  # or AcademicClass, if you renamed it
+from academics.models import Classroom  # or AcademicClass, if you renamed it
 
 
 @receiver([post_save, post_delete], sender=StudentEnrollment)

@@ -5,7 +5,7 @@ import {
 } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext';
-import { academicAPI } from '../../../services/academicAPI.js';
+import { academicsAPI } from '../../../services/academicAPI.js';
 import { financeAPI } from '../../../services/financeAPI.js';
 
 const CreateReceipt = () => {

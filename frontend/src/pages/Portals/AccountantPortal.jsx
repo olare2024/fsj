@@ -235,7 +235,7 @@ import {
 import { financeAPI, fetchDashboardData, financeHelpers } from '../../services/financeAPI';
 import authAPI from '../../services/authAPI';
 import adminAPI from '../../services/adminAPI';
-import { academicAPI } from '../../services/academicAPI';
+import { academicsAPI } from '../../services/academicAPI';
 
 // Import components
 import LoadingOverlay from '../../components/LoadingOverlay';

@@ -16,7 +16,7 @@ from .models import (
     ProfessionalStanding, PerformanceIndicator, TeacherTransfer
 )
 from accounts.models import User, GENDER_CHOICES
-from academics.models import Subject, Class, AcademicYear, AcademicTerm, Stream
+from academics.models import Subject, Class, AcademicYear, AcademicTerm
 
 
 # ============================================================================
@@ -1182,7 +1182,7 @@ class TeacherAssignmentSerializer(serializers.ModelSerializer):
     
     stream_details = serializers.SerializerMethodField(read_only=True)
     stream = serializers.PrimaryKeyRelatedField(
-        queryset=Stream.objects.all(),
+        queryset=Class.objects.all(),
         write_only=True,
         required=False,
         allow_null=True

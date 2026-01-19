@@ -7,7 +7,7 @@ from library.models import (
     BorrowRecord, BookReview, ReadingList, ReadingListItem,
     BookReservation, DigitalResource, LibraryStats, TeacherResource
 )
-from academics.models import Subject
+#from academics.models import Lerani
 from accounts.models import User
 
 User = get_user_model()

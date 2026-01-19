@@ -16,7 +16,9 @@ import {
   Tabs,
   Tab,
   Dropdown,
-  Placeholder
+  Placeholder,
+  Modal,
+  Form
 } from 'react-bootstrap';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -50,10 +52,21 @@ import {
   ChevronRight,
   Search,
   Filter,
-  SortDown
+  SortDown,
+  Pencil,
+  Trash,
+  Upload,
+  Clock as ClockIcon,
+  BarChart,
+  Envelope,
+  Telephone,
+  House,
+  Briefcase,
+  CardChecklist
 } from 'react-bootstrap-icons';
 
-// ==================== IMPORT ALL APIS ====================
+// ==================== IMPORT APIS ====================
+import { teacherAPI } from '../../services/teacherAPI';  // Your teacher API
 import authAPI from '../../services/authAPI';
 import notesAPI from '../../services/notesAPI';
 import libraryAPI from '../../services/libraryAPI';
@@ -61,7 +74,7 @@ import timetableAPI from '../../services/timetableAPI';
 import { gradesAPI } from '../../services/gradesAPI';
 import { attendanceAPI } from '../../services/attendanceAPI';
 import assignmentsAPI from '../../services/assignmentsAPI';
-import { academicAPI } from '../../services/academicAPI';
+import academicAPI from '../../services/academicAPI';
 import downloadsAPI from '../../services/downloadsAPI';
 
 // ==================== HELPER COMPONENTS ====================
@@ -92,7 +105,6 @@ const TabErrorBoundary = ({ children, fallback = null }) => {
       setHasError(true);
     };
 
-    // Add global error listener
     window.addEventListener('error', handleError);
     
     return () => {
@@ -105,11 +117,217 @@ const TabErrorBoundary = ({ children, fallback = null }) => {
       <Alert variant="warning" className="m-3">
         <Alert.Heading>Something went wrong</Alert.Heading>
         <p>This section couldn't be loaded. Try refreshing the tab.</p>
+        <Button variant="outline-warning" size="sm" onClick={() => setHasError(false)}>
+          Retry
+        </Button>
       </Alert>
     );
   }
 
   return children;
+};
+
+// ==================== MODAL COMPONENTS ====================
+const LeaveApplicationModal = ({ show, onHide, onSubmit }) => {
+  const [formData, setFormData] = useState({
+    leave_type: '',
+    start_date: '',
+    end_date: '',
+    reason: '',
+    emergency_contact: '',
+    address_during_leave: ''
+  });
+
+  const handleSubmit = () => {
+    onSubmit(formData);
+    onHide();
+  };
+
+  return (
+    <Modal show={show} onHide={onHide} size="lg">
+      <Modal.Header closeButton>
+        <Modal.Title>Apply for Leave</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        <Form>
+          <Row>
+            <Col md={6}>
+              <Form.Group className="mb-3">
+                <Form.Label>Leave Type</Form.Label>
+                <Form.Select 
+                  value={formData.leave_type}
+                  onChange={(e) => setFormData({...formData, leave_type: e.target.value})}
+                >
+                  <option value="">Select leave type</option>
+                  <option value="annual">Annual Leave</option>
+                  <option value="sick">Sick Leave</option>
+                  <option value="maternity">Maternity Leave</option>
+                  <option value="paternity">Paternity Leave</option>
+                  <option value="compassionate">Compassionate Leave</option>
+                  <option value="study">Study Leave</option>
+                </Form.Select>
+              </Form.Group>
+            </Col>
+            <Col md={6}>
+              <Form.Group className="mb-3">
+                <Form.Label>Emergency Contact</Form.Label>
+                <Form.Control 
+                  type="text"
+                  placeholder="Phone number"
+                  value={formData.emergency_contact}
+                  onChange={(e) => setFormData({...formData, emergency_contact: e.target.value})}
+                />
+              </Form.Group>
+            </Col>
+          </Row>
+          <Row>
+            <Col md={6}>
+              <Form.Group className="mb-3">
+                <Form.Label>Start Date</Form.Label>
+                <Form.Control 
+                  type="date"
+                  value={formData.start_date}
+                  onChange={(e) => setFormData({...formData, start_date: e.target.value})}
+                />
+              </Form.Group>
+            </Col>
+            <Col md={6}>
+              <Form.Group className="mb-3">
+                <Form.Label>End Date</Form.Label>
+                <Form.Control 
+                  type="date"
+                  value={formData.end_date}
+                  onChange={(e) => setFormData({...formData, end_date: e.target.value})}
+                />
+              </Form.Group>
+            </Col>
+          </Row>
+          <Form.Group className="mb-3">
+            <Form.Label>Address During Leave</Form.Label>
+            <Form.Control 
+              as="textarea"
+              rows={2}
+              placeholder="Where will you be during your leave?"
+              value={formData.address_during_leave}
+              onChange={(e) => setFormData({...formData, address_during_leave: e.target.value})}
+            />
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>Reason</Form.Label>
+            <Form.Control 
+              as="textarea"
+              rows={3}
+              placeholder="Please provide details for your leave request"
+              value={formData.reason}
+              onChange={(e) => setFormData({...formData, reason: e.target.value})}
+            />
+          </Form.Group>
+        </Form>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onHide}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={handleSubmit}>
+          Submit Application
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  );
+};
+
+const UploadDocumentModal = ({ show, onHide, onSubmit }) => {
+  const [formData, setFormData] = useState({
+    document_type: '',
+    title: '',
+    file: null,
+    description: '',
+    expiry_date: ''
+  });
+
+  const handleFileChange = (e) => {
+    setFormData({...formData, file: e.target.files[0]});
+  };
+
+  const handleSubmit = () => {
+    const data = new FormData();
+    Object.keys(formData).forEach(key => {
+      if (formData[key]) {
+        data.append(key, formData[key]);
+      }
+    });
+    onSubmit(data);
+    onHide();
+  };
+
+  return (
+    <Modal show={show} onHide={onHide}>
+      <Modal.Header closeButton>
+        <Modal.Title>Upload Document</Modal.Title>
+      </Modal.Header>
+      <Modal.Body>
+        <Form>
+          <Form.Group className="mb-3">
+            <Form.Label>Document Type</Form.Label>
+            <Form.Select 
+              value={formData.document_type}
+              onChange={(e) => setFormData({...formData, document_type: e.target.value})}
+            >
+              <option value="">Select type</option>
+              <option value="certificate">Certificate</option>
+              <option value="id">ID Copy</option>
+              <option value="tsc">TSC Certificate</option>
+              <option value="contract">Employment Contract</option>
+              <option value="performance">Performance Review</option>
+              <option value="other">Other</option>
+            </Form.Select>
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>Title</Form.Label>
+            <Form.Control 
+              type="text"
+              placeholder="Document title"
+              value={formData.title}
+              onChange={(e) => setFormData({...formData, title: e.target.value})}
+            />
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>Description</Form.Label>
+            <Form.Control 
+              as="textarea"
+              rows={2}
+              placeholder="Optional description"
+              value={formData.description}
+              onChange={(e) => setFormData({...formData, description: e.target.value})}
+            />
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>Expiry Date (if applicable)</Form.Label>
+            <Form.Control 
+              type="date"
+              value={formData.expiry_date}
+              onChange={(e) => setFormData({...formData, expiry_date: e.target.value})}
+            />
+          </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>File</Form.Label>
+            <Form.Control 
+              type="file"
+              onChange={handleFileChange}
+            />
+          </Form.Group>
+        </Form>
+      </Modal.Body>
+      <Modal.Footer>
+        <Button variant="secondary" onClick={onHide}>
+          Cancel
+        </Button>
+        <Button variant="primary" onClick={handleSubmit}>
+          Upload
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  );
 };
 
 // ==================== MAIN COMPONENT ====================
@@ -118,13 +336,14 @@ const TeacherPortal = () => {
   const navigate = useNavigate();
   const isMounted = useRef(true);
   
+  // Main state
   const [dashboardData, setDashboardData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [notifications, setNotifications] = useState([]);
   
-  // State for different sections
+  // Section states
   const [classes, setClasses] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [libraryResources, setLibraryResources] = useState([]);
@@ -134,11 +353,26 @@ const TeacherPortal = () => {
   const [studentGrades, setStudentGrades] = useState([]);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   
+  // Teacher-specific states
+  const [teacherProfile, setTeacherProfile] = useState(null);
+  const [teacherDocuments, setTeacherDocuments] = useState([]);
+  const [teacherQualifications, setTeacherQualifications] = useState([]);
+  const [teacherTrainings, setTeacherTrainings] = useState([]);
+  const [teacherLeaves, setTeacherLeaves] = useState([]);
+  const [teacherAssignments, setTeacherAssignments] = useState([]);
+  const [teacherAttendance, setTeacherAttendance] = useState([]);
+  const [performanceIndicators, setPerformanceIndicators] = useState([]);
+  
+  // UI states
   const [activeTab, setActiveTab] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [assignmentFilter, setAssignmentFilter] = useState('all');
   
-  // Comprehensive stats
+  // Modal states
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  
+  // Stats
   const [stats, setStats] = useState({
     totalStudents: 0,
     totalSubjects: 0,
@@ -149,18 +383,17 @@ const TeacherPortal = () => {
     libraryBooks: 0,
     upcomingEvents: 0,
     downloadedResources: 0,
-    averageGrade: 0
+    averageGrade: 0,
+    leavesUsed: 0,
+    leavesRemaining: 0,
+    documentsPending: 0,
+    upcomingTrainings: 0
   });
 
-  const [userProfile, setUserProfile] = useState(null);
-
   // ==================== HELPER FUNCTIONS ====================
-
-  // Enhanced array extraction from API response
   const extractArrayFromResponse = (responseData) => {
     if (!responseData) return [];
     
-    // Handle successful response wrapper
     if (responseData.success && responseData.data !== undefined) {
       return extractArrayFromResponse(responseData.data);
     }
@@ -169,12 +402,12 @@ const TeacherPortal = () => {
       return responseData;
     }
     
-    // Handle various API response patterns
     const possibleArrayProps = [
       'results', 'data', 'items', 'records', 'list', 
       'assignments', 'grades', 'files', 'resources', 
       'schedule', 'classes', 'timetable', 'notifications',
-      'students', 'subjects', 'events'
+      'students', 'subjects', 'events', 'documents',
+      'qualifications', 'trainings', 'leaves'
     ];
     
     for (const prop of possibleArrayProps) {
@@ -183,7 +416,6 @@ const TeacherPortal = () => {
       }
     }
     
-    // If it's an object, check for nested arrays
     if (typeof responseData === 'object') {
       const allValues = Object.values(responseData);
       for (const value of allValues) {
@@ -196,7 +428,6 @@ const TeacherPortal = () => {
     return [];
   };
 
-  // Enhanced data fetching with error handling
   const fetchWithErrorHandling = async (apiCall, errorMessage) => {
     try {
       const response = await apiCall();
@@ -211,12 +442,11 @@ const TeacherPortal = () => {
     }
   };
 
-  // Data validation functions
   const validateClassData = (classData) => {
     if (!classData || typeof classData !== 'object') return null;
     
     return {
-      id: classData.id || Math.random().toString(36).substr(2, 9),
+      id: classData.id || classData.uuid || Math.random().toString(36).substr(2, 9),
       name: classData.name || classData.class_name || 'Unnamed Class',
       subject: classData.subject_name || classData.subject || 'No Subject',
       gradeLevel: classData.grade_level || classData.grade || 'N/A',
@@ -231,7 +461,7 @@ const TeacherPortal = () => {
     if (!assignmentData || typeof assignmentData !== 'object') return null;
     
     return {
-      id: assignmentData.id || Math.random().toString(36).substr(2, 9),
+      id: assignmentData.id || assignmentData.uuid || Math.random().toString(36).substr(2, 9),
       title: assignmentData.title || 'Untitled Assignment',
       description: assignmentData.description || '',
       subject: assignmentData.subject_name || assignmentData.subject || 'No Subject',
@@ -246,8 +476,8 @@ const TeacherPortal = () => {
     };
   };
 
-  // Fetch comprehensive teacher data
-  const fetchTeacherData = useCallback(async (showRefreshing = false) => {
+  // ==================== DATA FETCHING ====================
+  const fetchTeacherDashboard = useCallback(async (showRefreshing = false) => {
     if (!isMounted.current) return;
 
     try {
@@ -264,186 +494,21 @@ const TeacherPortal = () => {
         throw new Error('No user ID available');
       }
 
-      // Parallel fetching for better performance
-      const [
-        profileResult,
-        academicYearResult,
-        classesResult,
-        assignmentsResult,
-        timetableResult,
-        libraryResult,
-        attendanceResult,
-        gradesResult,
-        downloadsResult
-      ] = await Promise.allSettled([
-        fetchWithErrorHandling(() => authAPI.getCurrentUser(), 'Failed to fetch profile'),
-        fetchWithErrorHandling(() => academicAPI.getCurrentAcademicYear(), 'Failed to fetch academic year'),
-        fetchWithErrorHandling(() => academicAPI.getClasses(), 'Failed to fetch classes'),
-        fetchWithErrorHandling(() => notesAPI.getTeacherAssignments(), 'Failed to fetch assignments'),
-        fetchWithErrorHandling(() => timetableAPI.getTeacherTimetable(), 'Failed to fetch timetable'),
-        fetchWithErrorHandling(() => libraryAPI.getTeacherResources(), 'Failed to fetch library resources'),
-        fetchWithErrorHandling(() => attendanceAPI.getAttendanceRecords({ 
-          teacher_id: teacherId,
-          limit: 50 
-        }), 'Failed to fetch attendance'),
-        fetchWithErrorHandling(() => gradesAPI.getGrades({ 
-          teacher_id: teacherId,
-          recent: true 
-        }), 'Failed to fetch grades'),
-        fetchWithErrorHandling(() => downloadsAPI.getFiles({ 
-          category: 'teacher_resources' 
-        }), 'Failed to fetch downloads')
-      ]);
-
-      // Process results with validation
-      if (profileResult.status === 'fulfilled' && profileResult.value.success) {
-        setUserProfile(profileResult.value.user || profileResult.value.data);
-      }
-
-      if (academicYearResult.status === 'fulfilled' && academicYearResult.value.success) {
-        setAcademicData(prev => ({ ...prev, academicYear: academicYearResult.value.data }));
-      }
-
-      let classesData = [];
-      if (classesResult.status === 'fulfilled' && classesResult.value.success) {
-        const rawClassesData = extractArrayFromResponse(classesResult.value.data);
-        classesData = rawClassesData.map(validateClassData).filter(Boolean);
-        
-        // Only fetch details for the first 3 classes to reduce load
-        const limitedClasses = classesData.slice(0, 3);
-        const detailedClasses = await Promise.all(
-          limitedClasses.map(async (cls) => {
-            try {
-              if (!cls.id) return cls;
-              const classDetail = await academicAPI.getClass(cls.id);
-              if (classDetail.success) {
-                return validateClassData(classDetail.data) || cls;
-              }
-              return cls;
-            } catch (err) {
-              console.warn('Failed to fetch class details:', err);
-              return cls;
-            }
-          })
-        );
-        setClasses([...detailedClasses, ...classesData.slice(3)]);
-      } else {
-        setClasses([]);
-      }
-
-      let assignmentsData = [];
-      if (assignmentsResult.status === 'fulfilled' && assignmentsResult.value.success) {
-        const rawAssignmentsData = extractArrayFromResponse(assignmentsResult.value.data);
-        assignmentsData = rawAssignmentsData.map(validateAssignmentData).filter(Boolean);
-        setAssignments(assignmentsData);
-      } else {
-        setAssignments([]);
-      }
-
-      if (timetableResult.status === 'fulfilled' && timetableResult.value.success) {
-        const timetableData = extractArrayFromResponse(timetableResult.value.data);
-        setTimetable(timetableData);
-      } else {
-        setTimetable([]);
-      }
-
-      if (libraryResult.status === 'fulfilled' && libraryResult.value.success) {
-        const libraryData = extractArrayFromResponse(libraryResult.value.data);
-        setLibraryResources(libraryData);
-      } else {
-        setLibraryResources([]);
-      }
-
-      let attendanceData = [];
-      if (attendanceResult.status === 'fulfilled' && attendanceResult.value.success) {
-        attendanceData = extractArrayFromResponse(attendanceResult.value.data);
-        setAttendanceRecords(attendanceData);
-      } else {
-        setAttendanceRecords([]);
-      }
-
-      let gradesData = [];
-      if (gradesResult.status === 'fulfilled' && gradesResult.value.success) {
-        gradesData = extractArrayFromResponse(gradesResult.value.data);
-        setStudentGrades(gradesData);
-      } else {
-        setStudentGrades([]);
-      }
-
-      let downloadsData = [];
-      if (downloadsResult.status === 'fulfilled' && downloadsResult.value.success) {
-        downloadsData = extractArrayFromResponse(downloadsResult.value.data);
-        setDownloads(downloadsData);
-      } else {
-        setDownloads([]);
-      }
-
-      // Calculate statistics with validation
-      const totalStudents = classesData.reduce((acc, cls) => 
-        acc + (cls.studentCount || 0), 0);
-      
-      const totalSubjects = new Set(
-        classesData.map(cls => cls.subject).filter(Boolean)
-      ).size;
-      
-      const pendingAssignments = assignmentsData.filter(a => 
-        a.status === 'submitted' || a.status === 'pending_review'
+      // Fetch teacher dashboard data
+      const dashboardResult = await fetchWithErrorHandling(
+        () => teacherAPI.getDashboard(),
+        'Failed to fetch teacher dashboard'
       );
-      
-      const overdueAssignments = assignmentsData.filter(a => 
-        a.status === 'overdue' || 
-        (a.dueDate && new Date(a.dueDate) < new Date() && a.status !== 'graded')
-      );
-      
-      const attendanceRate = attendanceData.length > 0 
-        ? Math.round((attendanceData.filter(a => 
-            a.status === 'present' || a.status === 'Present').length / 
-           attendanceData.length) * 100)
-        : 0;
-      
-      const validGrades = gradesData.filter(grade => 
-        grade.score !== undefined && grade.score !== null && !isNaN(parseFloat(grade.score))
-      );
-      
-      const averageGrade = validGrades.length > 0
-        ? Math.round(validGrades.reduce((acc, grade) => 
-            acc + parseFloat(grade.score), 0) / validGrades.length)
-        : 0;
 
-      // Mock notifications (in real app, fetch from API)
-      const mockNotifications = [
-        { id: 1, type: 'assignment', message: '3 new submissions in Math Assignment', time: '10 min ago', read: false },
-        { id: 2, type: 'meeting', message: 'Staff meeting at 3:00 PM', time: '1 hour ago', read: true },
-        { id: 3, type: 'deadline', message: 'Grades due for Physics by Friday', time: '2 hours ago', read: false },
-      ];
-      setNotifications(mockNotifications);
+      if (dashboardResult.success && dashboardResult.data) {
+        processDashboardData(dashboardResult.data);
+      } else {
+        // Fallback to individual APIs if dashboard fails
+        await fetchIndividualTeacherData();
+      }
 
-      setStats({
-        totalStudents,
-        totalSubjects,
-        totalClasses: classesData.length,
-        attendanceRate,
-        pendingGrading: pendingAssignments.length,
-        overdueAssignments: overdueAssignments.length,
-        libraryBooks: libraryResources.length,
-        upcomingEvents: timetable.filter(t => 
-          new Date(t.start_time || t.date || Date.now()) > new Date()
-        ).length,
-        downloadedResources: downloadsData.length,
-        averageGrade
-      });
-
-      // Store dashboard data for caching
-      setDashboardData({
-        lastUpdated: new Date().toISOString(),
-        classes: classesData,
-        assignments: assignmentsData,
-        timetable: timetable,
-        libraryResources: libraryResources,
-        attendanceRecords: attendanceData,
-        studentGrades: gradesData,
-        downloads: downloadsData
-      });
+      // Fetch additional teacher-specific data
+      await fetchAdditionalTeacherData(teacherId);
 
     } catch (err) {
       if (isMounted.current) {
@@ -458,14 +523,173 @@ const TeacherPortal = () => {
     }
   }, [currentUser?.id]);
 
-  // ==================== USE EFFECTS ====================
+  const processDashboardData = (dashboardData) => {
+    if (!dashboardData) return;
+    
+    const {
+      profile,
+      classes = [],
+      assignments = [],
+      timetable = [],
+      library_resources = [],
+      attendance_records = [],
+      student_grades = [],
+      downloads = [],
+      academic_year,
+      statistics = {},
+      notifications: apiNotifications = []
+    } = dashboardData;
 
+    // Set profile data
+    if (profile) {
+      setTeacherProfile(profile);
+    }
+
+    // Set academic data
+    if (academic_year) {
+      setAcademicData(prev => ({ ...prev, academicYear: academic_year }));
+    }
+
+    // Process classes
+    const validatedClasses = Array.isArray(classes) 
+      ? classes.map(validateClassData).filter(Boolean)
+      : [];
+    setClasses(validatedClasses);
+
+    // Process assignments
+    const validatedAssignments = Array.isArray(assignments)
+      ? assignments.map(validateAssignmentData).filter(Boolean)
+      : [];
+    setAssignments(validatedAssignments);
+
+    // Set other data
+    setTimetable(Array.isArray(timetable) ? timetable : []);
+    setLibraryResources(Array.isArray(library_resources) ? library_resources : []);
+    setAttendanceRecords(Array.isArray(attendance_records) ? attendance_records : []);
+    setStudentGrades(Array.isArray(student_grades) ? student_grades : []);
+    setDownloads(Array.isArray(downloads) ? downloads : []);
+    
+    // Set notifications
+    if (Array.isArray(apiNotifications)) {
+      setNotifications(apiNotifications);
+    }
+
+    // Update stats from dashboard statistics
+    if (statistics && typeof statistics === 'object') {
+      setStats(prev => ({
+        ...prev,
+        totalStudents: statistics.total_students || 0,
+        totalSubjects: statistics.total_subjects || 0,
+        totalClasses: statistics.total_classes || 0,
+        attendanceRate: statistics.attendance_rate || 0,
+        pendingGrading: statistics.pending_grading || 0,
+        overdueAssignments: statistics.overdue_assignments || 0,
+        libraryBooks: statistics.library_books || 0,
+        upcomingEvents: statistics.upcoming_events || 0,
+        averageGrade: statistics.average_grade || 0
+      }));
+    }
+  };
+
+  const fetchIndividualTeacherData = async () => {
+    const teacherId = currentUser?.id;
+    
+    const [
+      profileResult,
+      classesResult,
+      assignmentsResult,
+      timetableResult,
+      attendanceResult,
+      gradesResult
+    ] = await Promise.allSettled([
+      fetchWithErrorHandling(() => teacherAPI.getMyProfile(), 'Failed to fetch profile'),
+      fetchWithErrorHandling(() => teacherAPI.getCurrentAssignments(), 'Failed to fetch assignments'),
+      fetchWithErrorHandling(() => academicAPI.getClasses(), 'Failed to fetch classes'),
+      fetchWithErrorHandling(() => timetableAPI.getTeacherTimetable(), 'Failed to fetch timetable'),
+      fetchWithErrorHandling(() => teacherAPI.getAttendance({ teacher_id: teacherId }), 'Failed to fetch attendance'),
+      fetchWithErrorHandling(() => gradesAPI.getGrades({ teacher_id: teacherId }), 'Failed to fetch grades')
+    ]);
+
+    if (profileResult.status === 'fulfilled' && profileResult.value.success) {
+      setTeacherProfile(profileResult.value.data);
+    }
+
+    if (classesResult.status === 'fulfilled' && classesResult.value.success) {
+      const classesData = extractArrayFromResponse(classesResult.value.data);
+      const validatedClasses = classesData.map(validateClassData).filter(Boolean);
+      setClasses(validatedClasses);
+    }
+
+    if (assignmentsResult.status === 'fulfilled' && assignmentsResult.value.success) {
+      const assignmentsData = extractArrayFromResponse(assignmentsResult.value.data);
+      const validatedAssignments = assignmentsData.map(validateAssignmentData).filter(Boolean);
+      setAssignments(validatedAssignments);
+    }
+
+    if (timetableResult.status === 'fulfilled' && timetableResult.value.success) {
+      const timetableData = extractArrayFromResponse(timetableResult.value.data);
+      setTimetable(timetableData);
+    }
+
+    if (attendanceResult.status === 'fulfilled' && attendanceResult.value.success) {
+      const attendanceData = extractArrayFromResponse(attendanceResult.value.data);
+      setAttendanceRecords(attendanceData);
+    }
+
+    if (gradesResult.status === 'fulfilled' && gradesResult.value.success) {
+      const gradesData = extractArrayFromResponse(gradesResult.value.data);
+      setStudentGrades(gradesData);
+    }
+  };
+
+  const fetchAdditionalTeacherData = async (teacherId) => {
+    const [
+      documentsResult,
+      qualificationsResult,
+      trainingsResult,
+      leavesResult,
+      performanceResult
+    ] = await Promise.allSettled([
+      fetchWithErrorHandling(() => teacherAPI.getDocuments({ teacher_id: teacherId }), 'Failed to fetch documents'),
+      fetchWithErrorHandling(() => teacherAPI.getQualifications({ teacher_id: teacherId }), 'Failed to fetch qualifications'),
+      fetchWithErrorHandling(() => teacherAPI.getUpcomingTrainings(), 'Failed to fetch trainings'),
+      fetchWithErrorHandling(() => teacherAPI.getCurrentLeaves(), 'Failed to fetch leaves'),
+      fetchWithErrorHandling(() => teacherAPI.getPerformanceSummary(), 'Failed to fetch performance')
+    ]);
+
+    if (documentsResult.status === 'fulfilled' && documentsResult.value.success) {
+      const documentsData = extractArrayFromResponse(documentsResult.value.data);
+      setTeacherDocuments(documentsData);
+    }
+
+    if (qualificationsResult.status === 'fulfilled' && qualificationsResult.value.success) {
+      const qualificationsData = extractArrayFromResponse(qualificationsResult.value.data);
+      setTeacherQualifications(qualificationsData);
+    }
+
+    if (trainingsResult.status === 'fulfilled' && trainingsResult.value.success) {
+      const trainingsData = extractArrayFromResponse(trainingsResult.value.data);
+      setTeacherTrainings(trainingsData);
+    }
+
+    if (leavesResult.status === 'fulfilled' && leavesResult.value.success) {
+      const leavesData = extractArrayFromResponse(leavesResult.value.data);
+      setTeacherLeaves(leavesData);
+    }
+
+    if (performanceResult.status === 'fulfilled' && performanceResult.value.success) {
+      const performanceData = extractArrayFromResponse(performanceResult.value.data);
+      setPerformanceIndicators(performanceData);
+    }
+  };
+
+  // ==================== USE EFFECTS ====================
   useEffect(() => {
     isMounted.current = true;
     
     const loadData = async () => {
       if (!authLoading && currentUser) {
-        await fetchTeacherData();
+        await fetchTeacherDashboard();
       }
     };
     
@@ -474,10 +698,9 @@ const TeacherPortal = () => {
     return () => {
       isMounted.current = false;
     };
-  }, [authLoading, currentUser, fetchTeacherData]);
+  }, [authLoading, currentUser, fetchTeacherDashboard]);
 
   // ==================== MEMOIZED CALCULATIONS ====================
-
   const classStats = useMemo(() => {
     if (!Array.isArray(classes)) return {};
     
@@ -549,7 +772,7 @@ const TeacherPortal = () => {
       .sort((a, b) => {
         const dateA = new Date(a.dueDate || a.createdAt || 0);
         const dateB = new Date(b.dueDate || b.createdAt || 0);
-        return dateA - dateB; // Sort by due date ascending
+        return dateA - dateB;
       })
       .slice(0, 5);
   }, [assignments]);
@@ -572,7 +795,6 @@ const TeacherPortal = () => {
     
     let filtered = [...assignments];
     
-    // Apply search filter
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(a => 
@@ -583,7 +805,6 @@ const TeacherPortal = () => {
       );
     }
     
-    // Apply status filter
     if (assignmentFilter !== 'all') {
       filtered = filtered.filter(a => 
         a.status === assignmentFilter.toLowerCase()
@@ -598,21 +819,67 @@ const TeacherPortal = () => {
     return notifications.filter(n => !n.read).length;
   }, [notifications]);
 
-  // ==================== EVENT HANDLERS ====================
+  const expiringDocuments = useMemo(() => {
+    if (!Array.isArray(teacherDocuments)) return [];
+    
+    const now = new Date();
+    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    
+    return teacherDocuments.filter(doc => {
+      if (!doc.expiry_date) return false;
+      const expiryDate = new Date(doc.expiry_date);
+      return expiryDate <= thirtyDaysFromNow && expiryDate >= now;
+    });
+  }, [teacherDocuments]);
 
+  const pendingLeaves = useMemo(() => {
+    if (!Array.isArray(teacherLeaves)) return [];
+    return teacherLeaves.filter(leave => 
+      leave.status === 'pending' || leave.status === 'submitted'
+    );
+  }, [teacherLeaves]);
+
+  // ==================== EVENT HANDLERS ====================
   const handleRefresh = () => {
-    fetchTeacherData(true);
+    fetchTeacherDashboard(true);
   };
 
   const handleNavigate = (path) => {
     navigate(path);
   };
 
+  const handleApplyForLeave = async (leaveData) => {
+    try {
+      const result = await teacherAPI.applyForLeave(leaveData);
+      if (result.success) {
+        setTeacherLeaves(prev => [result.data, ...prev]);
+        setError('');
+      } else {
+        setError(result.error?.message || 'Failed to apply for leave');
+      }
+    } catch (err) {
+      setError('Failed to apply for leave. Please try again.');
+    }
+  };
+
+  const handleUploadDocument = async (documentData) => {
+    try {
+      const result = await teacherAPI.uploadDocument(documentData);
+      if (result.success) {
+        setTeacherDocuments(prev => [result.data, ...prev]);
+        setError('');
+      } else {
+        setError(result.error?.message || 'Failed to upload document');
+      }
+    } catch (err) {
+      setError('Failed to upload document. Please try again.');
+    }
+  };
+
   const handleDownloadResource = async (fileId, fileName) => {
     try {
       const result = await downloadsAPI.downloadFile(fileId);
       if (result.success && result.data) {
-        // Create download link
         const url = window.URL.createObjectURL(new Blob([result.data]));
         const link = document.createElement('a');
         link.href = url;
@@ -621,13 +888,6 @@ const TeacherPortal = () => {
         link.click();
         link.remove();
         window.URL.revokeObjectURL(url);
-        
-        // Update download count in UI
-        setDownloads(prev => prev.map(d => 
-          d.id === fileId 
-            ? { ...d, download_count: (d.download_count || 0) + 1 }
-            : d
-        ));
       }
     } catch (err) {
       console.error('Download error:', err);
@@ -652,16 +912,18 @@ const TeacherPortal = () => {
   };
 
   // ==================== UTILITY FUNCTIONS ====================
-
   const getUserDisplayInfo = () => {
-    if (userProfile) {
+    if (teacherProfile) {
       return {
-        firstName: userProfile.first_name || userProfile.firstName || 'Teacher',
-        lastName: userProfile.last_name || userProfile.lastName || '',
-        avatar: userProfile.avatar || userProfile.profile_picture,
-        initials: (userProfile.first_name?.charAt(0) || '') + (userProfile.last_name?.charAt(0) || '') || 'T',
-        email: userProfile.email || currentUser?.email || '',
-        role: userProfile.role || 'Teacher'
+        firstName: teacherProfile.first_name || teacherProfile.firstName || 'Teacher',
+        lastName: teacherProfile.last_name || teacherProfile.lastName || '',
+        avatar: teacherProfile.avatar || teacherProfile.profile_picture,
+        initials: (teacherProfile.first_name?.charAt(0) || '') + (teacherProfile.last_name?.charAt(0) || '') || 'T',
+        email: teacherProfile.email || currentUser?.email || '',
+        role: teacherProfile.role || 'Teacher',
+        tscNumber: teacherProfile.tsc_number || 'Not set',
+        department: teacherProfile.department?.name || teacherProfile.department || 'No Department',
+        specialization: teacherProfile.specialization || 'Not specified'
       };
     }
     return {
@@ -670,11 +932,24 @@ const TeacherPortal = () => {
       avatar: null,
       initials: 'T',
       email: currentUser?.email || '',
-      role: currentUser?.role || 'Teacher'
+      role: currentUser?.role || 'Teacher',
+      tscNumber: currentUser?.tsc_number || 'Not set',
+      department: currentUser?.department || 'No Department',
+      specialization: currentUser?.specialization || 'Not specified'
     };
   };
 
-  const { firstName, lastName, avatar, initials, email, role } = getUserDisplayInfo();
+  const { 
+    firstName, 
+    lastName, 
+    avatar, 
+    initials, 
+    email, 
+    role,
+    tscNumber,
+    department,
+    specialization 
+  } = getUserDisplayInfo();
 
   const formatNumber = (number) => {
     return new Intl.NumberFormat('en-KE').format(number || 0);
@@ -747,8 +1022,44 @@ const TeacherPortal = () => {
     }
   };
 
-  // ==================== RENDER LOADING STATE ====================
+  const getLeaveStatusVariant = (status) => {
+    if (!status) return 'secondary';
+    
+    const statusLower = status.toLowerCase();
+    switch (statusLower) {
+      case 'approved':
+        return 'success';
+      case 'pending':
+      case 'submitted':
+        return 'warning';
+      case 'rejected':
+        return 'danger';
+      case 'cancelled':
+        return 'secondary';
+      default:
+        return 'info';
+    }
+  };
 
+  const getDocumentStatusVariant = (status) => {
+    if (!status) return 'secondary';
+    
+    const statusLower = status.toLowerCase();
+    switch (statusLower) {
+      case 'verified':
+      case 'approved':
+        return 'success';
+      case 'pending':
+        return 'warning';
+      case 'rejected':
+      case 'expired':
+        return 'danger';
+      default:
+        return 'info';
+    }
+  };
+
+  // ==================== RENDER LOADING STATE ====================
   if (authLoading || (loading && !refreshing)) {
     return (
       <Container className="mt-4">
@@ -762,7 +1073,6 @@ const TeacherPortal = () => {
   }
 
   // ==================== MAIN RENDER ====================
-
   return (
     <Container fluid className="mt-3 teacher-portal">
       {/* Enhanced Page Header */}
@@ -810,6 +1120,10 @@ const TeacherPortal = () => {
                           {role}
                         </Badge>
                       </div>
+                      <p className="mb-1 opacity-75 d-flex align-items-center">
+                        <Briefcase size={14} className="me-2" />
+                        {department} • {specialization}
+                      </p>
                       <p className="mb-1 opacity-75">
                         <CalendarEvent size={14} className="me-1" />
                         {academicData.academicYear?.name || 'Academic Year 2024'}
@@ -901,6 +1215,7 @@ const TeacherPortal = () => {
                       <ArrowClockwise className={`me-1 ${refreshing ? 'spinning' : ''}`} size={16} />
                       Refresh
                     </Button>
+                    
                     <Button 
                       variant="white" 
                       className="text-primary d-none d-md-flex"
@@ -909,18 +1224,28 @@ const TeacherPortal = () => {
                       <Plus className="me-1" />
                       New Assignment
                     </Button>
+                    
                     <Dropdown align="end">
                       <Dropdown.Toggle variant="light" size="sm">
                         <ThreeDotsVertical size={18} />
                       </Dropdown.Toggle>
                       <Dropdown.Menu>
                         <Dropdown.Header className="text-truncate" style={{ maxWidth: '200px' }}>
-                          {email}
+                          TSC: {tscNumber}
                         </Dropdown.Header>
                         <Dropdown.Item as={Link} to="/teacher/profile">
                           <PersonCircle className="me-2" />
                           My Profile
                         </Dropdown.Item>
+                        <Dropdown.Item as={Link} to="/teacher/documents">
+                          <FileEarmark className="me-2" />
+                          My Documents
+                        </Dropdown.Item>
+                        <Dropdown.Item as={Link} to="/teacher/leaves">
+                          <Calendar className="me-2" />
+                          Leave Management
+                        </Dropdown.Item>
+                        <Dropdown.Divider />
                         <Dropdown.Item as={Link} to="/teacher/settings">
                           <Gear className="me-2" />
                           Settings
@@ -939,6 +1264,7 @@ const TeacherPortal = () => {
         </Col>
       </Row>
 
+      {/* Error Alert */}
       {error && (
         <Row className="px-3 mb-3">
           <Col>
@@ -999,19 +1325,15 @@ const TeacherPortal = () => {
                     Timetable
                   </div>
                 } />
-                <Tab eventKey="library" title={
+                <Tab eventKey="professional" title={
                   <div className="d-flex align-items-center justify-content-center py-1">
-                    <Book className="me-2" />
-                    Library
-                    <Badge bg="info" className="ms-2" pill>
-                      {libraryResources.length}
-                    </Badge>
-                  </div>
-                } />
-                <Tab eventKey="resources" title={
-                  <div className="d-flex align-items-center justify-content-center py-1">
-                    <Download className="me-2" />
-                    Resources
+                    <Briefcase className="me-2" />
+                    Professional
+                    {expiringDocuments.length > 0 && (
+                      <Badge bg="danger" className="ms-2" pill>
+                        {expiringDocuments.length}
+                      </Badge>
+                    )}
                   </div>
                 } />
               </Tabs>
@@ -1024,7 +1346,7 @@ const TeacherPortal = () => {
       <TabErrorBoundary>
         {activeTab === 'overview' && (
           <>
-            {/* Stats Cards */}
+            {/* Teacher Stats Cards */}
             <Row className="mb-4 px-3">
               <Col xl={3} lg={6} className="mb-3">
                 <Card className="h-100 border-0 shadow-sm hover-lift">
@@ -1084,24 +1406,24 @@ const TeacherPortal = () => {
                   <Card.Body>
                     <div className="d-flex justify-content-between align-items-start">
                       <div>
-                        <h6 className="card-title text-uppercase text-muted mb-2">Attendance Rate</h6>
-                        <h2 className="mb-0 text-info">{stats.attendanceRate}%</h2>
-                        <small className="text-muted">This week</small>
+                        <h6 className="card-title text-uppercase text-muted mb-2">Leave Balance</h6>
+                        <h2 className="mb-0 text-info">{stats.leavesRemaining}</h2>
+                        <small className="text-muted">{stats.leavesUsed} days used</small>
                       </div>
                       <div className="bg-info bg-opacity-10 p-3 rounded">
-                        <Check2Circle size={24} className="text-info" />
+                        <Calendar size={24} className="text-info" />
                       </div>
                     </div>
-                    <ProgressBar 
-                      now={stats.attendanceRate} 
-                      variant={
-                        stats.attendanceRate >= 90 ? 'success' :
-                        stats.attendanceRate >= 75 ? 'info' :
-                        stats.attendanceRate >= 60 ? 'warning' : 'danger'
-                      }
-                      className="mt-3"
-                      style={{ height: '6px' }}
-                    />
+                    <div className="mt-3">
+                      <Button 
+                        variant="outline-info" 
+                        size="sm" 
+                        className="w-100"
+                        onClick={() => setShowLeaveModal(true)}
+                      >
+                        Apply for Leave
+                      </Button>
+                    </div>
                   </Card.Body>
                 </Card>
               </Col>
@@ -1129,6 +1451,7 @@ const TeacherPortal = () => {
               </Col>
             </Row>
 
+            {/* Today's Schedule & Pending Actions */}
             <Row className="px-3">
               <Col lg={6} className="mb-4">
                 <Card className="border-0 shadow-sm h-100">
@@ -1263,6 +1586,7 @@ const TeacherPortal = () => {
               </Col>
             </Row>
 
+            {/* Recent Grades & Quick Actions */}
             <Row className="px-3">
               <Col lg={6} className="mb-4">
                 <Card className="border-0 shadow-sm">
@@ -1373,11 +1697,11 @@ const TeacherPortal = () => {
                         <Button 
                           variant="outline-info" 
                           className="w-100 h-100 py-3 d-flex flex-column align-items-center justify-content-center"
-                          onClick={() => handleNavigate('/teacher/reports')}
+                          onClick={() => setShowUploadModal(true)}
                         >
-                          <FileEarmarkBarGraph size={24} className="mb-2" />
-                          <div className="fw-bold">Generate Reports</div>
-                          <small className="text-muted">Performance</small>
+                          <Upload size={24} className="mb-2" />
+                          <div className="fw-bold">Upload Document</div>
+                          <small className="text-muted">Professional</small>
                         </Button>
                       </Col>
                     </Row>
@@ -1792,213 +2116,330 @@ const TeacherPortal = () => {
         )}
       </TabErrorBoundary>
 
-      {/* Library Tab */}
+      {/* Professional Tab */}
       <TabErrorBoundary>
-        {activeTab === 'library' && (
-          <Row className="px-3">
-            <Col>
-              <Card className="border-0 shadow-sm">
-                <Card.Header className="bg-white border-0 py-3">
-                  <div className="d-flex justify-content-between align-items-center">
-                    <h5 className="mb-0">Library Resources</h5>
-                    <Button 
-                      variant="outline-primary" 
-                      size="sm"
-                      onClick={() => handleNavigate('/library')}
-                    >
-                      Browse Library
-                    </Button>
-                  </div>
-                </Card.Header>
-                <Card.Body>
-                  {libraryResources.length > 0 ? (
-                    <Row>
-                      {libraryResources.slice(0, 9).map((resource, index) => (
-                        <Col lg={4} md={6} className="mb-3" key={resource.id || index}>
-                          <Card className="h-100 border hover-lift">
-                            <Card.Body>
-                              <div className="d-flex justify-content-between align-items-start mb-3">
-                                <Badge bg={
-                                  resource.type === 'book' ? 'primary' :
-                                  resource.type === 'video' ? 'success' :
-                                  resource.type === 'article' ? 'info' : 'secondary'
-                                }>
-                                  {resource.type?.toUpperCase() || 'RESOURCE'}
-                                </Badge>
-                                <small className="text-muted">
-                                  {resource.category || 'General'}
-                                </small>
-                              </div>
-                              <h6 className="card-title mb-2">{resource.title || resource.name || 'Untitled Resource'}</h6>
-                              <p className="card-text text-muted small mb-3" style={{ minHeight: '40px' }}>
-                                {resource.description?.substring(0, 80) || resource.author || 'No description available'}...
-                              </p>
-                              <div className="d-flex justify-content-between align-items-center">
-                                <small className="text-muted">
-                                  {resource.author || 'Unknown'}
-                                </small>
-                                <div className="d-flex gap-1">
-                                  <Button 
-                                    variant="outline-primary" 
-                                    size="sm"
-                                    onClick={() => handleNavigate(`/library/resources/${resource.id}`)}
-                                  >
-                                    View
-                                  </Button>
-                                  {resource.file_url && (
-                                    <Button 
-                                      variant="outline-success" 
-                                      size="sm"
-                                      onClick={() => window.open(resource.file_url, '_blank')}
-                                    >
-                                      <Download size={12} />
-                                    </Button>
-                                  )}
-                                </div>
-                              </div>
-                            </Card.Body>
-                          </Card>
-                        </Col>
-                      ))}
-                    </Row>
-                  ) : (
-                    <div className="text-center py-5">
-                      <Book size={48} className="text-muted mb-3 opacity-50" />
-                      <h5 className="text-muted mb-2">No library resources</h5>
-                      <p className="text-muted mb-4">No resources available in the library yet.</p>
+        {activeTab === 'professional' && (
+          <>
+            {/* Professional Summary Cards */}
+            <Row className="mb-4 px-3">
+              <Col xl={3} lg={6} className="mb-3">
+                <Card className="h-100 border-0 shadow-sm hover-lift">
+                  <Card.Body>
+                    <div className="d-flex justify-content-between align-items-start">
+                      <div>
+                        <h6 className="card-title text-uppercase text-muted mb-2">Documents</h6>
+                        <h2 className="mb-0 text-primary">{teacherDocuments.length}</h2>
+                        <small className="text-muted">
+                          {expiringDocuments.length} expiring soon
+                        </small>
+                      </div>
+                      <div className="bg-primary bg-opacity-10 p-3 rounded">
+                        <FileEarmark size={24} className="text-primary" />
+                      </div>
+                    </div>
+                    <div className="mt-3">
                       <Button 
-                        variant="primary"
-                        onClick={() => handleNavigate('/library')}
+                        variant="outline-primary" 
+                        size="sm" 
+                        className="w-100"
+                        onClick={() => setShowUploadModal(true)}
                       >
-                        Browse Full Library
+                        <Upload className="me-1" />
+                        Upload New
                       </Button>
                     </div>
-                  )}
-                </Card.Body>
-              </Card>
-            </Col>
-          </Row>
+                  </Card.Body>
+                </Card>
+              </Col>
+
+              <Col xl={3} lg={6} className="mb-3">
+                <Card className="h-100 border-0 shadow-sm hover-lift">
+                  <Card.Body>
+                    <div className="d-flex justify-content-between align-items-start">
+                      <div>
+                        <h6 className="card-title text-uppercase text-muted mb-2">Qualifications</h6>
+                        <h2 className="mb-0 text-success">{teacherQualifications.length}</h2>
+                        <small className="text-muted">Academic credentials</small>
+                      </div>
+                      <div className="bg-success bg-opacity-10 p-3 rounded">
+                        <Award size={24} className="text-success" />
+                      </div>
+                    </div>
+                    <div className="mt-3">
+                      <Link to="/teacher/qualifications" className="text-decoration-none">
+                        View All <ChevronRight size={14} />
+                      </Link>
+                    </div>
+                  </Card.Body>
+                </Card>
+              </Col>
+
+              <Col xl={3} lg={6} className="mb-3">
+                <Card className="h-100 border-0 shadow-sm hover-lift">
+                  <Card.Body>
+                    <div className="d-flex justify-content-between align-items-start">
+                      <div>
+                        <h6 className="card-title text-uppercase text-muted mb-2">Trainings</h6>
+                        <h2 className="mb-0 text-info">{teacherTrainings.length}</h2>
+                        <small className="text-muted">Professional development</small>
+                      </div>
+                      <div className="bg-info bg-opacity-10 p-3 rounded">
+                        <CardChecklist size={24} className="text-info" />
+                      </div>
+                    </div>
+                    <div className="mt-3">
+                      <Link to="/teacher/trainings" className="text-decoration-none">
+                        View Trainings <ChevronRight size={14} />
+                      </Link>
+                    </div>
+                  </Card.Body>
+                </Card>
+              </Col>
+
+              <Col xl={3} lg={6} className="mb-3">
+                <Card className="h-100 border-0 shadow-sm hover-lift">
+                  <Card.Body>
+                    <div className="d-flex justify-content-between align-items-start">
+                      <div>
+                        <h6 className="card-title text-uppercase text-muted mb-2">Leave Requests</h6>
+                        <h2 className="mb-0 text-warning">{pendingLeaves.length}</h2>
+                        <small className="text-muted">Pending approval</small>
+                      </div>
+                      <div className="bg-warning bg-opacity-10 p-3 rounded">
+                        <Calendar size={24} className="text-warning" />
+                      </div>
+                    </div>
+                    <div className="mt-3">
+                      <Button 
+                        variant="outline-warning" 
+                        size="sm" 
+                        className="w-100"
+                        onClick={() => setShowLeaveModal(true)}
+                      >
+                        Apply for Leave
+                      </Button>
+                    </div>
+                  </Card.Body>
+                </Card>
+              </Col>
+            </Row>
+
+            {/* Documents Section */}
+            <Row className="px-3 mb-4">
+              <Col>
+                <Card className="border-0 shadow-sm">
+                  <Card.Header className="bg-white border-0 py-3 d-flex justify-content-between align-items-center">
+                    <h5 className="mb-0">My Documents</h5>
+                    <div className="d-flex gap-2">
+                      <Button 
+                        variant="outline-primary" 
+                        size="sm"
+                        onClick={() => setShowUploadModal(true)}
+                      >
+                        <Upload className="me-1" />
+                        Upload Document
+                      </Button>
+                      <Button 
+                        variant="primary" 
+                        size="sm"
+                        onClick={() => handleNavigate('/teacher/documents')}
+                      >
+                        View All
+                      </Button>
+                    </div>
+                  </Card.Header>
+                  <Card.Body>
+                    {teacherDocuments.length > 0 ? (
+                      <div className="table-responsive">
+                        <Table hover>
+                          <thead>
+                            <tr>
+                              <th>Document</th>
+                              <th>Type</th>
+                              <th>Status</th>
+                              <th>Expiry Date</th>
+                              <th>Uploaded</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {teacherDocuments.slice(0, 10).map((doc) => (
+                              <tr key={doc.id}>
+                                <td className="fw-semibold">
+                                  <div className="d-flex align-items-center">
+                                    <FileEarmark className="me-2 text-primary" />
+                                    {doc.title || doc.document_type}
+                                  </div>
+                                  {doc.description && (
+                                    <small className="text-muted d-block mt-1">
+                                      {doc.description.substring(0, 60)}...
+                                    </small>
+                                  )}
+                                </td>
+                                <td>
+                                  <Badge bg="secondary" className="text-capitalize">
+                                    {doc.document_type || 'Document'}
+                                  </Badge>
+                                </td>
+                                <td>
+                                  <Badge bg={getDocumentStatusVariant(doc.status)}>
+                                    {doc.status || 'Pending'}
+                                  </Badge>
+                                </td>
+                                <td>
+                                  {doc.expiry_date ? (
+                                    <div className={`${new Date(doc.expiry_date) < new Date() ? 'text-danger' : ''}`}>
+                                      {formatDate(doc.expiry_date)}
+                                    </div>
+                                  ) : 'N/A'}
+                                </td>
+                                <td>
+                                  <small className="text-muted">
+                                    {formatDate(doc.uploaded_at || doc.created_at)}
+                                  </small>
+                                </td>
+                                <td>
+                                  <div className="d-flex gap-1">
+                                    {doc.file_url && (
+                                      <Button 
+                                        variant="outline-primary" 
+                                        size="sm"
+                                        onClick={() => window.open(doc.file_url, '_blank')}
+                                      >
+                                        <Eye size={12} />
+                                      </Button>
+                                    )}
+                                    {doc.status !== 'verified' && (
+                                      <Button 
+                                        variant="outline-warning" 
+                                        size="sm"
+                                        onClick={() => handleNavigate(`/teacher/documents/${doc.id}/edit`)}
+                                      >
+                                        <Pencil size={12} />
+                                      </Button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </Table>
+                      </div>
+                    ) : (
+                      <div className="text-center py-5">
+                        <FileEarmark size={48} className="text-muted mb-3 opacity-50" />
+                        <h5 className="text-muted mb-2">No documents uploaded</h5>
+                        <p className="text-muted mb-4">Upload your professional documents to get started.</p>
+                        <Button 
+                          variant="primary"
+                          onClick={() => setShowUploadModal(true)}
+                        >
+                          <Upload className="me-1" />
+                          Upload Your First Document
+                        </Button>
+                      </div>
+                    )}
+                  </Card.Body>
+                </Card>
+              </Col>
+            </Row>
+
+            {/* Qualifications & Trainings */}
+            <Row className="px-3">
+              <Col lg={6} className="mb-4">
+                <Card className="border-0 shadow-sm h-100">
+                  <Card.Header className="bg-white border-0 py-3">
+                    <h5 className="mb-0">Qualifications</h5>
+                  </Card.Header>
+                  <Card.Body>
+                    {teacherQualifications.length > 0 ? (
+                      <ListGroup variant="flush">
+                        {teacherQualifications.slice(0, 5).map((qual) => (
+                          <ListGroup.Item key={qual.id} className="border-0 py-2">
+                            <div className="d-flex justify-content-between align-items-start">
+                              <div>
+                                <h6 className="mb-1">{qual.qualification_name || 'Qualification'}</h6>
+                                <small className="text-muted">
+                                  {qual.institution} • {formatDate(qual.year_awarded)}
+                                </small>
+                              </div>
+                              <Badge bg={qual.verified ? 'success' : 'warning'}>
+                                {qual.verified ? 'Verified' : 'Pending'}
+                              </Badge>
+                            </div>
+                          </ListGroup.Item>
+                        ))}
+                      </ListGroup>
+                    ) : (
+                      <div className="text-center py-4">
+                        <Award size={40} className="text-muted mb-2 opacity-50" />
+                        <p className="text-muted mb-0">No qualifications added</p>
+                      </div>
+                    )}
+                  </Card.Body>
+                  <Card.Footer className="bg-white border-0 py-2">
+                    <Link to="/teacher/qualifications" className="text-decoration-none">
+                      View All Qualifications
+                    </Link>
+                  </Card.Footer>
+                </Card>
+              </Col>
+
+              <Col lg={6} className="mb-4">
+                <Card className="border-0 shadow-sm h-100">
+                  <Card.Header className="bg-white border-0 py-3">
+                    <h5 className="mb-0">Upcoming Trainings</h5>
+                  </Card.Header>
+                  <Card.Body>
+                    {teacherTrainings.length > 0 ? (
+                      <ListGroup variant="flush">
+                        {teacherTrainings.slice(0, 5).map((training) => (
+                          <ListGroup.Item key={training.id} className="border-0 py-2">
+                            <div className="d-flex justify-content-between align-items-start">
+                              <div>
+                                <h6 className="mb-1">{training.training_name || 'Training'}</h6>
+                                <small className="text-muted">
+                                  {formatDate(training.start_date)} - {formatDate(training.end_date)}
+                                </small>
+                              </div>
+                              <Badge bg={training.completed ? 'success' : 'primary'}>
+                                {training.completed ? 'Completed' : 'Upcoming'}
+                              </Badge>
+                            </div>
+                          </ListGroup.Item>
+                        ))}
+                      </ListGroup>
+                    ) : (
+                      <div className="text-center py-4">
+                        <CardChecklist size={40} className="text-muted mb-2 opacity-50" />
+                        <p className="text-muted mb-0">No upcoming trainings</p>
+                      </div>
+                    )}
+                  </Card.Body>
+                  <Card.Footer className="bg-white border-0 py-2">
+                    <Link to="/teacher/trainings" className="text-decoration-none">
+                      View All Trainings
+                    </Link>
+                  </Card.Footer>
+                </Card>
+              </Col>
+            </Row>
+          </>
         )}
       </TabErrorBoundary>
 
-      {/* Resources Tab */}
-      <TabErrorBoundary>
-        {activeTab === 'resources' && (
-          <Row className="px-3">
-            <Col>
-              <Card className="border-0 shadow-sm">
-                <Card.Header className="bg-white border-0 py-3">
-                  <div className="d-flex justify-content-between align-items-center">
-                    <h5 className="mb-0">Downloadable Resources</h5>
-                    <Button 
-                      variant="outline-primary" 
-                      size="sm"
-                      onClick={() => handleNavigate('/teacher/resources/upload')}
-                    >
-                      Upload Resource
-                    </Button>
-                  </div>
-                </Card.Header>
-                <Card.Body>
-                  {downloads.length > 0 ? (
-                    <div className="table-responsive">
-                      <Table hover>
-                        <thead>
-                          <tr>
-                            <th>Resource Name</th>
-                            <th>Type</th>
-                            <th>Size</th>
-                            <th>Category</th>
-                            <th>Downloads</th>
-                            <th>Uploaded</th>
-                            <th>Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {downloads.slice(0, 10).map((file) => (
-                            <tr key={file.id}>
-                              <td className="fw-semibold">
-                                <div className="d-flex align-items-center">
-                                  <FileEarmark className="me-2 text-primary" />
-                                  {file.name || file.title || 'Untitled File'}
-                                </div>
-                                {file.description && (
-                                  <small className="text-muted d-block mt-1">
-                                    {file.description.substring(0, 60)}...
-                                  </small>
-                                )}
-                              </td>
-                              <td>
-                                <Badge bg="secondary">
-                                  {file.file_type?.toUpperCase() || 'FILE'}
-                                </Badge>
-                              </td>
-                              <td>
-                                <small className="text-muted">
-                                  {file.size ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : 'N/A'}
-                                </small>
-                              </td>
-                              <td>
-                                <Badge bg="info" className="text-capitalize">
-                                  {file.category?.replace('_', ' ') || 'General'}
-                                </Badge>
-                              </td>
-                              <td>
-                                <div className="d-flex align-items-center">
-                                  <Download size={12} className="me-1 text-muted" />
-                                  <span className={(file.download_count || 0) > 0 ? 'fw-bold' : 'text-muted'}>
-                                    {file.download_count || 0}
-                                  </span>
-                                </div>
-                              </td>
-                              <td>
-                                <small className="text-muted">
-                                  {formatDateTime(file.uploaded_at || file.created_at)}
-                                </small>
-                              </td>
-                              <td>
-                                <div className="d-flex gap-1">
-                                  <Button 
-                                    variant="outline-primary" 
-                                    size="sm"
-                                    onClick={() => handleDownloadResource(file.id, file.name)}
-                                  >
-                                    <Download size={12} className="me-1" />
-                                    Download
-                                  </Button>
-                                  <Button 
-                                    variant="outline-secondary" 
-                                    size="sm"
-                                    onClick={() => handleNavigate(`/teacher/resources/${file.id}`)}
-                                  >
-                                    <Eye size={12} />
-                                  </Button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </Table>
-                    </div>
-                  ) : (
-                    <div className="text-center py-5">
-                      <FileEarmark size={48} className="text-muted mb-3 opacity-50" />
-                      <h5 className="text-muted mb-2">No downloadable resources</h5>
-                      <p className="text-muted mb-4">Upload resources to share with students.</p>
-                      <Button 
-                        variant="primary"
-                        onClick={() => handleNavigate('/teacher/resources/upload')}
-                      >
-                        Upload Your First Resource
-                      </Button>
-                    </div>
-                  )}
-                </Card.Body>
-              </Card>
-            </Col>
-          </Row>
-        )}
-      </TabErrorBoundary>
+      {/* Modals */}
+      <LeaveApplicationModal
+        show={showLeaveModal}
+        onHide={() => setShowLeaveModal(false)}
+        onSubmit={handleApplyForLeave}
+      />
+
+      <UploadDocumentModal
+        show={showUploadModal}
+        onHide={() => setShowUploadModal(false)}
+        onSubmit={handleUploadDocument}
+      />
 
       {/* Footer */}
       <Row className="mt-4 px-3">

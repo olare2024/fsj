@@ -1,724 +1,1050 @@
-// src/services/academicAPI.js
-import api from './api';
+// services/academicAPI.js - IMPROVED VERSION
+import api, { apiUtils } from './api';
 
-// ==================== ERROR HANDLING UTILITY ====================
-
-const handleAPIError = (error, defaultMessage = 'An error occurred') => {
-  console.error('🔴 Academic API Error:', error);
+/**
+ * Academics-related constants for consistent usage across the application
+ */
+export const ACADEMIC_CONSTANTS = {
+  // Setup validation constants
+  SETUP_STATUS: {
+    COMPLETE: 'complete',
+    INCOMPLETE: 'incomplete',
+    ERROR: 'error'
+  },
   
-  if (error.response) {
-    const serverError = error.response.data;
-    const status = error.response.status;
+  // Setup item priorities (order of creation matters)
+  SETUP_PRIORITY: {
+    ACADEMIC_YEARS: 1,
+    ACADEMIC_TERMS: 2,
+    GRADE_LEVELS: 3,
+    SUBJECT_CATEGORIES: 4,
+    SUBJECTS: 5,
+    CLASSES: 6,
+    STREAMS: 7
+  },
+  
+  ATTENDANCE_STATUS: {
+    PRESENT: 'present',
+    ABSENT: 'absent',
+    LATE: 'late',
+    EXCUSED: 'excused'
+  },
+  GRADE_CHOICES: {
+    'A': 12,
+    'A-': 11,
+    'B+': 10,
+    'B': 9,
+    'B-': 8,
+    'C+': 7,
+    'C': 6,
+    'C-': 5,
+    'D+': 4,
+    'D': 3,
+    'D-': 2,
+    'E': 1
+  }
+};
+
+/**
+ * Setup validation rules
+ */
+export const SETUP_VALIDATION_RULES = {
+  MIN_ACADEMIC_YEARS: 1,
+  MIN_TERMS_PER_YEAR: 1,
+  MIN_SUBJECTS: 5,
+  MIN_CLASSES: 1,
+  MIN_GRADE_LEVELS: 1
+};
+
+/**
+ * Simple in-memory cache for academic data
+ */
+export const academicCache = {
+  data: new Map(),
+  
+  set(key, value, ttl = 60000) { // Default 1 minute TTL
+    this.data.set(key, {
+      value,
+      timestamp: Date.now(),
+      ttl
+    });
+  },
+  
+  get(key) {
+    const item = this.data.get(key);
+    if (!item) return null;
     
-    // Handle specific status codes
-    switch (status) {
-      case 400:
-        return {
-          success: false,
-          message: serverError.detail || serverError.message || serverError.error || defaultMessage,
-          errors: serverError.errors || serverError.details || serverError,
-          status: status,
-          data: serverError
-        };
-      
-      case 401:
-        return {
-          success: false,
-          message: 'Authentication required. Please login again.',
-          status: 401,
-          data: serverError,
-          requiresReauth: true
-        };
-      
-      case 403:
-        return {
-          success: false,
-          message: 'You do not have permission to perform this action.',
-          status: 403,
-          data: serverError
-        };
-      
-      case 404:
-        return {
-          success: false,
-          message: serverError.detail || 'Resource not found.',
-          status: 404,
-          data: serverError
-        };
-      
-      case 429:
-        return {
-          success: false,
-          message: 'Too many requests. Please try again later.',
-          status: 429,
-          data: serverError,
-          retryAfter: error.response.headers['retry-after']
-        };
-      
-      default:
-        if (typeof serverError === 'object') {
-          return {
-            success: false,
-            message: serverError.detail || serverError.message || serverError.error || defaultMessage,
-            errors: serverError.errors || serverError.details,
-            status: status,
-            data: serverError
-          };
-        } else if (typeof serverError === 'string') {
-          return {
-            success: true,
-            message: serverError,
-            status: status
-          };
-        }
+    if (Date.now() - item.timestamp > item.ttl) {
+      this.data.delete(key);
+      return null;
     }
-  } else if (error.request) {
+    
+    return item.value;
+  },
+  
+  delete(key) {
+    this.data.delete(key);
+  },
+  
+  clear() {
+    this.data.clear();
+  }
+};
+
+/**
+ * Standardized error handler for all API calls
+ */
+export const handleAPIError = (error) => {
+  // Special handling for 500 errors related to missing setup
+  if (error.response?.status === 500) {
+    const errorPath = error.config?.url || '';
+    
+    // Check for academic setup errors
+    if (errorPath.includes('academics')) {
+      return {
+        success: false,
+        error: {
+          message: 'Academic setup incomplete or server error',
+          details: 'Check if academic models exist and database is properly configured',
+          status: 500,
+          code: 'ACADEMIC_SETUP_ERROR',
+          path: errorPath,
+          solution: 'Run database migrations and ensure academic data is configured'
+        },
+        requiresSetup: true
+      };
+    }
+  }
+  
+  // Handle 404 for missing endpoints
+  if (error.response?.status === 404) {
     return {
       success: false,
-      message: 'Network error: Unable to connect to server',
-      status: 0
-    };
-  } else {
-    return {
-      success: false,
-      message: error.message || defaultMessage
+      error: {
+        message: 'API endpoint not found',
+        details: 'The requested endpoint does not exist',
+        status: 404,
+        code: 'ENDPOINT_NOT_FOUND',
+        path: error.config?.url
+      }
     };
   }
   
   return {
     success: false,
-    message: defaultMessage
+    error: {
+      message: apiUtils.getErrorMessage(error),
+      details: error.response?.data,
+      status: error.response?.status,
+      code: error.code,
+      path: error.config?.url
+    }
   };
 };
 
-// ==================== RESPONSE UTILITIES ====================
+/**
+ * Check if API error is due to incomplete setup
+ * @param {Object} apiResponse - API response object
+ * @returns {boolean}
+ */
+export const isSetupError = (apiResponse) => {
+  return apiResponse?.error?.code === 'SETUP_INCOMPLETE' || 
+         apiResponse?.requiresSetup === true ||
+         apiResponse?.error?.code === 'SETUP_REQUIRED' ||
+         apiResponse?.error?.code === 'ACADEMIC_SETUP_ERROR';
+};
 
-const handleBulkResponse = (response, defaultMessage) => {
-  if (response.status === 207) {
-    // Partial success response
+/**
+ * Get setup completion checklist
+ */
+export const getSetupChecklist = (setupStatus) => {
+  if (!setupStatus?.data?.items) return [];
+  
+  return setupStatus.data.items.map(item => ({
+    name: item.name,
+    completed: item.is_configured,
+    count: item.count,
+    minRequired: item.min_required || 1,
+    endpoint: item.endpoint,
+    priority: ACADEMIC_CONSTANTS.SETUP_PRIORITY[item.model_name?.toUpperCase()] || 99
+  })).sort((a, b) => a.priority - b.priority);
+};
+
+/**
+ * Calculate next setup action
+ */
+export const getNextSetupAction = (setupStatus) => {
+  const checklist = getSetupChecklist(setupStatus);
+  const incompleteItem = checklist.find(item => !item.completed);
+  
+  if (!incompleteItem) {
     return {
-      success: true,
-      data: response.data,
-      status: 207,
-      isPartialSuccess: true,
-      createdCount: response.data.created?.length || 0,
-      errorCount: response.data.errors?.length || 0
+      action: 'none',
+      message: 'Setup complete',
+      priority: 0
     };
   }
   
+  const actionMap = {
+    'Academic Years': { 
+      action: 'create_academic_year', 
+      endpoint: '/academics/academic-years/',
+      instruction: 'Create at least one academic year'
+    },
+    'Academic Terms': { 
+      action: 'create_academic_term', 
+      endpoint: '/academics/academic-terms/',
+      instruction: 'Create terms for the current academic year'
+    },
+    'Subjects': { 
+      action: 'create_subject', 
+      endpoint: '/academics/subjects/',
+      instruction: 'Create subjects for your school'
+    },
+    'Classrooms': { 
+      action: 'create_classroom', 
+      endpoint: '/academics/classrooms/',
+      instruction: 'Create classroom groups'
+    },
+    'Grade Levels': { 
+      action: 'create_grade_level', 
+      endpoint: '/academics/grade-levels/',
+      instruction: 'Define grade levels'
+    }
+  };
+  
   return {
-    success: true,
-    data: response.data,
-    status: response.status
+    action: actionMap[incompleteItem.name]?.action || 'configure',
+    item: incompleteItem.name,
+    priority: incompleteItem.priority,
+    endpoint: incompleteItem.endpoint,
+    instruction: actionMap[incompleteItem.name]?.instruction || `Configure ${incompleteItem.name}`,
+    message: `Next: ${incompleteItem.name} (${incompleteItem.count}/${incompleteItem.minRequired})`
   };
 };
 
-// ==================== ACADEMIC CONSTANTS ====================
-
-export const ASSIGNMENT_CONSTANTS = {
-  STATUS: {
-    DRAFT: 'draft',
-    PUBLISHED: 'published',
-    SUBMITTED: 'submitted',
-    LATE: 'late',
-    GRADING: 'grading',
-    GRADED: 'graded',
-    COMPLETED: 'completed',
-    OVERDUE: 'overdue',
-    MISSING: 'missing',
-    CANCELLED: 'cancelled'
-  },
-  TYPE: {
-    HOMEWORK: 'homework',
-    QUIZ: 'quiz',
-    TEST: 'test',
-    PROJECT: 'project',
-    EXAM: 'exam',
-    ESSAY: 'essay',
-    PRESENTATION: 'presentation',
-    WORKSHEET: 'worksheet',
-    LAB_REPORT: 'lab_report',
-    PRACTICE: 'practice'
-  },
-  PRIORITY: {
-    LOW: 'low',
-    MEDIUM: 'medium',
-    HIGH: 'high'
-  },
-  SUBMISSION_TYPE: {
-    FILE: 'file',
-    TEXT: 'text',
-    LINK: 'link',
-    NONE: 'none'
-  },
-  GRADING_TYPE: {
-    PERCENTAGE: 'percentage',
-    POINTS: 'points',
-    LETTER_GRADE: 'letter_grade',
-    RUBRIC: 'rubric',
-    PASS_FAIL: 'pass_fail'
-  },
-  MAX_SCORE: 100,
-  MIN_SCORE: 0,
-  DEFAULT_DAYS_TO_SUBMIT: 7,
-  LATE_SUBMISSION_PENALTY: 10
-};
-
-export const CLASS_CONSTANTS = {
-  STATUS: {
-    ACTIVE: 'active',
-    INACTIVE: 'inactive',
-    ARCHIVED: 'archived'
-  },
-  LEVEL: {
-    BEGINNER: 'beginner',
-    INTERMEDIATE: 'intermediate',
-    ADVANCED: 'advanced'
-  },
-  TYPE: {
-    REGULAR: 'regular',
-    HONORS: 'honors',
-    AP: 'ap',
-    ELECTIVE: 'elective',
-    CORE: 'core'
-  }
-};
-
-export const SUBJECT_CONSTANTS = {
-  CATEGORY: {
-    CORE: 'core',
-    ELECTIVE: 'elective',
-    LANGUAGE: 'language',
-    SCIENCE: 'science',
-    MATH: 'math',
-    HUMANITIES: 'humanities',
-    ARTS: 'arts',
-    PHYSICAL_EDUCATION: 'physical_education',
-    TECHNOLOGY: 'technology'
-  },
-  DIFFICULTY: {
-    BASIC: 'basic',
-    STANDARD: 'standard',
-    ADVANCED: 'advanced'
-  }
-};
-
-export const ENROLLMENT_CONSTANTS = {
-  STATUS: {
-    ACTIVE: 'active',
-    INACTIVE: 'inactive',
-    DROPPED: 'dropped',
-    COMPLETED: 'completed',
-    PENDING: 'pending'
-  },
-  TYPE: {
-    FULL_TIME: 'full_time',
-    PART_TIME: 'part_time',
-    AUDIT: 'audit',
-    HOMESCHOOL: 'homeschool'
-  }
-};
-
-export const ACADEMIC_YEAR_CONSTANTS = {
-  STATUS: {
-    UPCOMING: 'upcoming',
-    CURRENT: 'current',
-    PAST: 'past',
-    ARCHIVED: 'archived'
-  }
-};
-
-// ==================== QUERY PARAMETER BUILDERS ====================
-
-const buildQueryParams = (params = {}) => {
-  const queryParams = { ...params };
+/**
+ * Setup progress tracker component
+ */
+export const getSetupProgressData = (setupProgress) => {
+  const milestones = [
+    { threshold: 0, label: 'Not started', color: 'red', canAccess: 'Nothing' },
+    { threshold: 20, label: 'Basic setup', color: 'orange', canAccess: 'Student data' },
+    { threshold: 40, label: 'Partial setup', color: 'yellow', canAccess: 'Attendance' },
+    { threshold: 60, label: 'Mostly complete', color: 'light-green', canAccess: 'Grades' },
+    { threshold: 80, label: 'Almost complete', color: 'green', canAccess: 'Assignments' },
+    { threshold: 100, label: 'Complete', color: 'dark-green', canAccess: 'Everything' }
+  ];
   
-  // Remove undefined/null values
-  Object.keys(queryParams).forEach(key => {
-    if (queryParams[key] === undefined || queryParams[key] === null) {
-      delete queryParams[key];
+  const currentMilestone = [...milestones]
+    .reverse()
+    .find(m => setupProgress >= m.threshold) || milestones[0];
+  
+  const nextMilestone = milestones.find(m => m.threshold > setupProgress);
+  
+  return {
+    percentage: setupProgress,
+    milestone: currentMilestone.label,
+    color: currentMilestone.color,
+    canAccess: currentMilestone.canAccess,
+    nextMilestone: nextMilestone ? {
+      threshold: nextMilestone.threshold,
+      label: nextMilestone.label,
+      needed: nextMilestone.threshold - setupProgress
+    } : null,
+    isComplete: setupProgress >= 100
+  };
+};
+
+/**
+ * Validate if setup meets minimum requirements
+ */
+export const validateSetupRequirements = (setupData) => {
+  const issues = [];
+  
+  if (!setupData.academicYears || setupData.academicYears.length < SETUP_VALIDATION_RULES.MIN_ACADEMIC_YEARS) {
+    issues.push({
+      code: 'INSUFFICIENT_ACADEMIC_YEARS',
+      message: `Need at least ${SETUP_VALIDATION_RULES.MIN_ACADEMIC_YEARS} academic year`,
+      required: SETUP_VALIDATION_RULES.MIN_ACADEMIC_YEARS,
+      actual: setupData.academicYears?.length || 0
+    });
+  }
+  
+  if (!setupData.subjects || setupData.subjects.length < SETUP_VALIDATION_RULES.MIN_SUBJECTS) {
+    issues.push({
+      code: 'INSUFFICIENT_SUBJECTS',
+      message: `Need at least ${SETUP_VALIDATION_RULES.MIN_SUBJECTS} subjects`,
+      required: SETUP_VALIDATION_RULES.MIN_SUBJECTS,
+      actual: setupData.subjects?.length || 0
+    });
+  }
+  
+  if (!setupData.classes || setupData.classes.length < SETUP_VALIDATION_RULES.MIN_CLASSES) {
+    issues.push({
+      code: 'INSUFFICIENT_CLASSES',
+      message: `Need at least ${SETUP_VALIDATION_RULES.MIN_CLASSES} classroom`,
+      required: SETUP_VALIDATION_RULES.MIN_CLASSES,
+      actual: setupData.classes?.length || 0
+    });
+  }
+  
+  return {
+    isValid: issues.length === 0,
+    issues,
+    passed: SETUP_VALIDATION_RULES.MIN_SUBJECTS - (setupData.subjects?.length || 0)
+  };
+};
+
+/**
+ * Performance monitoring utility
+ */
+export const performanceMonitor = {
+  timers: new Map(),
+  
+  start(timerName) {
+    this.timers.set(timerName, {
+      startTime: performance.now(),
+      endTime: null,
+      duration: null
+    });
+  },
+  
+  end(timerName) {
+    const timer = this.timers.get(timerName);
+    if (timer) {
+      timer.endTime = performance.now();
+      timer.duration = timer.endTime - timer.startTime;
+      return timer.duration;
     }
-  });
+    return null;
+  },
   
-  return queryParams;
+  getDuration(timerName) {
+    const timer = this.timers.get(timerName);
+    return timer?.duration || null;
+  },
+  
+  logSlowResponse(timerName, threshold = 1000) {
+    const duration = this.getDuration(timerName);
+    if (duration && duration > threshold) {
+      console.warn(`⏱️ Slow response detected for ${timerName}: ${duration.toFixed(0)}ms`);
+    }
+  },
+  
+  clear() {
+    this.timers.clear();
+  }
 };
 
-// ==================== ACADEMIC API ====================
+/**
+ * Main academics API object with all methods - FIXED VERSION
+ */
+export const academicsAPI = {
+  // ==================== PERFORMANCE MONITORING ====================
+  
+  enablePerformanceLogging: true,
+  
+  logPerformance(endpoint, duration, dataSize = null) {
+    if (this.enablePerformanceLogging && duration > 100) {
+      console.log(`📊 API Performance: ${endpoint} - ${duration.toFixed(0)}ms${dataSize ? `, ${dataSize} items` : ''}`);
+    }
+  },
+  
+  // ==================== OPTIMIZED SETUP ENDPOINTS ====================
 
-export const academicAPI = {
-  // ==================== ACADEMIC YEARS ====================
+  /**
+   * Quick setup check - FIXED VERSION with fallback
+   */
+  quickSetupCheck: async () => {
+    const timerName = 'quickSetupCheck';
+    performanceMonitor.start(timerName);
+    const cacheKey = 'quickSetupCheck';
+    
+    // Check cache first
+    const cached = academicCache.get(cacheKey);
+    if (cached) {
+      performanceMonitor.end(timerName);
+      return {
+        ...cached,
+        fromCache: true,
+        responseTimeMs: 0
+      };
+    }
+    
+    try {
+      const response = await api.get('/academics/setup/quick-check/');
+      const duration = performanceMonitor.end(timerName);
+      this.logPerformance('setup/quick-check', duration);
+      
+      const result = {
+        success: true,
+        data: response.data,
+        status: response.status,
+        requiresSetup: !response.data.is_setup_complete,
+        missingItems: response.data.missing_items || [],
+        fromCache: response.data.from_cache || false,
+        responseTimeMs: response.data.response_time_ms || duration,
+        timestamp: response.data.timestamp
+      };
+      
+      // Cache successful result
+      academicCache.set(cacheKey, result, 30000); // 30 seconds
+      
+      return result;
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      
+      // If the endpoint doesn't exist, provide a fallback
+      if (error.response?.status === 404) {
+        console.warn('setup/quick-check endpoint not found, using fallback check');
+        return this.fallbackQuickSetupCheck();
+      }
+      
+      return handleAPIError(error);
+    }
+  },
+
+  /**
+   * Fallback setup check when main endpoint fails
+   */
+  fallbackQuickSetupCheck: async () => {
+    try {
+      // Try to get essential data instead
+      const essentialData = await api.get('/academics/essential-data/');
+      
+      const hasMinimumData = essentialData.data.has_minimum_data || false;
+      const checks = {
+        academic_years: essentialData.data.data?.academic_years?.length > 0,
+        academic_terms: essentialData.data.data?.current_terms?.length > 0,
+        grade_levels: essentialData.data.data?.grade_levels?.length > 0,
+        subjects: essentialData.data.data?.subjects?.length > 0,
+        classrooms: essentialData.data.data?.classrooms?.length > 0,
+        has_current_year: essentialData.data.has_current_year || false,
+        has_current_term: essentialData.data.data?.current_terms?.some(term => term.is_current) || false
+      };
+      
+      const essentialChecks = [
+        checks.academic_years,
+        checks.academic_terms,
+        checks.grade_levels,
+        checks.subjects,
+        checks.classrooms
+      ];
+      
+      const isSetupComplete = essentialChecks.every(Boolean);
+      
+      const missingItems = [];
+      const itemNames = {
+        academic_years: 'Academic Years',
+        academic_terms: 'Academic Terms',
+        grade_levels: 'Grade Levels',
+        subjects: 'Subjects',
+        classrooms: 'Classrooms',
+      };
+      
+      for (const [key, displayName] of Object.entries(itemNames)) {
+        if (!checks[key]) {
+          missingItems.push({
+            name: displayName,
+            key: key,
+            endpoint: `/api/v1/academics/${key.replace('_', '-')}/`,
+            priority: 1
+          });
+        }
+      }
+      
+      return {
+        success: true,
+        data: {
+          is_setup_complete: isSetupComplete,
+          checks,
+          missing_items: missingItems,
+          missing_count: missingItems.length,
+          timestamp: new Date().toISOString(),
+          from_cache: false
+        },
+        requiresSetup: !isSetupComplete,
+        missingItems,
+        fromCache: false,
+        responseTimeMs: 0
+      };
+    } catch (fallbackError) {
+      // If even fallback fails, return basic error
+      return {
+        success: false,
+        error: {
+          message: 'Failed to check academic setup',
+          details: 'All setup check endpoints are unavailable',
+          code: 'SETUP_CHECK_FAILED'
+        },
+        requiresSetup: true
+      };
+    }
+  },
+
+  /**
+   * Get essential setup data
+   */
+  getEssentialData: async () => {
+    const timerName = 'getEssentialData';
+    performanceMonitor.start(timerName);
+    const cacheKey = 'getEssentialData';
+    
+    const cached = academicCache.get(cacheKey);
+    if (cached) {
+      performanceMonitor.end(timerName);
+      return {
+        ...cached,
+        fromCache: true,
+        responseTimeMs: 0
+      };
+    }
+    
+    try {
+      const response = await api.get('/academics/essential-data/');
+      const duration = performanceMonitor.end(timerName);
+      
+      const data = response.data.data || {};
+      const dataSize = Object.keys(data).reduce((acc, key) => acc + (data[key]?.length || 0), 0);
+      
+      this.logPerformance('setup/essential-data', duration, dataSize);
+      
+      const result = {
+        success: true,
+        data: response.data,
+        status: response.status,
+        hasMinimumData: response.data.has_minimum_data || false,
+        hasCurrentYear: response.data.has_current_year || false,
+        fromCache: response.data.from_cache || false,
+        responseTimeMs: response.data.response_time_ms || duration,
+        timestamp: response.data.timestamp,
+        counts: response.data.counts || {}
+      };
+      
+      // Cache for 2 minutes
+      academicCache.set(cacheKey, result, 120000);
+      
+      return result;
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      
+      // Fallback to individual endpoints if essential-data fails
+      if (error.response?.status === 404) {
+        console.warn('essential-data endpoint not found, falling back to individual calls');
+        return this.getEssentialDataFallback();
+      }
+      
+      return handleAPIError(error);
+    }
+  },
+
+  /**
+   * Fallback for essential data
+   */
+  getEssentialDataFallback: async () => {
+    try {
+      // Call individual endpoints
+      const [yearsResponse, gradeLevelsResponse, subjectsResponse] = await Promise.all([
+        api.get('/academics/academic-years/?is_active=true&page_size=10'),
+        api.get('/academics/grade-levels/?is_active=true&page_size=12'),
+        api.get('/academics/subjects/?is_active=true&page_size=50')
+      ]);
+      
+      const data = {
+        academic_years: yearsResponse.data.results || [],
+        grade_levels: gradeLevelsResponse.data.results || [],
+        subjects: subjectsResponse.data.results || [],
+        current_year: null,
+        current_terms: [],
+        classrooms: []
+      };
+      
+      // Find current year
+      const currentYear = data.academic_years.find(year => year.is_current);
+      if (currentYear) {
+        data.current_year = currentYear;
+        
+        // Get terms for current year
+        const termsResponse = await api.get(`/academics/academic-terms/?academic_year=${currentYear.id}&is_active=true`);
+        data.current_terms = termsResponse.data.results || [];
+      }
+      
+      const hasMinimumData = data.subjects.length > 0 && data.grade_levels.length > 0;
+      const hasCurrentYear = currentYear !== undefined;
+      
+      return {
+        success: true,
+        data: {
+          data,
+          has_minimum_data: hasMinimumData,
+          has_current_year: hasCurrentYear,
+          counts: {
+            academic_years: data.academic_years.length,
+            grade_levels: data.grade_levels.length,
+            subjects: data.subjects.length,
+            current_terms: data.current_terms.length,
+            classrooms: data.classrooms.length
+          },
+          timestamp: new Date().toISOString(),
+          from_cache: false
+        },
+        hasMinimumData,
+        hasCurrentYear,
+        fromCache: false,
+        responseTimeMs: 0
+      };
+    } catch (error) {
+      return handleAPIError(error);
+    }
+  },
+
+  /**
+   * Get lightweight classrooms - FIXED URL
+   */
+  getLightweightClassrooms: async () => {
+    const timerName = 'getLightweightClassrooms';
+    performanceMonitor.start(timerName);
+    const cacheKey = 'lightweightClassrooms';
+    
+    const cached = academicCache.get(cacheKey);
+    if (cached) {
+      performanceMonitor.end(timerName);
+      return {
+        ...cached,
+        fromCache: true,
+        responseTimeMs: 0
+      };
+    }
+    
+    try {
+      // FIXED: Correct endpoint URL
+      const response = await api.get('/academics/lightweight/classrooms/');
+      const duration = performanceMonitor.end(timerName);
+      
+      this.logPerformance('lightweight/classrooms', duration, response.data.count);
+      
+      const result = {
+        success: true,
+        data: response.data,
+        status: response.status,
+        count: response.data.count || 0,
+        responseTimeMs: response.data.response_time_ms || duration
+      };
+      
+      academicCache.set(cacheKey, result, 60000); // 1 minute
+      
+      return result;
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      
+      // Fallback to regular classrooms endpoint
+      if (error.response?.status === 404) {
+        console.warn('lightweight/classrooms endpoint not found, using regular classrooms');
+        return this.getClassrooms({ page_size: 50 });
+      }
+      
+      return handleAPIError(error);
+    }
+  },
+
+  /**
+   * Get essential subjects - FIXED URL
+   */
+  getEssentialSubjects: async () => {
+    const timerName = 'getEssentialSubjects';
+    performanceMonitor.start(timerName);
+    const cacheKey = 'essentialSubjects';
+    
+    const cached = academicCache.get(cacheKey);
+    if (cached) {
+      performanceMonitor.end(timerName);
+      return {
+        ...cached,
+        fromCache: true,
+        responseTimeMs: 0
+      };
+    }
+    
+    try {
+      // FIXED: Correct endpoint URL
+      const response = await api.get('/academics/lightweight/subjects/');
+      const duration = performanceMonitor.end(timerName);
+      
+      const data = response.data;
+      const totalSubjects = data.total_subjects || data.subjects?.length || 0;
+      
+      this.logPerformance('lightweight/subjects', duration, totalSubjects);
+      
+      const result = {
+        success: true,
+        data: response.data,
+        status: response.status,
+        totalSubjects,
+        totalCategories: data.total_categories || data.categories?.length || 0,
+        fromCache: data.from_cache || false
+      };
+      
+      academicCache.set(cacheKey, result, 60000); // 1 minute
+      
+      return result;
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      
+      // Fallback to regular subjects endpoint
+      if (error.response?.status === 404) {
+        console.warn('lightweight/subjects endpoint not found, using regular subjects');
+        return this.getSubjects({ page_size: 50 });
+      }
+      
+      return handleAPIError(error);
+    }
+  },
+
+  /**
+   * Get classrooms summary - FIXED URL
+   */
+  getClassroomsSummary: async () => {
+    const timerName = 'getClassroomsSummary';
+    performanceMonitor.start(timerName);
+    const cacheKey = 'classroomsSummary';
+    
+    const cached = academicCache.get(cacheKey);
+    if (cached) {
+      performanceMonitor.end(timerName);
+      return {
+        ...cached,
+        fromCache: true,
+        responseTimeMs: 0
+      };
+    }
+    
+    try {
+      // FIXED: Correct endpoint URL
+      const response = await api.get('/academics/summaries/classrooms/');
+      const duration = performanceMonitor.end(timerName);
+      
+      this.logPerformance('summaries/classrooms', duration);
+      
+      const result = {
+        success: true,
+        data: response.data,
+        status: response.status,
+        total: response.data.total || 0,
+        hasCurrentYear: response.data.has_current_year || false
+      };
+      
+      academicCache.set(cacheKey, result, 120000); // 2 minutes
+      
+      return result;
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      
+      // Fallback
+      if (error.response?.status === 404) {
+        return {
+          success: true,
+          data: {
+            total: 0,
+            has_current_year: false,
+            by_grade_level: []
+          },
+          total: 0,
+          hasCurrentYear: false
+        };
+      }
+      
+      return handleAPIError(error);
+    }
+  },
+
+  /**
+   * Optimized academic system initialization - IMPROVED
+   */
+  initializeAcademicSystem: async () => {
+    const timerName = 'initializeAcademicSystem';
+    performanceMonitor.start(timerName);
+    const cacheKey = 'academicSystemInitialized';
+    
+    const cached = academicCache.get(cacheKey);
+    if (cached) {
+      performanceMonitor.end(timerName);
+      return {
+        ...cached,
+        fromCache: true
+      };
+    }
+    
+    try {
+      console.time('AcademicSystemLoad');
+      
+      // 1. Quick setup check with retry
+      let setupCheck;
+      try {
+        setupCheck = await this.quickSetupCheck();
+      } catch (error) {
+        // If quick check fails, try fallback
+        setupCheck = await this.fallbackQuickSetupCheck();
+      }
+      
+      if (!setupCheck.success) {
+        console.timeEnd('AcademicSystemLoad');
+        return setupCheck;
+      }
+      
+      const requiresSetup = setupCheck.requiresSetup || !setupCheck.data?.is_setup_complete;
+      
+      // If setup is incomplete, get essential data for setup guidance
+      if (requiresSetup) {
+        const essentialData = await this.getEssentialData();
+        
+        if (!essentialData.success) {
+          console.timeEnd('AcademicSystemLoad');
+          return essentialData;
+        }
+        
+        const duration = performanceMonitor.end(timerName);
+        console.timeEnd('AcademicSystemLoad');
+        
+        const result = {
+          success: true,
+          status: 'setup_required',
+          data: essentialData.data.data || essentialData.data,
+          missingItems: setupCheck.missingItems || setupCheck.data?.missing_items || [],
+          performance: {
+            totalTime: duration
+          },
+          requiresSetup: true
+        };
+        
+        academicCache.set(cacheKey, result, 30000); // Cache for 30 seconds
+        return result;
+      }
+      
+      // Setup is complete, load lightweight data in parallel
+      const [classrooms, subjects, summary] = await Promise.allSettled([
+        this.getLightweightClassrooms(),
+        this.getEssentialSubjects(),
+        this.getClassroomsSummary()
+      ]);
+      
+      const duration = performanceMonitor.end(timerName);
+      console.timeEnd('AcademicSystemLoad');
+      
+      const result = {
+        success: true,
+        status: 'ready',
+        data: {
+          classrooms: classrooms.value?.data?.results || classrooms.value?.data?.data?.results || [],
+          subjects: subjects.value?.data?.subjects || subjects.value?.data?.results || [],
+          categories: subjects.value?.data?.categories || [],
+          counts: {
+            classrooms: classrooms.value?.data?.count || 0,
+            subjects: subjects.value?.totalSubjects || 0,
+            summary: summary.value?.data?.total || 0
+          }
+        },
+        performance: {
+          totalTime: duration,
+          fromCache: setupCheck.fromCache || false
+        }
+      };
+      
+      academicCache.set(cacheKey, result, 60000); // Cache for 1 minute
+      return result;
+      
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      console.timeEnd('AcademicSystemLoad');
+      return handleAPIError(error);
+    }
+  },
+
+  // ==================== ORIGINAL SETUP ENDPOINTS ====================
+
+  checkSetupStatus: async () => {
+    const timerName = 'checkSetupStatus';
+    performanceMonitor.start(timerName);
+    
+    try {
+      const response = await api.get('/academics/setup/check/');
+      const duration = performanceMonitor.end(timerName);
+      
+      this.logPerformance('setup/check', duration);
+      
+      return {
+        success: true,
+        data: response.data,
+        status: response.status,
+        requiresSetup: !response.data.setup_complete,
+        missingItems: response.data.missing_items || []
+      };
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      return handleAPIError(error);
+    }
+  },
+
+  getRequiredSetupItems: async () => {
+    try {
+      const response = await api.get('/academics/setup/required-items/');
+      return {
+        success: true,
+        data: response.data,
+        status: response.status
+      };
+    } catch (error) {
+      return handleAPIError(error);
+    }
+  },
+
+  getSetupStatus: async () => {
+    try {
+      const response = await api.get('/academics/setup/status/');
+      return {
+        success: true,
+        data: response.data,
+        status: response.status,
+        isSetupComplete: response.data.overall_status === 'complete',
+        setupProgress: response.data.setup_progress || 0,
+        canCreateAssignments: response.data.can_create_assignments || false,
+        canAccessGrades: response.data.can_access_grades || false,
+        canAccessTimetable: response.data.can_access_timetable || false
+      };
+    } catch (error) {
+      return handleAPIError(error);
+    }
+  },
+
+  validateAcademicSetup: async () => {
+    try {
+      const response = await api.post('/academics/setup/validate/');
+      return {
+        success: true,
+        data: response.data,
+        status: response.status,
+        isValid: response.data.is_valid,
+        hasErrors: response.data.has_errors,
+        hasWarnings: response.data.has_warnings
+      };
+    } catch (error) {
+      return handleAPIError(error);
+    }
+  },
+
+  canCreateAssignments: async () => {
+    try {
+      const response = await api.get('/academics/setup/status/');
+      return {
+        success: true,
+        canCreate: response.data.can_create_assignments || false,
+        setupProgress: response.data.setup_progress || 0,
+        message: response.data.can_create_assignments 
+          ? 'Setup complete. You can create assignments.' 
+          : `Setup ${response.data.setup_progress}% complete. Configure more items to create assignments.`
+      };
+    } catch (error) {
+      return handleAPIError(error);
+    }
+  },
+
+  // ==================== EXISTING ENDPOINTS WITH FIXED URLS ====================
+
+  getSubjects: async (params = {}) => {
+    const timerName = `getSubjects_${JSON.stringify(params)}`;
+    performanceMonitor.start(timerName);
+    
+    try {
+      const response = await api.get('/academics/subjects/', { params });
+      const duration = performanceMonitor.end(timerName);
+      
+      this.logPerformance('subjects', duration, response.data.count);
+      
+      return {
+        success: true,
+        data: response.data,
+        status: response.status,
+        count: response.data.count,
+        responseTime: duration
+      };
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      return handleAPIError(error);
+    }
+  },
+
+  getClassrooms: async (params = {}) => {
+    const timerName = `getClassrooms_${JSON.stringify(params)}`;
+    performanceMonitor.start(timerName);
+    
+    try {
+      const response = await api.get('/academics/classrooms/', { params });
+      const duration = performanceMonitor.end(timerName);
+      
+      this.logPerformance('classrooms', duration, response.data.count);
+      
+      return {
+        success: true,
+        data: response.data,
+        status: response.status,
+        count: response.data.count,
+        responseTime: duration
+      };
+    } catch (error) {
+      performanceMonitor.end(timerName);
+      return handleAPIError(error);
+    }
+  },
+
   getAcademicYears: async (params = {}) => {
     try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/academic-years/', { params: queryParams });
+      const response = await api.get('/academics/academic-years/', { params });
       return {
         success: true,
         data: response.data,
         status: response.status
       };
     } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic years');
+      return handleAPIError(error);
     }
   },
 
-  getAcademicYear: async (academicYearId) => {
-    try {
-      const response = await api.get(`/academics/academic-years/${academicYearId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic year');
-    }
-  },
-
-  getCurrentAcademicYear: async () => {
-    try {
-      const response = await api.get('/academics/academic-years/current/');
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch current academic year');
-    }
-  },
-
-  setCurrentAcademicYear: async (academicYearId) => {
-    try {
-      const response = await api.post(`/academics/academic-years/${academicYearId}/set_current/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to set current academic year');
-    }
-  },
-
-  getAcademicYearStatistics: async (academicYearId) => {
-    try {
-      const response = await api.get(`/academics/academic-years/${academicYearId}/statistics/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic year statistics');
-    }
-  },
-
-  createAcademicYear: async (academicYearData) => {
-    try {
-      const response = await api.post('/academics/academic-years/', academicYearData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to create academic year');
-    }
-  },
-
-  updateAcademicYear: async (academicYearId, academicYearData) => {
-    try {
-      const response = await api.put(`/academics/academic-years/${academicYearId}/`, academicYearData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update academic year');
-    }
-  },
-
-  patchAcademicYear: async (academicYearId, academicYearData) => {
-    try {
-      const response = await api.patch(`/academics/academic-years/${academicYearId}/`, academicYearData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update academic year');
-    }
-  },
-
-  deleteAcademicYear: async (academicYearId) => {
-    try {
-      const response = await api.delete(`/academics/academic-years/${academicYearId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete academic year');
-    }
-  },
-
-  // ==================== ACADEMIC TERMS ====================
   getAcademicTerms: async (params = {}) => {
     try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/academic-terms/', { params: queryParams });
+      const response = await api.get('/academics/academic-terms/', { params });
       return {
         success: true,
         data: response.data,
         status: response.status
       };
     } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic terms');
+      return handleAPIError(error);
     }
   },
 
-  getAcademicTerm: async (termId) => {
+  getGradeLevels: async (params = {}) => {
     try {
-      const response = await api.get(`/academics/academic-terms/${termId}/`);
+      const response = await api.get('/academics/grade-levels/', { params });
       return {
         success: true,
         data: response.data,
         status: response.status
       };
     } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic term');
+      return handleAPIError(error);
     }
   },
 
-  setCurrentAcademicTerm: async (termId) => {
-    try {
-      const response = await api.post(`/academics/academic-terms/${termId}/set_current/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to set current academic term');
-    }
-  },
+  // ==================== MISSING ENDPOINTS - USE EXISTING ALTERNATIVES ====================
 
-  getAcademicTermEvents: async (termId) => {
+  /**
+   * Get upcoming exams - Use exams endpoint with filter
+   */
+  getUpcomingExams: async (params = {}) => {
     try {
-      const response = await api.get(`/academics/academic-terms/${termId}/events/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic term events');
-    }
-  },
-
-  getAcademicTermProgress: async (termId) => {
-    try {
-      const response = await api.get(`/academics/academic-terms/${termId}/progress/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic term progress');
-    }
-  },
-
-  createAcademicTerm: async (termData) => {
-    try {
-      const response = await api.post('/academics/academic-terms/', termData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to create academic term');
-    }
-  },
-
-  updateAcademicTerm: async (termId, termData) => {
-    try {
-      const response = await api.put(`/academics/academic-terms/${termId}/`, termData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update academic term');
-    }
-  },
-
-  patchAcademicTerm: async (termId, termData) => {
-    try {
-      const response = await api.patch(`/academics/academic-terms/${termId}/`, termData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update academic term');
-    }
-  },
-
-  deleteAcademicTerm: async (termId) => {
-    try {
-      const response = await api.delete(`/academics/academic-terms/${termId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete academic term');
-    }
-  },
-
-  // ==================== SUBJECTS ====================
-  getSubjects: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/subjects/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subjects');
-    }
-  },
-
-  getSubject: async (subjectId) => {
-    try {
-      const response = await api.get(`/academics/subjects/${subjectId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subject');
-    }
-  },
-
-  getSubjectTeachers: async (subjectId, params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get(`/academics/subjects/${subjectId}/teachers/`, { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subject teachers');
-    }
-  },
-
-  getSubjectCategories: async () => {
-    try {
-      const response = await api.get('/academics/subjects/categories/');
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subject categories');
-    }
-  },
-
-  getSubjectsByCurriculum: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/subjects/by_curriculum/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subjects by curriculum');
-    }
-  },
-
-  getSubjectSyllabus: async (subjectId, params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get(`/academics/subjects/${subjectId}/syllabus/`, { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subject syllabus');
-    }
-  },
-
-  getSubjectAssignments: async (subjectId, params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get(`/academics/subjects/${subjectId}/assignments/`, { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subject assignments');
-    }
-  },
-
-  createSubject: async (subjectData) => {
-    try {
-      const response = await api.post('/academics/subjects/', subjectData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to create subject');
-    }
-  },
-
-  updateSubject: async (subjectId, subjectData) => {
-    try {
-      const response = await api.put(`/academics/subjects/${subjectId}/`, subjectData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update subject');
-    }
-  },
-
-  patchSubject: async (subjectId, subjectData) => {
-    try {
-      const response = await api.patch(`/academics/subjects/${subjectId}/`, subjectData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update subject');
-    }
-  },
-
-  deleteSubject: async (subjectId) => {
-    try {
-      const response = await api.delete(`/academics/subjects/${subjectId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete subject');
-    }
-  },
-
-  // ==================== CLASSES ====================
-  getClasses: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/classes/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch classes');
-    }
-  },
-
-  getClass: async (classId) => {
-    try {
-      const response = await api.get(`/academics/classes/${classId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch class');
-    }
-  },
-
-  getClassStudents: async (classId, params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get(`/academics/classes/${classId}/students/`, { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch class students');
-    }
-  },
-
-  getClassSubjects: async (classId, params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get(`/academics/classes/${classId}/subjects/`, { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch class subjects');
-    }
-  },
-
-  getClassTimetable: async (classId) => {
-    try {
-      const response = await api.get(`/academics/classes/${classId}/timetable/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch class timetable');
-    }
-  },
-
-  getClassStatistics: async (classId) => {
-    try {
-      const response = await api.get(`/academics/classes/${classId}/statistics/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch class statistics');
-    }
-  },
-
-  assignClassTeacher: async (classId, teacherId) => {
-    try {
-      const response = await api.post(`/academics/classes/${classId}/assign_class_teacher/`, {
-        teacher_id: teacherId
+      // Use existing exams endpoint with upcoming filter
+      const response = await api.get('/academics/exams/', { 
+        params: { ...params, upcoming: true } 
       });
       return {
         success: true,
@@ -726,981 +1052,54 @@ export const academicAPI = {
         status: response.status
       };
     } catch (error) {
-      return handleAPIError(error, 'Failed to assign class teacher');
+      return handleAPIError(error);
     }
   },
 
-  createClass: async (classData) => {
+  /**
+   * Get today's attendance summary - Use daily summary endpoint
+   */
+  getTodayAttendance: async () => {
     try {
-      const response = await api.post('/academics/classes/', classData);
+      const response = await api.get('/academics/reports/daily/attendance-summary/');
       return {
         success: true,
         data: response.data,
         status: response.status
       };
     } catch (error) {
-      return handleAPIError(error, 'Failed to create class');
+      return handleAPIError(error);
     }
   },
 
-  updateClass: async (classId, classData) => {
+  /**
+   * Get student grade report - Use existing endpoint
+   */
+  getStudentGradeReport: async (params = {}) => {
     try {
-      const response = await api.put(`/academics/classes/${classId}/`, classData);
+      const response = await api.get('/academics/reports/student/grades/', { params });
       return {
         success: true,
         data: response.data,
         status: response.status
       };
     } catch (error) {
-      return handleAPIError(error, 'Failed to update class');
-    }
-  },
-
-  patchClass: async (classId, classData) => {
-    try {
-      const response = await api.patch(`/academics/classes/${classId}/`, classData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update class');
-    }
-  },
-
-  deleteClass: async (classId) => {
-    try {
-      const response = await api.delete(`/academics/classes/${classId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete class');
-    }
-  },
-
-  // ==================== SUBJECT ASSIGNMENTS ====================
-  getSubjectAssignments: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/subject-assignments/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subject assignments');
-    }
-  },
-
-  getSubjectAssignment: async (assignmentId) => {
-    try {
-      const response = await api.get(`/academics/subject-assignments/${assignmentId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch subject assignment');
-    }
-  },
-
-  bulkAssignSubjects: async (assignmentData) => {
-    try {
-      const response = await api.post('/academics/subject-assignments/bulk_assign/', assignmentData);
-      return handleBulkResponse(response, 'Failed to bulk assign subjects');
-    } catch (error) {
-      return handleAPIError(error, 'Failed to bulk assign subjects');
-    }
-  },
-
-  getTeacherWorkload: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/subject-assignments/teacher_workload/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch teacher workload');
-    }
-  },
-
-  getAssignmentsByTeacher: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/subject-assignments/by_teacher/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch assignments by teacher');
-    }
-  },
-
-  createSubjectAssignment: async (assignmentData) => {
-    try {
-      const response = await api.post('/academics/subject-assignments/', assignmentData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to create subject assignment');
-    }
-  },
-
-  updateSubjectAssignment: async (assignmentId, assignmentData) => {
-    try {
-      const response = await api.put(`/academics/subject-assignments/${assignmentId}/`, assignmentData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update subject assignment');
-    }
-  },
-
-  patchSubjectAssignment: async (assignmentId, assignmentData) => {
-    try {
-      const response = await api.patch(`/academics/subject-assignments/${assignmentId}/`, assignmentData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update subject assignment');
-    }
-  },
-
-  deleteSubjectAssignment: async (assignmentId) => {
-    try {
-      const response = await api.delete(`/academics/subject-assignments/${assignmentId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete subject assignment');
-    }
-  },
-
-  // ==================== STUDENT ENROLLMENTS ====================
-  getEnrollments: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/student-enrollments/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch enrollments');
-    }
-  },
-
-  getEnrollment: async (enrollmentId) => {
-    try {
-      const response = await api.get(`/academics/student-enrollments/${enrollmentId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch enrollment');
-    }
-  },
-
-  bulkEnrollStudents: async (enrollmentData) => {
-    try {
-      const response = await api.post('/academics/student-enrollments/bulk_enroll/', enrollmentData);
-      return handleBulkResponse(response, 'Failed to bulk enroll students');
-    } catch (error) {
-      return handleAPIError(error, 'Failed to bulk enroll students');
-    }
-  },
-
-  exportEnrollmentsCSV: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/enrollments/export-csv/', {
-        params: queryParams,
-        responseType: 'blob'
-      });
-      
-      // Create download link
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `enrollments_export_${new Date().toISOString().split('T')[0]}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-      
-      return {
-        success: true,
-        message: 'Export completed successfully',
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to export enrollments');
-    }
-  },
-
-  getEnrollmentReport: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/student-enrollments/report/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch enrollment report');
-    }
-  },
-
-  getActiveEnrollments: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/student-enrollments/active/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch active enrollments');
-    }
-  },
-
-  createEnrollment: async (enrollmentData) => {
-    try {
-      const response = await api.post('/academics/student-enrollments/', enrollmentData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to create enrollment');
-    }
-  },
-
-  updateEnrollment: async (enrollmentId, enrollmentData) => {
-    try {
-      const response = await api.put(`/academics/student-enrollments/${enrollmentId}/`, enrollmentData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update enrollment');
-    }
-  },
-
-  patchEnrollment: async (enrollmentId, enrollmentData) => {
-    try {
-      const response = await api.patch(`/academics/student-enrollments/${enrollmentId}/`, enrollmentData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update enrollment');
-    }
-  },
-
-  deleteEnrollment: async (enrollmentId) => {
-    try {
-      const response = await api.delete(`/academics/student-enrollments/${enrollmentId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete enrollment');
-    }
-  },
-
-  // ==================== LESSON PLANS ====================
-  getLessonPlans: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/lesson-plans/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch lesson plans');
-    }
-  },
-
-  getLessonPlan: async (lessonPlanId) => {
-    try {
-      const response = await api.get(`/academics/lesson-plans/${lessonPlanId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch lesson plan');
-    }
-  },
-
-  getUpcomingLessonPlans: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/lesson-plans/upcoming/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch upcoming lesson plans');
-    }
-  },
-
-  getWeeklyLessonPlans: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/lesson-plans/weekly/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch weekly lesson plans');
-    }
-  },
-
-  markLessonPlanCompleted: async (lessonPlanId, completionData = {}) => {
-    try {
-      const response = await api.post(`/academics/lesson-plans/${lessonPlanId}/mark_completed/`, completionData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to mark lesson plan as completed');
-    }
-  },
-
-  createLessonPlan: async (lessonPlanData) => {
-    try {
-      const response = await api.post('/academics/lesson-plans/', lessonPlanData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to create lesson plan');
-    }
-  },
-
-  updateLessonPlan: async (lessonPlanId, lessonPlanData) => {
-    try {
-      const response = await api.put(`/academics/lesson-plans/${lessonPlanId}/`, lessonPlanData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update lesson plan');
-    }
-  },
-
-  patchLessonPlan: async (lessonPlanId, lessonPlanData) => {
-    try {
-      const response = await api.patch(`/academics/lesson-plans/${lessonPlanId}/`, lessonPlanData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update lesson plan');
-    }
-  },
-
-  deleteLessonPlan: async (lessonPlanId) => {
-    try {
-      const response = await api.delete(`/academics/lesson-plans/${lessonPlanId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete lesson plan');
-    }
-  },
-
-  // ==================== SYLLABUS ====================
-  getSyllabi: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/syllabi/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch syllabi');
-    }
-  },
-
-  getSyllabus: async (syllabusId) => {
-    try {
-      const response = await api.get(`/academics/syllabi/${syllabusId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch syllabus');
-    }
-  },
-
-  markTopicCompleted: async (syllabusId, topicData) => {
-    try {
-      const response = await api.post(`/academics/syllabi/${syllabusId}/mark_topic_completed/`, topicData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to mark topic as completed');
-    }
-  },
-
-  getSyllabusProgress: async (syllabusId) => {
-    try {
-      const response = await api.get(`/academics/syllabi/${syllabusId}/progress/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch syllabus progress');
-    }
-  },
-
-  createSyllabus: async (syllabusData) => {
-    try {
-      const response = await api.post('/academics/syllabi/', syllabusData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to create syllabus');
-    }
-  },
-
-  updateSyllabus: async (syllabusId, syllabusData) => {
-    try {
-      const response = await api.put(`/academics/syllabi/${syllabusId}/`, syllabusData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update syllabus');
-    }
-  },
-
-  patchSyllabus: async (syllabusId, syllabusData) => {
-    try {
-      const response = await api.patch(`/academics/syllabi/${syllabusId}/`, syllabusData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update syllabus');
-    }
-  },
-
-  deleteSyllabus: async (syllabusId) => {
-    try {
-      const response = await api.delete(`/academics/syllabi/${syllabusId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete syllabus');
-    }
-  },
-
-  // ==================== ACADEMIC EVENTS ====================
-  getAcademicEvents: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/academic-events/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic events');
-    }
-  },
-
-  getAcademicEvent: async (eventId) => {
-    try {
-      const response = await api.get(`/academics/academic-events/${eventId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic event');
-    }
-  },
-
-  getUpcomingEvents: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/academic-events/upcoming/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch upcoming events');
-    }
-  },
-
-  getCalendarEvents: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/academic-events/calendar/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch calendar events');
-    }
-  },
-
-  createAcademicEvent: async (eventData) => {
-    try {
-      const response = await api.post('/academics/academic-events/', eventData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to create academic event');
-    }
-  },
-
-  updateAcademicEvent: async (eventId, eventData) => {
-    try {
-      const response = await api.put(`/academics/academic-events/${eventId}/`, eventData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update academic event');
-    }
-  },
-
-  patchAcademicEvent: async (eventId, eventData) => {
-    try {
-      const response = await api.patch(`/academics/academic-events/${eventId}/`, eventData);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to update academic event');
-    }
-  },
-
-  deleteAcademicEvent: async (eventId) => {
-    try {
-      const response = await api.delete(`/academics/academic-events/${eventId}/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to delete academic event');
-    }
-  },
-
-  // ==================== DASHBOARD & ANALYTICS ====================
-  getAcademicDashboard: async () => {
-    try {
-      const response = await api.get('/academics/dashboard/');
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic dashboard');
-    }
-  },
-
-  getClassStatistics: async () => {
-    try {
-      const response = await api.get('/academics/statistics/classes/');
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch class statistics');
-    }
-  },
-
-  getTeacherWorkloadStatistics: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/statistics/teacher-workload/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch teacher workload statistics');
-    }
-  },
-
-  // ==================== SEARCH ====================
-  academicSearch: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/search/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to perform academic search');
-    }
-  },
-
-  // ==================== UTILITY ENDPOINTS ====================
-  getAcademicOverview: async () => {
-    try {
-      const response = await api.get('/academics/overview/');
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic overview');
-    }
-  },
-
-  getAcademicCalendar: async (params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get('/academics/calendar/', { params: queryParams });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to fetch academic calendar');
-    }
-  },
-
-  // ==================== BATCH OPERATIONS ====================
-  bulkUpdateEnrollments: async (updateData) => {
-    try {
-      const response = await api.post('/academics/student-enrollments/bulk_update/', updateData);
-      return handleBulkResponse(response, 'Failed to bulk update enrollments');
-    } catch (error) {
-      return handleAPIError(error, 'Failed to bulk update enrollments');
-    }
-  },
-
-  bulkDeleteEnrollments: async (enrollmentIds) => {
-    try {
-      const response = await api.post('/academics/student-enrollments/bulk_delete/', { ids: enrollmentIds });
-      return handleBulkResponse(response, 'Failed to bulk delete enrollments');
-    } catch (error) {
-      return handleAPIError(error, 'Failed to bulk delete enrollments');
-    }
-  },
-
-  // ==================== HEALTH & VALIDATION ====================
-  validateAcademicData: async (dataType, data) => {
-    try {
-      const response = await api.post('/academics/validate/', {
-        data_type: dataType,
-        data: data
-      });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to validate academic data');
-    }
-  },
-
-  checkAcademicHealth: async () => {
-    try {
-      const response = await api.get('/academics/health/');
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to check academic health');
+      return handleAPIError(error);
     }
   },
 
   // ==================== CACHE MANAGEMENT ====================
-  clearAcademicCache: async (cacheType = 'all') => {
-    try {
-      const response = await api.post('/academics/clear_cache/', { cache_type: cacheType });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to clear academic cache');
-    }
+
+  clearCache: () => {
+    academicCache.clear();
   },
 
-  // ==================== SYNCHRONIZATION ====================
-  syncAcademicData: async (syncType, params = {}) => {
-    try {
-      const response = await api.post('/academics/sync/', {
-        sync_type: syncType,
-        ...params
-      });
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to sync academic data');
-    }
-  },
-
-  getSyncStatus: async (syncId) => {
-    try {
-      const response = await api.get(`/academics/sync/${syncId}/status/`);
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to get sync status');
-    }
-  },
-
-  // ==================== EXPORT/IMPORT ====================
-  exportAcademicData: async (exportType, params = {}) => {
-    try {
-      const queryParams = buildQueryParams(params);
-      const response = await api.get(`/academics/export/${exportType}/`, {
-        params: queryParams,
-        responseType: 'blob'
-      });
-      
-      // Create download link
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `academic_export_${exportType}_${new Date().toISOString().split('T')[0]}.${exportType}`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
-      
-      return {
-        success: true,
-        message: 'Export completed successfully',
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to export academic data');
-    }
-  },
-
-  importAcademicData: async (file, importType) => {
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('import_type', importType);
-      
-      const response = await api.post('/academics/import/', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
-      });
-      
-      return {
-        success: true,
-        data: response.data,
-        status: response.status
-      };
-    } catch (error) {
-      return handleAPIError(error, 'Failed to import academic data');
-    }
-  },
-
-  // ==================== BACKWARD COMPATIBILITY ====================
-  // These methods are kept for backward compatibility
-  // They now call the new ViewSet endpoints
-  
-  getSubjectsList: async (params = {}) => {
-    return academicAPI.getSubjects(params);
-  },
-
-  getClassesList: async (params = {}) => {
-    return academicAPI.getClasses(params);
-  },
-
-  getEnrollmentsList: async (params = {}) => {
-    return academicAPI.getEnrollments(params);
-  },
-
-  getLessonPlansList: async (params = {}) => {
-    return academicAPI.getLessonPlans(params);
-  },
-
-  getSyllabiList: async (params = {}) => {
-    return academicAPI.getSyllabi(params);
-  },
-
-  getAcademicEventsList: async (params = {}) => {
-    return academicAPI.getAcademicEvents(params);
+  getCacheStats: () => {
+    return {
+      size: academicCache.data.size,
+      keys: Array.from(academicCache.data.keys())
+    };
   }
 };
 
-// ==================== HELPER FUNCTIONS ====================
-
-export const formatAcademicYear = (year) => {
-  if (!year) return '';
-  
-  if (typeof year === 'object') {
-    return `${year.start_date?.split('-')[0] || ''}-${year.end_date?.split('-')[0] || ''}`;
-  }
-  
-  return year;
-};
-
-export const getStatusColor = (status) => {
-  const colors = {
-    active: 'green',
-    inactive: 'gray',
-    draft: 'yellow',
-    published: 'blue',
-    completed: 'green',
-    pending: 'yellow',
-    archived: 'gray',
-    upcoming: 'purple',
-    current: 'blue',
-    past: 'gray'
-  };
-  
-  return colors[status] || 'gray';
-};
-
-export const calculateOccupancyRate = (currentStrength, capacity) => {
-  if (!capacity || capacity === 0) return 0;
-  return Math.round((currentStrength / capacity) * 100);
-};
-
-export const formatDateRange = (startDate, endDate) => {
-  if (!startDate || !endDate) return '';
-  
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  
-  const startStr = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  const endStr = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  
-  return `${startStr} - ${endStr}`;
-};
-
-// ==================== HOOKS (for React) ====================
-
-export const useAcademicAPI = () => {
-  return {
-    ...academicAPI,
-    constants: {
-      ASSIGNMENT_CONSTANTS,
-      CLASS_CONSTANTS,
-      SUBJECT_CONSTANTS,
-      ENROLLMENT_CONSTANTS,
-      ACADEMIC_YEAR_CONSTANTS
-    },
-    helpers: {
-      formatAcademicYear,
-      getStatusColor,
-      calculateOccupancyRate,
-      formatDateRange
-    }
-  };
-};
-
-export default academicAPI;
+export default academicsAPI;

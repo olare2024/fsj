@@ -24,4 +24,8 @@ urlpatterns = [
     path('analytics/overview/', views.AnalyticsOverview.as_view(), name='analytics-overview'),
     path('settings/view/', views.SystemSettingsView.as_view(), name='system-settings-view'),
     path('health-check/', views.SystemHealthCheckView.as_view(), name='system-health-check'),
+    
+    # New endpoints for frontend compatibility
+    path('reports/', views.AdminReportsView.as_view(), name='admin-reports'),
+    path('system-actions/', views.AdminSystemActionsView.as_view(), name='admin-system-actions'),
 ]

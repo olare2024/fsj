@@ -342,11 +342,11 @@ const Login = () => {
                   New to Delvok Academy?
                 </p>
                 <Link 
-                  to="/register" 
+                  to="/contact" 
                   className="btn btn-outline-primary"
                 >
                   <i className="bi bi-person-plus me-2"></i>
-                  Create School Account
+                  Contact Us
                 </Link>
               </div>
 

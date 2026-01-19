@@ -7,7 +7,7 @@ from django.core.cache import cache
 from django.utils import timezone
 from rest_framework import permissions
 
-from .models import User
+from .models import User, UserRole  # IMPORTANT: Import UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class IsAdminUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.ADMIN
+            request.user.role == UserRole.ADMIN  # CHANGED
         )
 
 
@@ -30,7 +30,7 @@ class IsHeadTeacherUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.HEAD_TEACHER
+            request.user.role == UserRole.HEAD_TEACHER  # CHANGED
         )
 
 
@@ -40,7 +40,7 @@ class IsCurriculumCoordinatorUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.CURRICULUM_COORDINATOR
+            request.user.role == UserRole.CURRICULUM_COORDINATOR  # CHANGED
         )
 
 
@@ -50,7 +50,7 @@ class IsTeacherUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.TEACHER
+            request.user.role == UserRole.TEACHER  # CHANGED
         )
 
 
@@ -60,7 +60,7 @@ class IsOfficeStaffUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.OFFICE_STAFF
+            request.user.role == UserRole.OFFICE_STAFF  # CHANGED
         )
 
 
@@ -70,7 +70,7 @@ class IsStudentUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.STUDENT
+            request.user.role == UserRole.STUDENT  # CHANGED
         )
 
 
@@ -80,7 +80,7 @@ class IsParentUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.PARENT
+            request.user.role == UserRole.PARENT  # CHANGED
         )
 
 
@@ -90,7 +90,7 @@ class IsLibrarianUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.LIBRARIAN
+            request.user.role == UserRole.LIBRARIAN  # CHANGED
         )
 
 
@@ -100,7 +100,7 @@ class IsAccountantUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.ACCOUNTANT
+            request.user.role == UserRole.ACCOUNTANT  # CHANGED
         )
 
 
@@ -110,8 +110,10 @@ class IsITSupportUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.IT_SUPPORT
+            request.user.role == UserRole.IT_SUPPORT  # CHANGED
         )
+
+
 # Add these classes to your existing accounts/permissions.py file
 # They're the missing classes that your views are trying to import
 
@@ -121,7 +123,7 @@ class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.ADMIN
+            request.user.role == UserRole.ADMIN  # CHANGED
         )
 
 
@@ -131,7 +133,7 @@ class IsTeacher(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.TEACHER
+            request.user.role == UserRole.TEACHER  # CHANGED
         )
 
 
@@ -141,7 +143,7 @@ class IsStudent(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.STUDENT
+            request.user.role == UserRole.STUDENT  # CHANGED
         )
 
 
@@ -151,15 +153,16 @@ class IsParent(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.PARENT
+            request.user.role == UserRole.PARENT  # CHANGED
         )
 
 
 # Add aliases for backward compatibility with existing code
-IsAdminUser = IsAdmin
-IsTeacherUser = IsTeacher
-IsStudentUser = IsStudent
-IsParentUser = IsParent
+# Note: These aliases are already defined above, so we don't need to redefine them
+# IsAdminUser = IsAdmin  # Already defined above
+# IsTeacherUser = IsTeacher  # Already defined above
+# IsStudentUser = IsStudent  # Already defined above
+# IsParentUser = IsParent  # Already defined above
 
 class IsCounselorUser(permissions.BasePermission):
     """Allows access only to users with Counselor role."""
@@ -167,7 +170,7 @@ class IsCounselorUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role == User.Role.COUNSELOR
+            request.user.role == UserRole.COUNSELOR  # CHANGED
         )
 
 
@@ -177,15 +180,15 @@ class IsStaffUser(permissions.BasePermission):
     """Allows access only to staff users (all staff roles except students and parents)."""
     
     STAFF_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.CURRICULUM_COORDINATOR,
-        User.Role.TEACHER,
-        User.Role.OFFICE_STAFF,
-        User.Role.LIBRARIAN,
-        User.Role.ACCOUNTANT,
-        User.Role.IT_SUPPORT,
-        User.Role.COUNSELOR,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.OFFICE_STAFF,  # CHANGED
+        UserRole.LIBRARIAN,  # CHANGED
+        UserRole.ACCOUNTANT,  # CHANGED
+        UserRole.IT_SUPPORT,  # CHANGED
+        UserRole.COUNSELOR,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -199,12 +202,12 @@ class IsAcademicStaff(permissions.BasePermission):
     """Allows access to academic staff (teachers, coordinators, head teachers)."""
     
     ACADEMIC_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.CURRICULUM_COORDINATOR,
-        User.Role.TEACHER,
-        User.Role.LIBRARIAN,
-        User.Role.COUNSELOR,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.LIBRARIAN,  # CHANGED
+        UserRole.COUNSELOR,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -218,11 +221,11 @@ class IsAdministrativeStaff(permissions.BasePermission):
     """Allows access to administrative staff."""
     
     ADMIN_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.OFFICE_STAFF,
-        User.Role.ACCOUNTANT,
-        User.Role.IT_SUPPORT,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.OFFICE_STAFF,  # CHANGED
+        UserRole.ACCOUNTANT,  # CHANGED
+        UserRole.IT_SUPPORT,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -236,9 +239,9 @@ class IsFinanceStaff(permissions.BasePermission):
     """Allows access to finance-related staff."""
     
     FINANCE_ROLES = [
-        User.Role.ADMIN,
-        User.Role.ACCOUNTANT,
-        User.Role.HEAD_TEACHER,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.ACCOUNTANT,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -263,7 +266,7 @@ class IsVerifiedUser(permissions.BasePermission):
 class IsApprovedUser(permissions.BasePermission):
     """Allows access only to approved users (for roles that require approval)."""
     
-    NO_APPROVAL_NEEDED = [User.Role.STUDENT, User.Role.PARENT]
+    NO_APPROVAL_NEEDED = [UserRole.STUDENT, UserRole.PARENT]  # CHANGED
     
     def has_permission(self, request, view):
         if not request.user.is_authenticated:
@@ -294,7 +297,7 @@ class IsOwnerOrAdmin(permissions.BasePermission):
     
     def has_object_permission(self, request, view, obj):
         # Admin users can do anything
-        if request.user.role == User.Role.ADMIN:
+        if request.user.role == UserRole.ADMIN:  # CHANGED
             return True
         
         # Check if the object has a user attribute
@@ -316,7 +319,7 @@ class IsSameUserOrAdmin(permissions.BasePermission):
     
     def has_object_permission(self, request, view, obj):
         # Admin users can access any object
-        if request.user.role == User.Role.ADMIN:
+        if request.user.role == UserRole.ADMIN:  # CHANGED
             return True
         
         # Users can access their own objects
@@ -336,11 +339,11 @@ class IsParentOfStudent(permissions.BasePermission):
     
     def has_object_permission(self, request, view, obj):
         # Admin and teachers can access all student data
-        if request.user.role in [User.Role.ADMIN, User.Role.TEACHER, User.Role.HEAD_TEACHER]:
+        if request.user.role in [UserRole.ADMIN, UserRole.TEACHER, UserRole.HEAD_TEACHER]:  # CHANGED
             return True
         
         # Parents can only access their children's data
-        if request.user.role == User.Role.PARENT:
+        if request.user.role == UserRole.PARENT:  # CHANGED
             try:
                 from students.models import Parent
                 parent_profile = request.user.parent_profile
@@ -372,9 +375,9 @@ class CanManageUsers(permissions.BasePermission):
     """Allows access to users who can manage other users."""
     
     MANAGEMENT_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.IT_SUPPORT,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.IT_SUPPORT,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -388,12 +391,12 @@ class CanManageStudents(permissions.BasePermission):
     """Allows access to users who can manage students."""
     
     STUDENT_MANAGEMENT_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.TEACHER,
-        User.Role.CURRICULUM_COORDINATOR,
-        User.Role.COUNSELOR,
-        User.Role.OFFICE_STAFF,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+        UserRole.COUNSELOR,  # CHANGED
+        UserRole.OFFICE_STAFF,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -407,11 +410,11 @@ class CanManageAcademicContent(permissions.BasePermission):
     """Allows access to users who can manage academic content."""
     
     ACADEMIC_CONTENT_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.CURRICULUM_COORDINATOR,
-        User.Role.TEACHER,
-        User.Role.LIBRARIAN,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.LIBRARIAN,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -425,12 +428,12 @@ class CanViewReports(permissions.BasePermission):
     """Allows access to users who can view reports."""
     
     REPORT_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.ACCOUNTANT,
-        User.Role.CURRICULUM_COORDINATOR,
-        User.Role.TEACHER,
-        User.Role.PARENT,  # Parents can view their children's reports
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.ACCOUNTANT,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.PARENT,  # CHANGED - Parents can view their children's reports
     ]
     
     def has_permission(self, request, view):
@@ -458,7 +461,7 @@ class HasPermission(permissions.BasePermission):
         return (
             self.required_permission in user_permissions or
             '*' in user_permissions or
-            request.user.role == User.Role.ADMIN
+            request.user.role == UserRole.ADMIN  # CHANGED
         )
 
 
@@ -475,7 +478,7 @@ class HasAnyPermission(permissions.BasePermission):
         user_permissions = request.user.get_permissions()
         
         # Admin has all permissions
-        if request.user.role == User.Role.ADMIN:
+        if request.user.role == UserRole.ADMIN:  # CHANGED
             return True
         
         # Check if user has any of the required permissions
@@ -507,7 +510,7 @@ class ReadOnlyOrAdmin(permissions.BasePermission):
         if request.method in permissions.SAFE_METHODS:
             return True
         
-        return request.user.role == User.Role.ADMIN
+        return request.user.role == UserRole.ADMIN  # CHANGED
 
 
 class IsOwnerOrReadOnly(permissions.BasePermission):
@@ -534,15 +537,15 @@ class IsStaffOrReadOnly(permissions.BasePermission):
     """Allows staff users to edit, but read-only for non-staff users."""
     
     STAFF_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.CURRICULUM_COORDINATOR,
-        User.Role.TEACHER,
-        User.Role.OFFICE_STAFF,
-        User.Role.LIBRARIAN,
-        User.Role.ACCOUNTANT,
-        User.Role.IT_SUPPORT,
-        User.Role.COUNSELOR,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.OFFICE_STAFF,  # CHANGED
+        UserRole.LIBRARIAN,  # CHANGED
+        UserRole.ACCOUNTANT,  # CHANGED
+        UserRole.IT_SUPPORT,  # CHANGED
+        UserRole.COUNSELOR,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -563,7 +566,7 @@ class IsStudentOrParent(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role in [User.Role.STUDENT, User.Role.PARENT]
+            request.user.role in [UserRole.STUDENT, UserRole.PARENT]  # CHANGED
         )
 
 
@@ -571,7 +574,7 @@ class IsStudentOwner(permissions.BasePermission):
     """Allows students to access only their own data."""
     
     def has_permission(self, request, view):
-        if not request.user.is_authenticated or request.user.role != User.Role.STUDENT:
+        if not request.user.is_authenticated or request.user.role != UserRole.STUDENT:  # CHANGED
             return False
         
         # Get student_id from view kwargs
@@ -621,17 +624,17 @@ class CanViewStudentData(permissions.BasePermission):
         student_id = view.kwargs.get('student_id') or view.kwargs.get('pk')
         
         # Admin and head teacher can view all student data
-        if request.user.role in [User.Role.ADMIN, User.Role.HEAD_TEACHER]:
+        if request.user.role in [UserRole.ADMIN, UserRole.HEAD_TEACHER]:  # CHANGED
             return True
         
         # If no student_id specified, allow access based on role
         if student_id is None:
             return request.user.role in [
-                User.Role.STUDENT,
-                User.Role.PARENT,
-                User.Role.TEACHER,
-                User.Role.CURRICULUM_COORDINATOR,
-                User.Role.COUNSELOR,
+                UserRole.STUDENT,  # CHANGED
+                UserRole.PARENT,  # CHANGED
+                UserRole.TEACHER,  # CHANGED
+                UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+                UserRole.COUNSELOR,  # CHANGED
             ]
         
         # Check specific permissions for the given student_id
@@ -647,14 +650,14 @@ class CanViewStudentData(permissions.BasePermission):
     
     def _check_student_access(self, user, student_id):
         """Check if user can access specific student data."""
-        if user.role == User.Role.STUDENT:
+        if user.role == UserRole.STUDENT:  # CHANGED
             # Students can only view their own data
             try:
                 return str(user.student_profile.id) == str(student_id)
             except AttributeError:
                 return False
         
-        elif user.role == User.Role.PARENT:
+        elif user.role == UserRole.PARENT:  # CHANGED
             # Parents can only view their children's data
             try:
                 from students.models import Parent
@@ -663,11 +666,11 @@ class CanViewStudentData(permissions.BasePermission):
             except (AttributeError, ImportError):
                 return False
         
-        elif user.role == User.Role.TEACHER:
+        elif user.role == UserRole.TEACHER:  # CHANGED
             # Teachers can view data of students in their classes
             return self._check_teacher_access(user, student_id)
         
-        elif user.role == User.Role.COUNSELOR:
+        elif user.role == UserRole.COUNSELOR:  # CHANGED
             # Counselors can view student data
             return True
         
@@ -678,9 +681,9 @@ class CanManageStudentAttendance(permissions.BasePermission):
     """Allows users to manage student attendance."""
     
     ATTENDANCE_MANAGEMENT_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.TEACHER,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -694,11 +697,11 @@ class CanViewStudentAttendance(permissions.BasePermission):
     """Allows users to view student attendance."""
     
     ATTENDANCE_VIEW_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.TEACHER,
-        User.Role.STUDENT,
-        User.Role.PARENT,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.STUDENT,  # CHANGED
+        UserRole.PARENT,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -712,10 +715,10 @@ class CanManageStudentGrades(permissions.BasePermission):
     """Allows users to manage student grades."""
     
     GRADE_MANAGEMENT_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.TEACHER,
-        User.Role.CURRICULUM_COORDINATOR,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -729,11 +732,11 @@ class CanViewStudentGrades(permissions.BasePermission):
     """Allows users to view student grades."""
     
     GRADE_VIEW_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.TEACHER,
-        User.Role.STUDENT,
-        User.Role.PARENT,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.STUDENT,  # CHANGED
+        UserRole.PARENT,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -747,10 +750,10 @@ class CanManageStudentFees(permissions.BasePermission):
     """Allows users to manage student fees."""
     
     FEE_MANAGEMENT_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.ACCOUNTANT,
-        User.Role.OFFICE_STAFF,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.ACCOUNTANT,  # CHANGED
+        UserRole.OFFICE_STAFF,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -764,12 +767,12 @@ class CanViewStudentFees(permissions.BasePermission):
     """Allows users to view student fees."""
     
     FEE_VIEW_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.ACCOUNTANT,
-        User.Role.STUDENT,
-        User.Role.PARENT,
-        User.Role.OFFICE_STAFF,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.ACCOUNTANT,  # CHANGED
+        UserRole.STUDENT,  # CHANGED
+        UserRole.PARENT,  # CHANGED
+        UserRole.OFFICE_STAFF,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -887,10 +890,10 @@ class CanManageStudentDiscipline(permissions.BasePermission):
     """Allows users to manage student discipline records."""
     
     DISCIPLINE_MANAGEMENT_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.TEACHER,
-        User.Role.COUNSELOR,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.COUNSELOR,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -904,11 +907,11 @@ class CanViewStudentDiscipline(permissions.BasePermission):
     """Allows users to view student discipline records."""
     
     DISCIPLINE_VIEW_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.TEACHER,
-        User.Role.COUNSELOR,
-        User.Role.PARENT,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.COUNSELOR,  # CHANGED
+        UserRole.PARENT,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -931,17 +934,17 @@ class HasRoleAtLeast(permissions.BasePermission):
     """Allows access if user has role at or above minimum level."""
     
     ROLE_HIERARCHY = {
-        User.Role.STUDENT: 0,
-        User.Role.PARENT: 1,
-        User.Role.LIBRARIAN: 2,
-        User.Role.IT_SUPPORT: 2,
-        User.Role.ACCOUNTANT: 3,
-        User.Role.OFFICE_STAFF: 3,
-        User.Role.COUNSELOR: 4,
-        User.Role.TEACHER: 5,
-        User.Role.CURRICULUM_COORDINATOR: 6,
-        User.Role.HEAD_TEACHER: 7,
-        User.Role.ADMIN: 10,
+        UserRole.STUDENT: 0,  # CHANGED
+        UserRole.PARENT: 1,  # CHANGED
+        UserRole.LIBRARIAN: 2,  # CHANGED
+        UserRole.IT_SUPPORT: 2,  # CHANGED
+        UserRole.ACCOUNTANT: 3,  # CHANGED
+        UserRole.OFFICE_STAFF: 3,  # CHANGED
+        UserRole.COUNSELOR: 4,  # CHANGED
+        UserRole.TEACHER: 5,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR: 6,  # CHANGED
+        UserRole.HEAD_TEACHER: 7,  # CHANGED
+        UserRole.ADMIN: 10,  # CHANGED
     }
     
     def __init__(self, min_role):
@@ -1036,7 +1039,7 @@ class IsTeacherOrHeadTeacher(permissions.BasePermission):
     def has_permission(self, request, view):
         return (
             request.user.is_authenticated and 
-            request.user.role in [User.Role.TEACHER, User.Role.HEAD_TEACHER]
+            request.user.role in [UserRole.TEACHER, UserRole.HEAD_TEACHER]  # CHANGED
         )
 
 
@@ -1044,12 +1047,12 @@ class IsAcademicOrAdmin(permissions.BasePermission):
     """Combination permission for academic staff or admin."""
     
     ACADEMIC_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.CURRICULUM_COORDINATOR,
-        User.Role.TEACHER,
-        User.Role.LIBRARIAN,
-        User.Role.COUNSELOR,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.LIBRARIAN,  # CHANGED
+        UserRole.COUNSELOR,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -1063,15 +1066,15 @@ class IsStaffOrAdmin(permissions.BasePermission):
     """Combination permission for staff users or admin."""
     
     STAFF_ROLES = [
-        User.Role.ADMIN,
-        User.Role.HEAD_TEACHER,
-        User.Role.CURRICULUM_COORDINATOR,
-        User.Role.TEACHER,
-        User.Role.OFFICE_STAFF,
-        User.Role.LIBRARIAN,
-        User.Role.ACCOUNTANT,
-        User.Role.IT_SUPPORT,
-        User.Role.COUNSELOR,
+        UserRole.ADMIN,  # CHANGED
+        UserRole.HEAD_TEACHER,  # CHANGED
+        UserRole.CURRICULUM_COORDINATOR,  # CHANGED
+        UserRole.TEACHER,  # CHANGED
+        UserRole.OFFICE_STAFF,  # CHANGED
+        UserRole.LIBRARIAN,  # CHANGED
+        UserRole.ACCOUNTANT,  # CHANGED
+        UserRole.IT_SUPPORT,  # CHANGED
+        UserRole.COUNSELOR,  # CHANGED
     ]
     
     def has_permission(self, request, view):
@@ -1330,18 +1333,18 @@ def check_user_can_access_student(user, student_id):
         return False
     
     # Admin and head teacher can access all students
-    if user.role in [User.Role.ADMIN, User.Role.HEAD_TEACHER]:
+    if user.role in [UserRole.ADMIN, UserRole.HEAD_TEACHER]:  # CHANGED
         return True
     
     # Check if user is the student
-    if user.role == User.Role.STUDENT:
+    if user.role == UserRole.STUDENT:  # CHANGED
         try:
             return str(user.student_profile.id) == str(student_id)
         except AttributeError:
             return False
     
     # Check if user is parent of the student
-    if user.role == User.Role.PARENT:
+    if user.role == UserRole.PARENT:  # CHANGED
         try:
             from students.models import Parent
             parent_profile = user.parent_profile
@@ -1350,7 +1353,7 @@ def check_user_can_access_student(user, student_id):
             return False
     
     # Check if user is teacher of the student
-    if user.role == User.Role.TEACHER:
+    if user.role == UserRole.TEACHER:  # CHANGED
         try:
             from academics.models import SubjectAssignment
             from students.models import StudentEnrollment
@@ -1371,7 +1374,7 @@ def check_user_can_access_student(user, student_id):
             return False
     
     # Counselors can access student data
-    if user.role == User.Role.COUNSELOR:
+    if user.role == UserRole.COUNSELOR:  # CHANGED
         return True
     
     return False

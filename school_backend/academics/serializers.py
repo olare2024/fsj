@@ -1,2206 +1,1742 @@
-"""
-academics/serializers.py
-Serializers for academic models with comprehensive CRUD operations.
-"""
+# academics/serializers.py
 
-from django.utils import timezone
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
-import uuid
-from django.core.exceptions import ValidationError
-from django.db.models import Count, Avg, Q
+from django.utils import timezone
+from django.db.models import Avg, Count, Max, Min, Q
+from django.contrib.auth import get_user_model
 
-from .models import (
-    AcademicYear, AcademicTerm, Subject, Class, SubTopic, SubjectAssignment,
-    StudentEnrollment, StudentClassAssignment, LessonPlan, Syllabus,
-    AcademicEvent, Stream, CBCAssessment, CBCPortfolio, PathwaySelection,
-    CompetencyTracking, CurriculumMapping
-)
 from accounts.models import User
-from students.models import StudentProfile
-from teachers.models import TeacherProfile
+from .models import *
 
 
 # ============================================================================
-# HELPER FUNCTIONS AND BASE SERIALIZERS
+# CUSTOM SERIALIZER BASE CLASSES
 # ============================================================================
 
-class UUIDRelatedField(serializers.RelatedField):
-    """Custom related field that handles UUID string conversion."""
-    
-    def to_internal_value(self, data):
-        if isinstance(data, uuid.UUID):
-            return data
-        try:
-            return uuid.UUID(str(data))
-        except (ValueError, TypeError, AttributeError):
-            raise serializers.ValidationError(
-                _("Invalid UUID format. Expected a UUID string or object.")
-            )
-    
-    def to_representation(self, value):
-        return str(value)
+class DynamicFieldsModelSerializer(serializers.ModelSerializer):
+    """ModelSerializer with dynamic field selection"""
+    def __init__(self, *args, **kwargs):
+        fields = kwargs.pop('fields', None)
+        super().__init__(*args, **kwargs)
+        
+        if fields:
+            allowed = set(fields)
+            existing = set(self.fields)
+            for field_name in existing - allowed:
+                self.fields.pop(field_name)
 
 
-class PrimaryKeyRelatedUUIDField(serializers.PrimaryKeyRelatedField):
-    """PrimaryKeyRelatedField with explicit UUID handling."""
-    
-    def __init__(self, **kwargs):
-        kwargs['pk_field'] = serializers.UUIDField()
-        super().__init__(**kwargs)
-    
-    def to_internal_value(self, data):
-        try:
-            # Convert string to UUID if needed
-            if isinstance(data, str):
-                data = uuid.UUID(data)
-            return super().to_internal_value(data)
-        except (ValueError, TypeError):
-            raise serializers.ValidationError(_("Invalid UUID format"))
+class TimestampSerializer(serializers.ModelSerializer):
+    """Base serializer with timestamp fields"""
+    created_at = serializers.DateTimeField(read_only=True)
+    updated_at = serializers.DateTimeField(read_only=True)
 
 
-class AuditFieldsMixin:
-    """Mixin to include audit fields in serializers."""
+class UserRelatedSerializer(serializers.ModelSerializer):
+    """Base serializer for user-related models"""
+    user_info = serializers.SerializerMethodField()
     
-    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
-    updated_by_name = serializers.CharField(source='updated_by.get_full_name', read_only=True)
+    def get_user_info(self, obj):
+        return {
+            'id': obj.user.id,
+            'name': obj.user.get_full_name(),
+            'email': obj.user.email,
+        }
 
 
 # ============================================================================
-# USER SERIALIZERS
+# HELPER SERIALIZERS
 # ============================================================================
 
-class UserMinimalSerializer(serializers.ModelSerializer):
-    """Minimal serializer for User model."""
-    
+class UserBasicSerializer(DynamicFieldsModelSerializer):
+    """Basic user serializer"""
     full_name = serializers.SerializerMethodField()
+    profile_url = serializers.SerializerMethodField()
     
     class Meta:
         model = User
-        fields = ['id', 'full_name', 'first_name', 'last_name', 'email', 'phone_number', 'profile_picture']
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name',
+            'full_name', 'role', 'profile_picture', 'profile_url'
+        ]
+        read_only_fields = fields
     
     def get_full_name(self, obj):
         return obj.get_full_name()
+    
+    def get_profile_url(self, obj):
+        if obj.profile_picture:
+            return obj.profile_picture.url
+        return None
 
 
-class TeacherMinimalSerializer(serializers.ModelSerializer):
-    """Minimal serializer for TeacherProfile model."""
-    
-    full_name = serializers.SerializerMethodField()
-    user_id = serializers.UUIDField(source='user.id', read_only=True)
-    
-    class Meta:
-        model = TeacherProfile
-        fields = ['id', 'user_id', 'full_name', 'staff_id', 'qualification', 'department', 'is_active']
-    
-    def get_full_name(self, obj):
-        return obj.user.get_full_name() if obj.user else None
+class StudentMinimalSerializer(UserBasicSerializer):
+    """Minimal student serializer"""
+    class Meta(UserBasicSerializer.Meta):
+        fields = [
+            'id', 'username', 'student_id', 'full_name',
+            'profile_picture', 'profile_url'
+        ]
 
 
-class StudentMinimalSerializer(serializers.ModelSerializer):
-    """Minimal serializer for StudentProfile model."""
-    
-    full_name = serializers.SerializerMethodField()
-    user_id = serializers.UUIDField(source='user.id', read_only=True)
-    
-    class Meta:
-        model = StudentProfile
-        fields = ['id', 'user_id', 'full_name', 'admission_number', 'grade_level', 'date_of_birth', 'gender', 'is_active']
-    
-    def get_full_name(self, obj):
-        return obj.user.get_full_name() if obj.user else None
+class TeacherMinimalSerializer(UserBasicSerializer):
+    """Minimal teacher serializer"""
+    class Meta(UserBasicSerializer.Meta):
+        fields = [
+            'id', 'username', 'teacher_id', 'full_name',
+            'profile_picture', 'profile_url', 'qualification'
+        ]
 
 
-# ============================================================================
-# MINIMAL SERIALIZERS FOR RELATED MODELS
-# ============================================================================
-
-class SubjectMinimalSerializer(serializers.ModelSerializer):
-    """Minimal serializer for Subject."""
-    
+class SubjectMinimalSerializer(DynamicFieldsModelSerializer):
+    """Minimal subject serializer"""
     class Meta:
         model = Subject
-        fields = ['id', 'name', 'code', 'category', 'curriculum', 'is_cbc_core']
+        fields = ['id', 'name', 'code', 'credit_hours', 'category']
+        read_only_fields = fields
 
 
-class ClassMinimalSerializer(serializers.ModelSerializer):
-    """Minimal serializer for Class."""
-    
-    display_name = serializers.ReadOnlyField()
+class ClassMinimalSerializer(DynamicFieldsModelSerializer):
+    """Minimal class serializer"""
+    grade_level_info = serializers.SerializerMethodField()
     
     class Meta:
         model = Class
-        fields = ['id', 'name', 'section', 'grade_level', 'display_name', 'room_number']
-
-
-class AcademicYearMinimalSerializer(serializers.ModelSerializer):
-    """Minimal serializer for AcademicYear."""
+        fields = ['id', 'name', 'code', 'grade_level', 'grade_level_info']
+        read_only_fields = fields
     
-    class Meta:
-        model = AcademicYear
-        fields = ['id', 'name', 'code', 'start_date', 'end_date', 'is_current']
-
-
-class AcademicTermMinimalSerializer(serializers.ModelSerializer):
-    """Minimal serializer for AcademicTerm."""
-    
-    class Meta:
-        model = AcademicTerm
-        fields = ['id', 'name', 'start_date', 'end_date', 'is_current', 'term_order']
-
-
-class SubTopicMinimalSerializer(serializers.ModelSerializer):
-    """Minimal serializer for SubTopic."""
-    
-    full_name = serializers.ReadOnlyField()
-    
-    class Meta:
-        model = SubTopic
-        fields = ['id', 'topic', 'name', 'full_name', 'order', 'estimated_hours']
+    def get_grade_level_info(self, obj):
+        if obj.grade_level:
+            return {
+                'id': obj.grade_level.id,
+                'name': obj.grade_level.name,
+                'code': obj.grade_level.code,
+            }
+        return None
 
 
 # ============================================================================
-# CORE MODEL SERIALIZERS
+# VALIDATION SERIALIZERS
 # ============================================================================
 
-class AcademicYearSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for Academic Year model."""
+class BaseValidationSerializer(serializers.Serializer):
+    """Base validation serializer"""
     
-    # Computed fields
-    duration_days = serializers.ReadOnlyField()
-    progress_percentage = serializers.ReadOnlyField()
-    status = serializers.ReadOnlyField()
-    is_currently_active = serializers.ReadOnlyField()
-    is_cbc = serializers.ReadOnlyField()
-    is_international = serializers.ReadOnlyField()
-    is_african = serializers.ReadOnlyField()
-    curriculum_info = serializers.ReadOnlyField()
+    def validate_percentage(self, value, field_name):
+        """Validate percentage fields"""
+        if value < 0 or value > 100:
+            raise serializers.ValidationError(
+                _(f"{field_name} must be between 0 and 100")
+            )
+        return value
     
-    # Nested fields
-    current_term = serializers.SerializerMethodField()
-    terms_count = serializers.SerializerMethodField()
-    classes_count = serializers.SerializerMethodField()
+    def validate_date_range(self, start_date, end_date):
+        """Validate date range"""
+        if end_date < start_date:
+            raise serializers.ValidationError(_("End date must be after start date"))
+        return True
+
+
+class AcademicPeriodValidationSerializer(BaseValidationSerializer):
+    """Validate academic period"""
+    academic_year = serializers.CharField(max_length=20)
+    term = serializers.ChoiceField(choices=TermType.choices)
+    
+    def validate_academic_year(self, value):
+        try:
+            years = value.split('-')
+            if len(years) != 2:
+                raise serializers.ValidationError(
+                    _("Academic year must be in format YYYY-YYYY")
+                )
+            year1, year2 = int(years[0]), int(years[1])
+            if year2 != year1 + 1:
+                raise serializers.ValidationError(
+                    _("Second year must be one greater than first year")
+                )
+        except (ValueError, IndexError):
+            raise serializers.ValidationError(_("Invalid academic year format"))
+        return value
+
+
+class DateRangeValidationSerializer(BaseValidationSerializer):
+    """Validate date range"""
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
+    
+    def validate(self, data):
+        self.validate_date_range(data['start_date'], data['end_date'])
+        return data
+
+
+# ============================================================================
+# ACADEMIC STRUCTURE SERIALIZERS
+# ============================================================================
+
+class AcademicYearSerializer(TimestampSerializer):
+    """Academic Year serializer with statistics"""
+    is_current = serializers.BooleanField(read_only=True)
+    statistics = serializers.SerializerMethodField()
+    term_dates = serializers.SerializerMethodField()
     
     class Meta:
         model = AcademicYear
         fields = [
-            # Basic fields
-            'id', 'name', 'code', 'start_date', 'end_date', 'description',
-            'is_current', 'is_active',
-            
-            # Curriculum configuration
-            'curriculum_system', 'academic_structure', 'grading_system',
-            'term_structure', 'total_terms', 'language_mode', 'additional_languages',
-            'assessment_model', 'external_exams',
-            
-            # Configuration
-            'fee_structure', 'currency', 'important_dates', 'holiday_calendar',
-            'cbc_configuration', 'international_config', 'report_config', 'metadata',
-            
-            # Status flags
-            'is_configured', 'is_locked', 'allow_admissions',
-            'allow_assessments', 'allow_transcripts',
-            
-            # Computed fields
-            'duration_days', 'progress_percentage', 'status', 'is_currently_active',
-            'is_cbc', 'is_international', 'is_african', 'curriculum_info',
-            
-            # Nested counts
-            'current_term', 'terms_count', 'classes_count',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+            'id', 'name', 'academic_year', 'term',
+            'start_date', 'end_date', 'is_current', 'description',
+            'first_term_start', 'first_term_end',
+            'second_term_start', 'second_term_end',
+            'third_term_start', 'third_term_end',
+            'min_attendance_percentage', 'passing_grade', 'max_absent_days',
+            'statistics', 'term_dates',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'code', 'created_at', 'updated_at']
-    
-    def get_current_term(self, obj):
-        """Get current term for the academic year."""
-        current_term = obj.get_current_term()
-        if current_term:
-            return AcademicTermMinimalSerializer(current_term).data
-        return None
-    
-    def get_terms_count(self, obj):
-        """Get count of terms in this academic year."""
-        return obj.terms.count()
-    
-    def get_classes_count(self, obj):
-        """Get count of classes in this academic year."""
-        return obj.classes.count()
+        read_only_fields = [
+            'created_at', 'updated_at', 'is_current', 'statistics'
+        ]
     
     def validate(self, data):
-        """Validate academic year data."""
-        errors = {}
+        # Validate academic year format
+        serializer = AcademicPeriodValidationSerializer(data={
+            'academic_year': data.get('academic_year'),
+            'term': data.get('term')
+        })
+        serializer.is_valid(raise_exception=True)
         
-        start_date = data.get('start_date', getattr(self.instance, 'start_date', None))
-        end_date = data.get('end_date', getattr(self.instance, 'end_date', None))
-        
-        # Date validation
-        if start_date and end_date and start_date >= end_date:
-            errors['end_date'] = _('End date must be after start date')
-        
-        # Curriculum-specific validation
-        curriculum_system = data.get('curriculum_system', getattr(self.instance, 'curriculum_system', None))
-        if curriculum_system == 'cbc_kenya' and not data.get('cbc_configuration'):
-            errors['cbc_configuration'] = _('CBC configuration is required for Kenya CBC system')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
+        # Validate date ranges
+        if data['start_date'] >= data['end_date']:
+            raise serializers.ValidationError(_("End date must be after start date"))
         
         return data
     
-    def create(self, validated_data):
-        """Create academic year with auto-generated code."""
-        if not validated_data.get('code'):
-            year_part = ''.join(filter(str.isdigit, validated_data['name']))
-            validated_data['code'] = f"AY{year_part}" if year_part else f"AY{validated_data['start_date'].year}"
-        
-        return super().create(validated_data)
+    def get_statistics(self, obj):
+        from .models import Enrollment, TeacherAssignment, Class
+        return {
+            'student_count': Enrollment.objects.filter(
+                academic_year=obj.academic_year,
+                term=obj.term,
+                status='active'
+            ).count(),
+            'teacher_count': TeacherAssignment.objects.filter(
+                academic_year=obj.academic_year,
+                term=obj.term,
+                is_active=True
+            ).values('teacher').distinct().count(),
+            'class_count': Class.objects.filter(
+                academic_year=obj.academic_year,
+                term=obj.term
+            ).count(),
+        }
+    
+    def get_term_dates(self, obj):
+        return {
+            'first_term': {
+                'start': obj.first_term_start,
+                'end': obj.first_term_end,
+                'days': obj.get_days_in_term(TermType.FIRST_TERM)
+            },
+            'second_term': {
+                'start': obj.second_term_start,
+                'end': obj.second_term_end,
+                'days': obj.get_days_in_term(TermType.SECOND_TERM)
+            },
+            'third_term': {
+                'start': obj.third_term_start,
+                'end': obj.third_term_end,
+                'days': obj.get_days_in_term(TermType.THIRD_TERM)
+            } if obj.third_term_start and obj.third_term_end else None
+        }
 
 
-class AcademicTermSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for Academic Term model."""
-    
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    
-    # Computed fields
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    duration_days = serializers.ReadOnlyField()
-    teaching_weeks = serializers.ReadOnlyField()
-    progress_percentage = serializers.ReadOnlyField()
-    status = serializers.ReadOnlyField()
-    is_currently_active = serializers.ReadOnlyField()
-    
-    # Nested counts
-    events_count = serializers.SerializerMethodField()
-    lesson_plans_count = serializers.SerializerMethodField()
+class AcademicTermSerializer(TimestampSerializer):
+    """Academic Term serializer"""
+    academic_year_info = serializers.SerializerMethodField()
+    duration_info = serializers.SerializerMethodField()
+    enrollment_count = serializers.IntegerField(read_only=True)
     
     class Meta:
         model = AcademicTerm
         fields = [
-            'id', 'academic_year', 'academic_year_name', 'name', 'start_date', 'end_date',
-            'is_current', 'term_order', 'assessment_periods', 'holidays', 'important_dates',
-            'term_fees', 'is_active',
-            
-            # Computed fields
-            'duration_days', 'teaching_weeks', 'progress_percentage', 'status',
-            'is_currently_active',
-            
-            # Nested counts
-            'events_count', 'lesson_plans_count',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+            'id', 'academic_year', 'academic_year_info', 'name', 'term_type',
+            'start_date', 'end_date', 'is_current', 'registration_deadline',
+            'fee_payment_deadline', 'examination_start', 'examination_end',
+            'closing_date', 'next_term_starts', 'total_instructional_days',
+            'total_holidays', 'minimum_attendance_days', 'minimum_pass_percentage',
+            'assessment_weight', 'fee_structure', 'description', 'enrollment_count',
+            'duration_info', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'created_at', 'updated_at', 'enrollment_count', 'duration_info'
+        ]
+    
+    def get_academic_year_info(self, obj):
+        return {
+            'id': obj.academic_year.id,
+            'name': obj.academic_year.name,
+            'academic_year': obj.academic_year.academic_year,
+        }
+    
+    def get_duration_info(self, obj):
+        return {
+            'duration_days': obj.duration_days,
+            'days_remaining': obj.days_remaining,
+            'is_active': obj.is_active,
+        }
+
+
+class GradeLevelSerializer(TimestampSerializer):
+    """Grade Level serializer"""
+    statistics = serializers.SerializerMethodField()
+    next_grade_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = GradeLevel
+        fields = [
+            'id', 'name', 'code', 'level', 'order', 'description',
+            'age_range_min', 'age_range_max', 'next_grade', 'next_grade_info',
+            'curriculum', 'max_students', 'statistics',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
     
-    def get_events_count(self, obj):
-        """Get count of events in this term."""
-        return obj.academic_events.count()
+    def get_statistics(self, obj):
+        return {
+            'student_count': obj.student_count,
+            'available_slots': obj.available_slots,
+            'utilization_percentage': (
+                (obj.student_count / obj.max_students * 100) 
+                if obj.max_students > 0 else 0
+            )
+        }
     
-    def get_lesson_plans_count(self, obj):
-        """Get count of lesson plans in this term."""
-        return obj.lesson_plans.count()
-    
-    def validate(self, data):
-        """Validate term data."""
-        errors = {}
-        
-        start_date = data.get('start_date', getattr(self.instance, 'start_date', None))
-        end_date = data.get('end_date', getattr(self.instance, 'end_date', None))
-        academic_year = data.get('academic_year', getattr(self.instance, 'academic_year', None))
-        
-        if start_date and end_date and academic_year:
-            # Date order validation
-            if start_date >= end_date:
-                errors['end_date'] = _('End date must be after start date')
-            
-            # Validate within academic year
-            if start_date < academic_year.start_date:
-                errors['start_date'] = _('Term start date cannot be before academic year start date')
-            
-            if end_date > academic_year.end_date:
-                errors['end_date'] = _('Term end date cannot be after academic year end date')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
+    def get_next_grade_info(self, obj):
+        if obj.next_grade:
+            return {
+                'id': obj.next_grade.id,
+                'name': obj.next_grade.name,
+                'code': obj.next_grade.code,
+            }
+        return None
 
 
-class SubjectSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for Subject model."""
-    
-    # Related fields
-    prerequisites = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        many=True,
-        required=False
-    )
-    department = PrimaryKeyRelatedUUIDField(
-        queryset='teachers.Department.objects.all()',
-        required=False,
-        allow_null=True
-    )
-    
-    # Computed fields
-    weekly_hours = serializers.ReadOnlyField()
-    is_cbc_subject = serializers.ReadOnlyField()
-    subject_info = serializers.ReadOnlyField()
-    full_name = serializers.ReadOnlyField()
-    
-    # Nested counts
-    teacher_assignments_count = serializers.SerializerMethodField()
-    student_assignments_count = serializers.SerializerMethodField()
-    syllabus_count = serializers.SerializerMethodField()
+class SubjectSerializer(TimestampSerializer):
+    """Subject serializer"""
+    statistics = serializers.SerializerMethodField()
+    prerequisites_info = serializers.SerializerMethodField()
+    grade_levels_info = serializers.SerializerMethodField()
     
     class Meta:
         model = Subject
         fields = [
-            # Basic information
-            'id', 'name', 'code', 'description', 'is_active',
-            
-            # Academic information
-            'category', 'curriculum', 'cbc_competency_area', 'cbc_pathway',
-            'is_cbc_core', 'is_compulsory', 'grade_levels',
-            
-            # Academic requirements
-            'credits', 'periods_per_week', 'practical_weight', 'assessment_methods',
-            'project_based',
-            
-            # Resources
-            'resources_required', 'recommended_books', 'syllabus_link', 'notes',
-            
-            # Relationships
-            'prerequisites', 'department', 'minimum_qualification',
-            
-            # Status flags
-            'is_examined', 'is_elective',
-            
-            # Computed fields
-            'weekly_hours', 'is_cbc_subject', 'subject_info', 'full_name',
-            
-            # Nested counts
-            'teacher_assignments_count', 'student_assignments_count', 'syllabus_count',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
+            'id', 'name', 'code', 'description', 'grade_levels', 'grade_levels_info',
+            'is_core', 'category', 'credit_hours', 'passing_score', 'max_score',
+            'department', 'prerequisites', 'prerequisites_info', 'syllabus',
+            'statistics', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'code', 'created_at', 'updated_at']
     
-    def get_teacher_assignments_count(self, obj):
-        """Get count of teacher assignments for this subject."""
-        return obj.subject_assignments.count()
+    def get_statistics(self, obj):
+        return {
+            'teacher_count': len(obj.get_teachers()),
+            'student_count': obj.get_student_count(),
+            'average_score': obj.get_average_score(),
+        }
     
-    def get_student_assignments_count(self, obj):
-        """Get count of student assignments for this subject."""
-        return obj.student_assignments.count()
-    
-    def get_syllabus_count(self, obj):
-        """Get count of syllabus entries for this subject."""
-        return obj.syllabi.count()
-    
-    def validate(self, data):
-        """Validate subject data."""
-        errors = {}
-        
-        # Practical weight validation
-        practical_weight = data.get('practical_weight', getattr(self.instance, 'practical_weight', 0))
-        if practical_weight < 0 or practical_weight > 100:
-            errors['practical_weight'] = _('Practical weight must be between 0 and 100')
-        
-        # Periods per week validation
-        periods_per_week = data.get('periods_per_week', getattr(self.instance, 'periods_per_week', 5))
-        if periods_per_week < 1 or periods_per_week > 20:
-            errors['periods_per_week'] = _('Periods per week must be between 1 and 20')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
-    
-    def create(self, validated_data):
-        """Create subject with auto-generated code."""
-        # Generate code from name if not provided
-        if not validated_data.get('code') and validated_data.get('name'):
-            name = validated_data['name']
-            code = ''.join(c for c in name[:3] if c.isalpha()).upper()
-            
-            # Ensure uniqueness
-            count = Subject.objects.filter(code__startswith=code).count()
-            if count > 0:
-                code = f"{code}{count + 1}"
-            
-            validated_data['code'] = code
-        
-        return super().create(validated_data)
-
-
-class ClassSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for Class model."""
-    
-    # Related fields
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    class_teacher = PrimaryKeyRelatedUUIDField(
-        queryset=TeacherProfile.objects.filter(is_active=True),
-        required=False,
-        allow_null=True
-    )
-    
-    # Computed fields
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    class_teacher_name = serializers.SerializerMethodField()
-    display_name = serializers.ReadOnlyField()
-    available_seats = serializers.ReadOnlyField()
-    is_full = serializers.ReadOnlyField()
-    occupancy_rate = serializers.ReadOnlyField()
-    is_cbc_class = serializers.ReadOnlyField()
-    cbc_info = serializers.ReadOnlyField()
-    class_code = serializers.ReadOnlyField()
-    academic_info = serializers.ReadOnlyField()
-    
-    # Nested counts
-    student_count = serializers.SerializerMethodField()
-    subject_count = serializers.SerializerMethodField()
-    teacher_count = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Class
-        fields = [
-            # Basic Information
-            'id', 'name', 'grade_level', 'section', 'stream', 'room_number',
-            'is_active',
-            
-            # Academic Context
-            'academic_year', 'academic_year_name', 'class_teacher', 'class_teacher_name',
-            
-            # CBC-Specific Fields
-            'education_level', 'cbc_pathway', 'senior_track',
-            
-            # Curriculum Information
-            'primary_curriculum', 'additional_curriculums',
-            
-            # Class Configuration
-            'capacity', 'current_strength', 'schedule', 'portfolio_required',
-            'project_work_required', 'community_service_hours', 'assessment_config',
-            
-            # Additional Information
-            'description', 'class_rules', 'class_color', 'facilities',
-            'average_performance', 'attendance_rate', 'parent_engagement_level',
-            'technology_level', 'special_programs', 'metadata',
-            
-            # Computed fields
-            'display_name', 'available_seats', 'is_full', 'occupancy_rate',
-            'is_cbc_class', 'cbc_info', 'class_code', 'academic_info',
-            
-            # Nested counts
-            'student_count', 'subject_count', 'teacher_count',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
+    def get_prerequisites_info(self, obj):
+        return [
+            {'id': p.id, 'name': p.name, 'code': p.code}
+            for p in obj.prerequisites.all()
         ]
-        read_only_fields = ['id', 'current_strength', 'created_at', 'updated_at']
     
-    def get_class_teacher_name(self, obj):
-        """Get class teacher's full name."""
-        if obj.class_teacher and obj.class_teacher.user:
-            return obj.class_teacher.user.get_full_name()
-        return None
-    
-    def get_student_count(self, obj):
-        """Get count of students in this class."""
-        return obj.enrollments.filter(status='active').count()
-    
-    def get_subject_count(self, obj):
-        """Get count of subjects taught in this class."""
-        return obj.get_subjects().count()
-    
-    def get_teacher_count(self, obj):
-        """Get count of teachers assigned to this class."""
-        return obj.get_teachers().count()
-    
-    def validate(self, data):
-        """Validate class data."""
-        errors = {}
-        
-        # Section validation
-        section = data.get('section', getattr(self.instance, 'section', None))
-        if section and not section.isalnum():
-            errors['section'] = _('Section must be alphanumeric')
-        
-        # Capacity validation
-        capacity = data.get('capacity', getattr(self.instance, 'capacity', 30))
-        current_strength = getattr(self.instance, 'current_strength', 0) if self.instance else 0
-        
-        if capacity < current_strength:
-            errors['capacity'] = _('Capacity cannot be less than current strength')
-        
-        # CBC-specific validation
-        academic_year = data.get('academic_year', getattr(self.instance, 'academic_year', None))
-        if academic_year and academic_year.is_cbc:
-            education_level = data.get('education_level', getattr(self.instance, 'education_level', None))
-            cbc_pathway = data.get('cbc_pathway', getattr(self.instance, 'cbc_pathway', None))
-            
-            if education_level == 'senior_school' and not cbc_pathway:
-                errors['cbc_pathway'] = _('CBC pathway is required for Senior School classes')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
-
-
-class SubTopicSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for SubTopic model."""
-    
-    subject = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        required=True
-    )
-    
-    # Related fields
-    prerequisite_topics = PrimaryKeyRelatedUUIDField(
-        queryset='self',
-        many=True,
-        required=False
-    )
-    
-    # Computed fields
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    subject_code = serializers.CharField(source='subject.code', read_only=True)
-    full_name = serializers.ReadOnlyField()
-    estimated_periods = serializers.ReadOnlyField()
-    is_cbc_aligned = serializers.ReadOnlyField()
-    difficulty_assessment = serializers.ReadOnlyField()
-    
-    # Nested counts
-    lesson_plan_count = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = SubTopic
-        fields = [
-            # Basic Information
-            'id', 'subject', 'subject_name', 'subject_code', 'topic', 'name', 'code',
-            'description', 'order', 'is_active',
-            
-            # Academic Information
-            'competency_alignment', 'learning_objectives', 'key_concepts',
-            'skills_developed',
-            
-            # Time Allocation
-            'estimated_hours', 'priority',
-            
-            # Resources
-            'teaching_resources', 'assessment_methods',
-            'differentiation_strategies', 'project_connections',
-            
-            # Prerequisites
-            'prerequisite_topics',
-            
-            # Status and Tracking
-            'is_completed', 'completion_date',
-            
-            # Computed fields
-            'full_name', 'estimated_periods', 'is_cbc_aligned', 'difficulty_assessment',
-            
-            # Nested counts
-            'lesson_plan_count',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
+    def get_grade_levels_info(self, obj):
+        return [
+            {'id': gl.id, 'name': gl.name, 'code': gl.code}
+            for gl in obj.grade_levels.all()
         ]
-        read_only_fields = ['id', 'code', 'created_at', 'updated_at']
-    
-    def get_lesson_plan_count(self, obj):
-        """Get count of lesson plans for this sub-topic."""
-        return obj.lesson_plans.count()
-    
-    def create(self, validated_data):
-        """Create sub-topic with auto-generated code."""
-        if not validated_data.get('code'):
-            subject = validated_data['subject']
-            name = validated_data['name']
-            subject_code = subject.code if subject else 'GEN'
-            clean_name = ''.join(c for c in name if c.isalnum()).upper()
-            validated_data['code'] = f"{subject_code}-{clean_name[:10]}" if clean_name else f"{subject_code}-ST"
-        
-        return super().create(validated_data)
 
 
 # ============================================================================
-# ASSIGNMENT SERIALIZERS
+# STUDENT MANAGEMENT SERIALIZERS
 # ============================================================================
 
-class SubjectAssignmentSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for SubjectAssignment model."""
-    
-    # Related fields
-    subject = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        required=True
-    )
-    teacher = PrimaryKeyRelatedUUIDField(
-        queryset=TeacherProfile.objects.all(),
-        required=True
-    )
-    class_assigned = PrimaryKeyRelatedUUIDField(
-        queryset=Class.objects.all(),
-        required=True
-    )
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    
-    # Computed fields
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    teacher_name = serializers.SerializerMethodField()
-    class_name = serializers.CharField(source='class_assigned.display_name', read_only=True)
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    
-    teaching_load_hours = serializers.ReadOnlyField()
-    is_current = serializers.ReadOnlyField()
-    assignment_duration_days = serializers.ReadOnlyField()
-    is_cbc_assignment = serializers.ReadOnlyField()
-    competency_info = serializers.ReadOnlyField()
-    workload_score = serializers.ReadOnlyField()
-    
-    # Nested
-    student_count = serializers.SerializerMethodField()
+class EnrollmentSerializer(TimestampSerializer):
+    """Student Enrollment serializer"""
+    student_info = serializers.SerializerMethodField()
+    class_info = serializers.SerializerMethodField()
+    academic_performance = serializers.SerializerMethodField()
+    attendance_summary = serializers.SerializerMethodField()
     
     class Meta:
-        model = SubjectAssignment
+        model = Enrollment
         fields = [
-            # Core Relationships
-            'id', 'subject', 'subject_name', 'teacher', 'teacher_name',
-            'class_assigned', 'class_name', 'academic_year', 'academic_year_name',
-            'is_active',
-            
-            # Teaching Configuration
-            'periods_per_week', 'is_class_teacher', 'role_type',
-            
-            # CBC-Specific Teaching Requirements
-            'cbc_competency_focus', 'project_supervision_required',
-            'portfolio_assessment_duty',
-            
-            # Schedule Information
-            'teaching_schedule', 'assessment_responsibilities',
-            'additional_responsibilities', 'responsibility_allowance',
-            
-            # Status and Dates
-            'assigned_date', 'effective_from', 'effective_until',
-            'performance_rating', 'last_performance_review',
-            'assignment_status', 'notes',
-            
-            # Computed fields
-            'teaching_load_hours', 'is_current', 'assignment_duration_days',
-            'is_cbc_assignment', 'competency_info', 'workload_score',
-            
-            # Nested
-            'student_count',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+            'id', 'student', 'student_info', 'class_assigned', 'class_info',
+            'academic_year', 'term', 'enrollment_date', 'enrollment_type',
+            'enrollment_number', 'status', 'academic_status', 'remarks',
+            'academic_performance', 'attendance_summary', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'enrollment_number', 'academic_performance', 'attendance_summary',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'assigned_date', 'created_at', 'updated_at']
     
-    def get_teacher_name(self, obj):
-        """Get teacher's full name."""
-        if obj.teacher and obj.teacher.user:
-            return obj.teacher.user.get_full_name()
+    def get_student_info(self, obj):
+        return {
+            'id': obj.student.id,
+            'name': obj.student.get_full_name(),
+            'email': obj.student.email,
+            'student_id': obj.student.student_id,
+            'profile_picture': obj.student.profile_picture.url 
+                if obj.student.profile_picture else None,
+        }
+    
+    def get_class_info(self, obj):
+        return {
+            'id': obj.class_assigned.id,
+            'name': obj.class_assigned.name,
+            'code': obj.class_assigned.code,
+            'grade_level': obj.class_assigned.grade_level.name,
+            'form_teacher': obj.class_assigned.form_teacher.get_full_name() 
+                if obj.class_assigned.form_teacher else None,
+        }
+    
+    def get_academic_performance(self, obj):
+        return obj.get_academic_performance()
+    
+    def get_attendance_summary(self, obj):
+        return obj.get_attendance_summary()
+
+
+class EnrollmentCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating enrollments"""
+    class Meta:
+        model = Enrollment
+        fields = ['student', 'class_assigned', 'academic_year', 'term', 'enrollment_type']
+
+
+class SubjectEnrollmentSerializer(TimestampSerializer):
+    """Subject Enrollment serializer"""
+    enrollment_info = serializers.SerializerMethodField()
+    subject_info = serializers.SerializerMethodField()
+    teacher_info = serializers.SerializerMethodField()
+    performance = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = SubjectEnrollment
+        fields = [
+            'id', 'enrollment', 'enrollment_info', 'subject', 'subject_info',
+            'teacher', 'teacher_info', 'academic_year', 'term', 'enrollment_date',
+            'status', 'grade', 'score', 'credits_earned', 'remarks', 'performance',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['performance', 'created_at', 'updated_at']
+    
+    def get_enrollment_info(self, obj):
+        return {
+            'id': obj.enrollment.id,
+            'student_name': obj.enrollment.student.get_full_name(),
+            'class_name': obj.enrollment.class_assigned.name,
+        }
+    
+    def get_subject_info(self, obj):
+        return {
+            'id': obj.subject.id,
+            'name': obj.subject.name,
+            'code': obj.subject.code,
+            'credit_hours': obj.subject.credit_hours,
+        }
+    
+    def get_teacher_info(self, obj):
+        if obj.teacher:
+            return {
+                'id': obj.teacher.id,
+                'name': obj.teacher.get_full_name(),
+                'email': obj.teacher.email,
+            }
         return None
     
-    def get_student_count(self, obj):
-        """Get number of students in the assigned class."""
-        return obj.class_assigned.current_strength
+    def get_performance(self, obj):
+        return {
+            'assessment_grades': obj.get_assessment_grades(),
+            'is_passing': obj.score >= obj.subject.passing_score 
+                if obj.score else None,
+            'final_grade': obj.grade,
+        }
+
+
+# ============================================================================
+# ASSESSMENT & GRADING SERIALIZERS
+# ============================================================================
+
+class AssessmentSerializer(TimestampSerializer):
+    """Assessment serializer"""
+    statistics = serializers.SerializerMethodField()
+    subject_info = serializers.SerializerMethodField()
+    class_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Assessment
+        fields = [
+            'id', 'name', 'code', 'subject', 'subject_info', 'class_assigned', 'class_info',
+            'assessment_type', 'date', 'start_time', 'end_time', 'total_marks',
+            'passing_marks', 'weight', 'description', 'instructions', 'academic_year',
+            'term', 'is_published', 'published_date', 'created_by', 'statistics',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'statistics', 'published_date', 'created_at', 'updated_at'
+        ]
+    
+    def get_statistics(self, obj):
+        return {
+            'class_average': obj.get_class_average(),
+            'pass_rate': obj.get_pass_rate(),
+            'total_students': Grade.objects.filter(assessment=obj).count(),
+        }
+    
+    def get_subject_info(self, obj):
+        return SubjectMinimalSerializer(obj.subject).data
+    
+    def get_class_info(self, obj):
+        return ClassMinimalSerializer(obj.class_assigned).data
+
+
+class GradeSerializer(TimestampSerializer):
+    """Grade serializer"""
+    student_info = serializers.SerializerMethodField()
+    assessment_info = serializers.SerializerMethodField()
+    subject_info = serializers.SerializerMethodField()
+    performance_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Grade
+        fields = [
+            'id', 'student', 'student_info', 'assessment', 'assessment_info',
+            'subject', 'subject_info', 'class_assigned', 'enrollment', 'score',
+            'grade', 'grade_point', 'percentage', 'remarks', 'is_absent',
+            'is_exempted', 'graded_by', 'graded_date', 'performance_info',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'grade', 'grade_point', 'percentage', 'performance_info',
+            'created_at', 'updated_at'
+        ]
+    
+    def get_student_info(self, obj):
+        return StudentMinimalSerializer(obj.student).data
+    
+    def get_assessment_info(self, obj):
+        return {
+            'id': obj.assessment.id,
+            'name': obj.assessment.name,
+            'type': obj.assessment.get_assessment_type_display(),
+            'total_marks': obj.assessment.total_marks,
+        }
+    
+    def get_subject_info(self, obj):
+        return SubjectMinimalSerializer(obj.subject).data
+    
+    def get_performance_info(self, obj):
+        return {
+            'is_passing': obj.is_passing,
+            'grade_description': obj.grade_description,
+        }
+
+
+class GradeBulkCreateSerializer(BaseValidationSerializer):
+    """Bulk grade creation serializer"""
+    assessment = serializers.PrimaryKeyRelatedField(queryset=Assessment.objects.all())
+    grades = serializers.ListField(
+        child=serializers.DictField(),
+        min_length=1
+    )
+    
+    def validate_grades(self, value):
+        for grade_data in value:
+            required_fields = ['student_id', 'score']
+            for field in required_fields:
+                if field not in grade_data:
+                    raise serializers.ValidationError(
+                        _(f"Missing required field: {field}")
+                    )
+            
+            # Validate student exists
+            try:
+                User.objects.get(id=grade_data['student_id'], role='student')
+            except User.DoesNotExist:
+                raise serializers.ValidationError(
+                    _(f"Student not found: {grade_data['student_id']}")
+                )
+            
+            # Validate score range
+            if grade_data['score'] < 0:
+                raise serializers.ValidationError(_("Score cannot be negative"))
+        
+        return value
+    
+    def create(self, validated_data):
+        assessment = validated_data['assessment']
+        grades_data = validated_data['grades']
+        request_user = self.context.get('request').user
+        
+        created_grades = []
+        errors = []
+        
+        for grade_data in grades_data:
+            try:
+                student = User.objects.get(id=grade_data['student_id'], role='student')
+                
+                # Get enrollment
+                enrollment = Enrollment.objects.filter(
+                    student=student,
+                    academic_year=assessment.academic_year,
+                    term=assessment.term,
+                    class_assigned=assessment.class_assigned,
+                    status='active'
+                ).first()
+                
+                if not enrollment:
+                    errors.append({
+                        'student_id': grade_data['student_id'],
+                        'error': _("Student not enrolled in this class")
+                    })
+                    continue
+                
+                # Create grade
+                grade = Grade.objects.create(
+                    student=student,
+                    assessment=assessment,
+                    subject=assessment.subject,
+                    class_assigned=assessment.class_assigned,
+                    enrollment=enrollment,
+                    score=grade_data['score'],
+                    remarks=grade_data.get('remarks', ''),
+                    is_absent=grade_data.get('is_absent', False),
+                    is_exempted=grade_data.get('is_exempted', False),
+                    graded_by=request_user,
+                )
+                
+                created_grades.append(grade)
+                
+            except Exception as e:
+                errors.append({
+                    'student_id': grade_data.get('student_id'),
+                    'error': str(e)
+                })
+        
+        return {
+            'created': len(created_grades),
+            'errors': errors,
+            'grades': GradeSerializer(created_grades, many=True).data
+        }
+
+
+class TranscriptSerializer(TimestampSerializer):
+    """Transcript serializer"""
+    student_info = serializers.SerializerMethodField()
+    academic_performance = serializers.SerializerMethodField()
+    generated_by_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Transcript
+        fields = [
+            'id', 'student', 'student_info', 'academic_year', 'term',
+            'gpa', 'cgpa', 'total_credits', 'credits_earned',
+            'class_rank', 'grade_level_rank', 'overall_rank',
+            'remarks', 'generated_by', 'generated_by_info',
+            'generated_date', 'is_official', 'document',
+            'academic_performance', 'created_at', 'updated_at'
+        ]
+    
+    def get_student_info(self, obj):
+        return StudentMinimalSerializer(obj.student).data
+    
+    def get_academic_performance(self, obj):
+        from .models import Grade
+        
+        grades = Grade.objects.filter(
+            student=obj.student,
+            assessment__academic_year=obj.academic_year,
+            assessment__term=obj.term
+        ).select_related('subject', 'assessment')
+        
+        subject_data = {}
+        for grade in grades:
+            subject_id = grade.subject.id
+            if subject_id not in subject_data:
+                subject_data[subject_id] = {
+                    'subject': SubjectMinimalSerializer(grade.subject).data,
+                    'grades': [],
+                    'scores': [],
+                }
+            
+            subject_data[subject_id]['grades'].append({
+                'assessment': grade.assessment.name,
+                'type': grade.assessment.get_assessment_type_display(),
+                'score': float(grade.score),
+                'grade': grade.grade,
+            })
+            subject_data[subject_id]['scores'].append(float(grade.score))
+        
+        # Calculate averages
+        result = []
+        for subject_id, data in subject_data.items():
+            avg_score = sum(data['scores']) / len(data['scores']) if data['scores'] else 0
+            result.append({
+                'subject': data['subject'],
+                'average_score': avg_score,
+                'grades': data['grades'],
+            })
+        
+        return result
+    
+    def get_generated_by_info(self, obj):
+        if obj.generated_by:
+            return TeacherMinimalSerializer(obj.generated_by).data
+        return None
+
+
+# ============================================================================
+# ATTENDANCE SERIALIZERS
+# ============================================================================
+
+class AttendanceSerializer(TimestampSerializer):
+    """Attendance serializer"""
+    student_info = serializers.SerializerMethodField()
+    class_info = serializers.SerializerMethodField()
+    duration_info = serializers.SerializerMethodField()
+    verified_by_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Attendance
+        fields = [
+            'id', 'student', 'student_info', 'enrollment', 'class_assigned', 'class_info',
+            'academic_year', 'term', 'date', 'status', 'check_in_time', 'check_out_time',
+            'reason', 'medical_certificate', 'parent_note', 'verified_by', 'verified_by_info',
+            'verified_date', 'remarks', 'duration_info', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['duration_info', 'created_at', 'updated_at']
+    
+    def get_student_info(self, obj):
+        return StudentMinimalSerializer(obj.student).data
+    
+    def get_class_info(self, obj):
+        return ClassMinimalSerializer(obj.class_assigned).data
+    
+    def get_duration_info(self, obj):
+        duration = obj.duration
+        return {
+            'duration_minutes': duration.seconds // 60 if duration else None,
+            'duration_hours': duration.seconds // 3600 if duration else None,
+            'is_late': obj.is_late,
+        }
+    
+    def get_verified_by_info(self, obj):
+        if obj.verified_by:
+            return TeacherMinimalSerializer(obj.verified_by).data
+        return None
+
+
+class AttendanceBulkCreateSerializer(BaseValidationSerializer):
+    """Bulk attendance creation serializer"""
+    class_assigned = serializers.PrimaryKeyRelatedField(queryset=Class.objects.all())
+    date = serializers.DateField()
+    attendance_records = serializers.ListField(
+        child=serializers.DictField(),
+        min_length=1
+    )
     
     def validate(self, data):
-        """Validate assignment data."""
-        errors = {}
-        
-        teacher = data.get('teacher', getattr(self.instance, 'teacher', None))
-        academic_year = data.get('academic_year', getattr(self.instance, 'academic_year', None))
-        periods_per_week = data.get('periods_per_week', getattr(self.instance, 'periods_per_week', 5))
-        
-        if teacher and academic_year and periods_per_week:
-            # Check teacher overload
-            current_assignments = SubjectAssignment.objects.filter(
-                teacher=teacher,
-                academic_year=academic_year,
-                is_active=True,
-                assignment_status='active'
-            ).exclude(pk=getattr(self.instance, 'pk', None))
+        for record in data['attendance_records']:
+            required_fields = ['student_id', 'status']
+            for field in required_fields:
+                if field not in record:
+                    raise serializers.ValidationError(
+                        _(f"Missing required field: {field}")
+                    )
             
-            total_periods = sum(assign.periods_per_week for assign in current_assignments) + periods_per_week
-            max_periods = 40  # Default maximum
-            
-            # Adjust based on employment type
-            if teacher.employment_type == 'full_time':
-                max_periods = 40
-            elif teacher.employment_type == 'part_time':
-                max_periods = 20
-            
-            if total_periods > max_periods:
-                errors['periods_per_week'] = _(
-                    f'Teacher would be overloaded. Maximum {max_periods} periods allowed. '
-                    f'Currently assigned {total_periods - periods_per_week} periods.'
+            # Validate student enrollment
+            try:
+                student = User.objects.get(id=record['student_id'], role='student')
+                enrollment = Enrollment.objects.filter(
+                    student=student,
+                    class_assigned=data['class_assigned'],
+                    academic_year=data['class_assigned'].academic_year,
+                    term=data['class_assigned'].term,
+                    status='active'
+                ).first()
+                
+                if not enrollment:
+                    raise serializers.ValidationError(
+                        _(f"Student {student.get_full_name()} not enrolled in this class")
+                    )
+                    
+            except User.DoesNotExist:
+                raise serializers.ValidationError(
+                    _(f"Student not found: {record['student_id']}")
                 )
         
-        # Date validation
-        effective_from = data.get('effective_from', getattr(self.instance, 'effective_from', None))
-        effective_until = data.get('effective_until', getattr(self.instance, 'effective_until', None))
-        
-        if effective_from and effective_until and effective_from > effective_until:
-            errors['effective_until'] = _('Effective until date must be after effective from date')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
-
-
-class StudentEnrollmentSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for StudentEnrollment model."""
-    
-    # Related fields
-    student = PrimaryKeyRelatedUUIDField(
-        queryset=StudentProfile.objects.all(),
-        required=True
-    )
-    class_enrolled = PrimaryKeyRelatedUUIDField(
-        queryset=Class.objects.all(),
-        required=True
-    )
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    
-    # Computed fields
-    student_name = serializers.SerializerMethodField()
-    class_name = serializers.CharField(source='class_enrolled.display_name', read_only=True)
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    
-    is_current = serializers.ReadOnlyField()
-    enrollment_duration = serializers.ReadOnlyField()
-    is_cbc_enrollment = serializers.ReadOnlyField()
-    cbc_info = serializers.ReadOnlyField()
-    academic_progress = serializers.ReadOnlyField()
-    
-    class Meta:
-        model = StudentEnrollment
-        fields = [
-            # Core Relationships
-            'id', 'student', 'student_name', 'class_enrolled', 'class_name',
-            'academic_year', 'academic_year_name', 'is_active',
-            
-            # Enrollment Information
-            'enrollment_date', 'enrollment_number', 'status', 'status_changed_date',
-            'status_reason', 'roll_number',
-            
-            # CBC-Specific Information
-            'cbc_pathway_selection', 'senior_track_selection', 'portfolio_status',
-            'community_service_hours_completed',
-            
-            # House and Extracurricular
-            'house', 'extracurricular_activities',
-            
-            # Previous School Information
-            'previous_school', 'transfer_certificate', 'previous_performance',
-            
-            # Financial Information
-            'fee_status', 'fee_arrears',
-            
-            # Parent/Guardian Information
-            'parent_engagement_level',
-            
-            # Special Needs and Support
-            'special_needs', 'support_services', 'academic_support_level',
-            
-            # Performance Tracking
-            'average_performance', 'attendance_percentage',
-            
-            # Metadata
-            'remarks', 'enrollment_metadata',
-            
-            # Computed fields
-            'is_current', 'enrollment_duration', 'is_cbc_enrollment', 'cbc_info',
-            'academic_progress',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'enrollment_number', 'status_changed_date', 'created_at', 'updated_at']
-    
-    def get_student_name(self, obj):
-        """Get student's full name."""
-        if obj.student and obj.student.user:
-            return obj.student.user.get_full_name()
-        return None
-    
-    def validate(self, data):
-        """Validate enrollment data."""
-        errors = {}
-        
-        student = data.get('student', getattr(self.instance, 'student', None))
-        academic_year = data.get('academic_year', getattr(self.instance, 'academic_year', None))
-        class_enrolled = data.get('class_enrolled', getattr(self.instance, 'class_enrolled', None))
-        roll_number = data.get('roll_number', getattr(self.instance, 'roll_number', None))
-        
-        # Check duplicate enrollment
-        if student and academic_year:
-            duplicate_enrollment = StudentEnrollment.objects.filter(
-                student=student,
-                academic_year=academic_year
-            ).exclude(pk=getattr(self.instance, 'pk', None)).exists()
-            
-            if duplicate_enrollment:
-                errors['academic_year'] = _('Student is already enrolled for this academic year')
-        
-        # Check roll number uniqueness
-        if roll_number and class_enrolled and academic_year:
-            duplicate_roll = StudentEnrollment.objects.filter(
-                academic_year=academic_year,
-                class_enrolled=class_enrolled,
-                roll_number=roll_number
-            ).exclude(pk=getattr(self.instance, 'pk', None)).exists()
-            
-            if duplicate_roll:
-                errors['roll_number'] = _('Roll number must be unique within the class for this academic year')
-        
-        # CBC validation
-        if class_enrolled and class_enrolled.is_cbc_class:
-            if class_enrolled.education_level == 'senior_school' and not data.get('cbc_pathway_selection'):
-                errors['cbc_pathway_selection'] = _('CBC pathway selection is required for Senior School enrollment')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
         return data
     
     def create(self, validated_data):
-        """Create enrollment with auto-generated roll number if not provided."""
-        if 'roll_number' not in validated_data:
-            class_enrolled = validated_data['class_enrolled']
-            academic_year = validated_data['academic_year']
-            
-            last_roll = StudentEnrollment.objects.filter(
-                class_enrolled=class_enrolled,
-                academic_year=academic_year
-            ).exclude(roll_number=None).order_by('-roll_number').first()
-            
-            validated_data['roll_number'] = (last_roll.roll_number + 1) if last_roll else 1
+        class_obj = validated_data['class_assigned']
+        date = validated_data['date']
+        records = validated_data['attendance_records']
+        request_user = self.context.get('request').user
         
-        return super().create(validated_data)
+        created_attendance = []
+        errors = []
+        
+        for record in records:
+            try:
+                student = User.objects.get(id=record['student_id'], role='student')
+                enrollment = Enrollment.objects.get(
+                    student=student,
+                    class_assigned=class_obj,
+                    academic_year=class_obj.academic_year,
+                    term=class_obj.term,
+                    status='active'
+                )
+                
+                attendance, created = Attendance.objects.update_or_create(
+                    student=student,
+                    date=date,
+                    defaults={
+                        'enrollment': enrollment,
+                        'class_assigned': class_obj,
+                        'academic_year': class_obj.academic_year,
+                        'term': class_obj.term,
+                        'status': record['status'],
+                        'reason': record.get('reason', ''),
+                        'check_in_time': record.get('check_in_time'),
+                        'check_out_time': record.get('check_out_time'),
+                        'verified_by': request_user,
+                        'verified_date': timezone.now(),
+                    }
+                )
+                
+                created_attendance.append(attendance)
+                
+            except Exception as e:
+                errors.append({
+                    'student_id': record.get('student_id'),
+                    'error': str(e)
+                })
+        
+        return {
+            'created': len(created_attendance),
+            'errors': errors,
+            'attendance': AttendanceSerializer(created_attendance, many=True).data
+        }
 
 
-class StudentClassAssignmentSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for StudentClassAssignment model."""
-    
-    # Related fields
-    student = PrimaryKeyRelatedUUIDField(
-        queryset=StudentProfile.objects.all(),
-        required=True
-    )
-    class_assigned = PrimaryKeyRelatedUUIDField(
-        queryset=Class.objects.all(),
-        required=True
-    )
-    subject = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        required=False,
-        allow_null=True
-    )
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    assigned_teacher = PrimaryKeyRelatedUUIDField(
-        queryset=TeacherProfile.objects.all(),
-        required=False,
-        allow_null=True
-    )
-    
-    # Computed fields
-    student_name = serializers.SerializerMethodField()
-    class_name = serializers.CharField(source='class_assigned.display_name', read_only=True)
-    subject_name = serializers.CharField(source='subject.name', read_only=True) if Subject else None
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    teacher_name = serializers.SerializerMethodField()
-    
-    is_current = serializers.ReadOnlyField()
-    assignment_duration = serializers.ReadOnlyField()
-    is_cbc_assignment = serializers.ReadOnlyField()
-    subject_info = serializers.ReadOnlyField()
+class AttendanceReportSerializer(TimestampSerializer):
+    """Attendance Report serializer"""
+    student_info = serializers.SerializerMethodField()
+    statistics = serializers.SerializerMethodField()
+    warnings = serializers.SerializerMethodField()
     
     class Meta:
-        model = StudentClassAssignment
+        model = AttendanceReport
         fields = [
-            # Core Relationships
-            'id', 'student', 'student_name', 'class_assigned', 'class_name',
-            'subject', 'subject_name', 'academic_year', 'academic_year_name',
-            'assigned_teacher', 'teacher_name', 'is_active',
-            
-            # Assignment Details
-            'assignment_date', 'effective_from', 'effective_until', 'status',
-            'status_changed_date',
-            
-            # Academic Information
-            'seating_position', 'locker_number', 'desk_number',
-            'is_core_subject', 'is_elective_subject', 'competency_tracking_enabled',
-            'project_work_assigned',
-            
-            # Performance Tracking
-            'performance_level', 'last_assessment_date',
-            
-            # Additional Information
-            'learning_style', 'special_accommodations',
-            
-            # Metadata
-            'remarks', 'assignment_metadata',
-            
-            # Computed fields
-            'is_current', 'assignment_duration', 'is_cbc_assignment', 'subject_info',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+            'id', 'student', 'student_info', 'enrollment', 'academic_year', 'term',
+            'period_start', 'period_end', 'total_school_days', 'days_present',
+            'days_absent', 'days_late', 'days_excused', 'attendance_percentage',
+            'consecutive_absences', 'frequent_absence_pattern', 'is_at_risk',
+            'warning_level', 'parent_notified', 'last_notification_date',
+            'remarks', 'generated_by', 'generated_date', 'statistics', 'warnings',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'status_changed_date', 'created_at', 'updated_at']
+        read_only_fields = ['statistics', 'warnings', 'created_at', 'updated_at']
     
-    def get_student_name(self, obj):
-        """Get student's full name."""
-        if obj.student and obj.student.user:
-            return obj.student.user.get_full_name()
-        return None
+    def get_student_info(self, obj):
+        return StudentMinimalSerializer(obj.student).data
     
-    def get_teacher_name(self, obj):
-        """Get teacher's full name."""
-        if obj.assigned_teacher and obj.assigned_teacher.user:
-            return obj.assigned_teacher.user.get_full_name()
-        return None
+    def get_statistics(self, obj):
+        return {
+            'present_percentage': (obj.days_present / obj.total_school_days * 100) 
+                if obj.total_school_days > 0 else 0,
+            'absent_percentage': (obj.days_absent / obj.total_school_days * 100) 
+                if obj.total_school_days > 0 else 0,
+            'late_percentage': (obj.days_late / obj.total_school_days * 100) 
+                if obj.total_school_days > 0 else 0,
+        }
     
-    def validate(self, data):
-        """Validate assignment data."""
-        errors = {}
+    def get_warnings(self, obj):
+        warnings = []
+        if obj.is_at_risk:
+            warnings.append({
+                'level': obj.warning_level,
+                'message': _("Attendance below minimum threshold"),
+                'attendance_percentage': obj.attendance_percentage,
+            })
         
-        # Date validation
-        effective_from = data.get('effective_from', getattr(self.instance, 'effective_from', None))
-        effective_until = data.get('effective_until', getattr(self.instance, 'effective_until', None))
+        if obj.consecutive_absences >= 3:
+            warnings.append({
+                'level': 'warning',
+                'message': _(f"{obj.consecutive_absences} consecutive absences detected"),
+                'recommendation': _("Contact student/parent"),
+            })
         
-        if effective_from and effective_until and effective_from > effective_until:
-            errors['effective_from'] = _('Effective from date must be before effective until date')
-            errors['effective_until'] = _('Effective until date must be after effective from date')
-        
-        # Duplicate assignment validation
-        student = data.get('student', getattr(self.instance, 'student', None))
-        class_assigned = data.get('class_assigned', getattr(self.instance, 'class_assigned', None))
-        subject = data.get('subject', getattr(self.instance, 'subject', None))
-        academic_year = data.get('academic_year', getattr(self.instance, 'academic_year', None))
-        
-        if student and class_assigned and subject and academic_year:
-            duplicate_assignment = StudentClassAssignment.objects.filter(
-                student=student,
-                class_assigned=class_assigned,
-                subject=subject,
-                academic_year=academic_year,
-                status='active'
-            ).exclude(pk=getattr(self.instance, 'pk', None)).exists()
-            
-            if duplicate_assignment:
-                errors['subject'] = _('Student already has an active assignment for this subject')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
+        return warnings
 
 
 # ============================================================================
-# PLANNING AND CURRICULUM SERIALIZERS
+# TIMETABLE SERIALIZERS
 # ============================================================================
 
-class LessonPlanSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for LessonPlan model."""
-    
-    # Related fields
-    teacher = PrimaryKeyRelatedUUIDField(
-        queryset=TeacherProfile.objects.all(),
-        required=True
-    )
-    subject = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        required=True
-    )
-    sub_topic = PrimaryKeyRelatedUUIDField(
-        queryset=SubTopic.objects.all(),
-        required=True
-    )
-    class_assigned = PrimaryKeyRelatedUUIDField(
-        queryset=Class.objects.all(),
-        required=True
-    )
-    
-    # Computed fields
-    teacher_name = serializers.SerializerMethodField()
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    sub_topic_name = serializers.CharField(source='sub_topic.full_name', read_only=True)
-    class_name = serializers.CharField(source='class_assigned.display_name', read_only=True)
-    
-    lesson_duration_hours = serializers.ReadOnlyField()
+class ScheduleSerializer(TimestampSerializer):
+    """Schedule serializer"""
+    subject_info = serializers.SerializerMethodField()
+    teacher_info = serializers.SerializerMethodField()
+    class_info = serializers.SerializerMethodField()
+    classroom_info = serializers.SerializerMethodField()
+    timing_info = serializers.SerializerMethodField()
     
     class Meta:
-        model = LessonPlan
+        model = Schedule
         fields = [
-            # Basic Information
-            'id', 'title', 'teacher', 'teacher_name', 'subject', 'subject_name',
-            'sub_topic', 'sub_topic_name', 'class_assigned', 'class_name',
-            'date', 'duration_minutes', 'is_active',
-            
-            # Lesson Components
-            'learning_objectives', 'materials_needed', 'introduction',
-            'development', 'conclusion',
-            
-            # Assessment
-            'assessment_methods', 'differentiation_strategies',
-            
-            # Homework/Follow-up
-            'homework_assignment', 'next_lesson_preview',
-            
-            # Status
-            'is_completed', 'actual_duration_minutes',
-            
-            # Reflection
-            'teacher_reflection',
-            
-            # Computed fields
-            'lesson_duration_hours',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
+            'id', 'class_assigned', 'class_info', 'subject', 'subject_info',
+            'teacher', 'teacher_info', 'classroom', 'classroom_info',
+            'day_of_week', 'start_time', 'end_time', 'academic_year', 'term',
+            'is_recurring', 'start_date', 'end_date', 'is_active', 'color_code',
+            'description', 'timing_info', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['timing_info', 'created_at', 'updated_at']
     
-    def get_teacher_name(self, obj):
-        """Get teacher's full name."""
-        if obj.teacher and obj.teacher.user:
-            return obj.teacher.user.get_full_name()
+    def get_subject_info(self, obj):
+        return SubjectMinimalSerializer(obj.subject).data
+    
+    def get_teacher_info(self, obj):
+        return TeacherMinimalSerializer(obj.teacher).data
+    
+    def get_class_info(self, obj):
+        return ClassMinimalSerializer(obj.class_assigned).data
+    
+    def get_classroom_info(self, obj):
+        if obj.classroom:
+            return {
+                'id': obj.classroom.id,
+                'room_number': obj.classroom.room_number,
+                'name': obj.classroom.name,
+                'capacity': obj.classroom.capacity,
+            }
         return None
     
-    def validate(self, data):
-        """Validate lesson plan data."""
-        errors = {}
-        
-        # Duration validation
-        duration_minutes = data.get('duration_minutes', getattr(self.instance, 'duration_minutes', 40))
-        if duration_minutes < 5 or duration_minutes > 120:
-            errors['duration_minutes'] = _('Duration must be between 5 and 120 minutes')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
+    def get_timing_info(self, obj):
+        return {
+            'duration_minutes': obj.duration,
+            'is_current': obj.is_current,
+        }
 
 
-class SyllabusSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for Syllabus model."""
-    
-    # Related fields
-    subject = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        required=True
-    )
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    approved_by = PrimaryKeyRelatedUUIDField(
-        queryset=User.objects.all(),
-        required=False,
-        allow_null=True
-    )
-    
-    # Computed fields
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
-    
-    total_topics = serializers.ReadOnlyField()
-    total_weeks = serializers.ReadOnlyField()
-    competency_coverage = serializers.ReadOnlyField()
+class TeacherAssignmentSerializer(TimestampSerializer):
+    """Teacher Assignment serializer"""
+    teacher_info = serializers.SerializerMethodField()
+    subject_info = serializers.SerializerMethodField()
+    class_info = serializers.SerializerMethodField()
+    assignment_info = serializers.SerializerMethodField()
     
     class Meta:
-        model = Syllabus
+        model = TeacherAssignment
         fields = [
-            # Basic Information
-            'id', 'subject', 'subject_name', 'academic_year', 'academic_year_name',
-            'title', 'version', 'is_active',
-            
-            # Curriculum Standards
-            'curriculum_standards', 'topics', 'objectives', 'methodology',
-            
-            # Learning Resources
-            'recommended_books', 'teaching_resources',
-            
-            # Assessment Framework
-            'assessment_framework',
-            
-            # Competency Mapping
-            'competency_mapping', 'cbc_competencies', 'project_requirements',
-            
-            # Status
-            'is_approved', 'approved_by', 'approved_by_name', 'approval_date',
-            
-            # Metadata
-            'syllabus_file', 'notes',
-            
-            # Computed fields
-            'total_topics', 'total_weeks', 'competency_coverage',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+            'id', 'teacher', 'teacher_info', 'subject', 'subject_info',
+            'class_assigned', 'class_info', 'academic_year', 'term',
+            'is_class_teacher', 'assignment_type', 'hours_per_week',
+            'start_date', 'end_date', 'is_active', 'remarks', 'assignment_info',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'version', 'created_at', 'updated_at']
+        read_only_fields = ['assignment_info', 'created_at', 'updated_at']
     
-    def validate(self, data):
-        """Validate syllabus data."""
-        errors = {}
-        
-        # Validate topics structure
-        topics = data.get('topics', getattr(self.instance, 'topics', []))
-        if topics and not isinstance(topics, list):
-            errors['topics'] = _('Topics must be a list')
-        
-        # Validate version uniqueness
-        subject = data.get('subject', getattr(self.instance, 'subject', None))
-        academic_year = data.get('academic_year', getattr(self.instance, 'academic_year', None))
-        version = data.get('version', getattr(self.instance, 'version', None))
-        
-        if subject and academic_year and version:
-            duplicate_syllabus = Syllabus.objects.filter(
-                subject=subject,
-                academic_year=academic_year,
-                version=version
-            ).exclude(pk=getattr(self.instance, 'pk', None)).exists()
-            
-            if duplicate_syllabus:
-                errors['version'] = _('A syllabus with this version already exists for this subject and academic year')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
+    def get_teacher_info(self, obj):
+        return TeacherMinimalSerializer(obj.teacher).data
     
-    def create(self, validated_data):
-        """Create syllabus with auto-generated version if not provided."""
-        if not validated_data.get('version'):
-            subject = validated_data['subject']
-            academic_year = validated_data['academic_year']
-            
-            latest = Syllabus.objects.filter(
-                subject=subject,
-                academic_year=academic_year
-            ).order_by('-version').first()
-            
-            if latest and latest.version:
-                try:
-                    version_num = float(latest.version)
-                    validated_data['version'] = f"{version_num + 0.1:.1f}"
-                except ValueError:
-                    validated_data['version'] = '1.0'
-            else:
-                validated_data['version'] = '1.0'
-        
-        return super().create(validated_data)
+    def get_subject_info(self, obj):
+        return SubjectMinimalSerializer(obj.subject).data
+    
+    def get_class_info(self, obj):
+        return ClassMinimalSerializer(obj.class_assigned).data
+    
+    def get_assignment_info(self, obj):
+        return {
+            'duration_days': obj.duration,
+            'teaching_hours': obj.get_teaching_hours(),
+        }
 
 
-class AcademicEventSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for AcademicEvent model."""
+# ============================================================================
+# CLASS MANAGEMENT SERIALIZERS
+# ============================================================================
+
+class ClassSerializer(TimestampSerializer):
+    """Class serializer"""
+    statistics = serializers.SerializerMethodField()
+    grade_level_info = serializers.SerializerMethodField()
+    teacher_info = serializers.SerializerMethodField()
+    classroom_info = serializers.SerializerMethodField()
     
-    # Related fields
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    term = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicTerm.objects.all(),
-        required=False,
-        allow_null=True
-    )
-    organizer = PrimaryKeyRelatedUUIDField(
-        queryset=User.objects.all(),
-        required=False,
-        allow_null=True
-    )
+    class Meta:
+        model = Class
+        fields = [
+            'id', 'name', 'code', 'grade_level', 'grade_level_info',
+            'academic_year', 'term', 'classroom', 'classroom_info',
+            'form_teacher', 'teacher_info', 'assistant_teacher',
+            'max_students', 'students_count', 'description', 'statistics',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'students_count', 'statistics', 'created_at', 'updated_at'
+        ]
     
-    # Computed fields
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    term_name = serializers.CharField(source='term.get_name_display', read_only=True)
-    organizer_name = serializers.CharField(source='organizer.get_full_name', read_only=True)
+    def get_statistics(self, obj):
+        return {
+            'available_slots': obj.available_slots,
+            'utilization_percentage': (
+                (obj.students_count / obj.max_students * 100) 
+                if obj.max_students > 0 else 0
+            ),
+            'performance_summary': obj.get_average_performance(),
+            'attendance_summary': obj.get_attendance_summary(),
+        }
     
-    duration_hours = serializers.ReadOnlyField()
-    is_upcoming = serializers.ReadOnlyField()
-    is_ongoing = serializers.ReadOnlyField()
-    is_past = serializers.ReadOnlyField()
+    def get_grade_level_info(self, obj):
+        if obj.grade_level:
+            return {
+                'id': obj.grade_level.id,
+                'name': obj.grade_level.name,
+                'code': obj.grade_level.code,
+            }
+        return None
+    
+    def get_teacher_info(self, obj):
+        teachers = {}
+        if obj.form_teacher:
+            teachers['form_teacher'] = TeacherMinimalSerializer(obj.form_teacher).data
+        if obj.assistant_teacher:
+            teachers['assistant_teacher'] = TeacherMinimalSerializer(obj.assistant_teacher).data
+        return teachers
+    
+    def get_classroom_info(self, obj):
+        if obj.classroom:
+            return {
+                'id': obj.classroom.id,
+                'room_number': obj.classroom.room_number,
+                'name': obj.classroom.name,
+                'capacity': obj.classroom.capacity,
+            }
+        return None
+
+
+# ============================================================================
+# COMPETENCY-BASED EDUCATION SERIALIZERS
+# ============================================================================
+
+class CompetencyAreaSerializer(TimestampSerializer):
+    """Competency Area serializer"""
+    grade_levels_info = serializers.SerializerMethodField()
+    subjects_info = serializers.SerializerMethodField()
+    parent_area_info = serializers.SerializerMethodField()
+    assessment_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CompetencyArea
+        fields = [
+            'id', 'name', 'code', 'description', 'curriculum', 'grade_levels',
+            'grade_levels_info', 'subjects', 'subjects_info', 'assessment_method',
+            'levels', 'parent_area', 'parent_area_info', 'is_core', 'order',
+            'assessment_info', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['assessment_info', 'created_at', 'updated_at']
+    
+    def get_grade_levels_info(self, obj):
+        return [
+            {'id': gl.id, 'name': gl.name, 'code': gl.code}
+            for gl in obj.grade_levels.all()
+        ]
+    
+    def get_subjects_info(self, obj):
+        return [
+            {'id': s.id, 'name': s.name, 'code': s.code}
+            for s in obj.subjects.all()
+        ]
+    
+    def get_parent_area_info(self, obj):
+        if obj.parent_area:
+            return {
+                'id': obj.parent_area.id,
+                'name': obj.parent_area.name,
+                'code': obj.parent_area.code,
+            }
+        return None
+    
+    def get_assessment_info(self, obj):
+        return {
+            'student_count': obj.student_count,
+            'levels': obj.get_competency_levels(),
+        }
+
+
+class CompetencyAssessmentSerializer(TimestampSerializer):
+    """Competency Assessment serializer"""
+    student_info = serializers.SerializerMethodField()
+    competency_area_info = serializers.SerializerMethodField()
+    grade_level_info = serializers.SerializerMethodField()
+    assessed_by_info = serializers.SerializerMethodField()
+    verified_by_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CompetencyAssessment
+        fields = [
+            'id', 'student', 'student_info', 'competency_area', 'competency_area_info',
+            'academic_year', 'term', 'grade_level', 'grade_level_info', 'score', 'level',
+            'assessed_by', 'assessed_by_info', 'assessment_date', 'evidence', 'comments',
+            'is_verified', 'verified_by', 'verified_by_info', 'verified_date',
+            'created_at', 'updated_at'
+        ]
+    
+    def get_student_info(self, obj):
+        return StudentMinimalSerializer(obj.student).data
+    
+    def get_competency_area_info(self, obj):
+        return {
+            'id': obj.competency_area.id,
+            'name': obj.competency_area.name,
+            'code': obj.competency_area.code,
+        }
+    
+    def get_grade_level_info(self, obj):
+        if obj.grade_level:
+            return {
+                'id': obj.grade_level.id,
+                'name': obj.grade_level.name,
+                'code': obj.grade_level.code,
+            }
+        return None
+    
+    def get_assessed_by_info(self, obj):
+        if obj.assessed_by:
+            return TeacherMinimalSerializer(obj.assessed_by).data
+        return None
+    
+    def get_verified_by_info(self, obj):
+        if obj.verified_by:
+            return TeacherMinimalSerializer(obj.verified_by).data
+        return None
+
+
+# ============================================================================
+# INFRASTRUCTURE SERIALIZERS
+# ============================================================================
+
+class ClassroomSerializer(TimestampSerializer):
+    """Classroom serializer"""
+    current_status = serializers.SerializerMethodField()
+    facilities_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Classroom
+        fields = [
+            'id', 'room_number', 'name', 'building', 'floor', 'capacity',
+            'facilities', 'facilities_info', 'is_special', 'special_type',
+            'description', 'is_available', 'current_status',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['current_status', 'created_at', 'updated_at']
+    
+    def get_current_status(self, obj):
+        current_class = obj.current_class
+        if current_class:
+            return {
+                'is_occupied': True,
+                'current_class': {
+                    'id': current_class.id,
+                    'name': current_class.name,
+                    'teacher': current_class.teacher.get_full_name() 
+                        if current_class.teacher else None,
+                }
+            }
+        return {'is_occupied': False}
+    
+    def get_facilities_info(self, obj):
+        return obj.facilities if isinstance(obj.facilities, list) else []
+
+
+# ============================================================================
+# EVENTS AND CONFIGURATION SERIALIZERS
+# ============================================================================
+
+class AcademicEventSerializer(TimestampSerializer):
+    """Academic Event serializer"""
+    participants_info = serializers.SerializerMethodField()
+    affected_classes_info = serializers.SerializerMethodField()
+    event_details = serializers.SerializerMethodField()
     
     class Meta:
         model = AcademicEvent
         fields = [
-            # Basic Information
-            'id', 'title', 'description', 'event_type', 'start_date', 'end_date',
-            'location', 'is_active',
-            
-            # Academic Context
-            'academic_year', 'academic_year_name', 'term', 'term_name',
-            
-            # Participants
-            'target_audience', 'organizer', 'organizer_name',
-            
-            # Status
-            'is_published', 'is_cancelled', 'priority',
-            
-            # Resources
-            'resources', 'requires_attendance', 'reminder_days_before',
-            
-            # Computed fields
-            'duration_hours', 'is_upcoming', 'is_ongoing', 'is_past',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+            'id', 'title', 'event_type', 'start_date', 'end_date',
+            'start_time', 'end_time', 'academic_year', 'term',
+            'description', 'location', 'organizer', 'participants',
+            'participants_info', 'affected_classes', 'affected_classes_info',
+            'is_holiday', 'color_code', 'event_details',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['event_details', 'created_at', 'updated_at']
     
-    def validate(self, data):
-        """Validate event data."""
-        errors = {}
-        
-        start_date = data.get('start_date', getattr(self.instance, 'start_date', None))
-        end_date = data.get('end_date', getattr(self.instance, 'end_date', None))
-        
-        if start_date and end_date and start_date >= end_date:
-            errors['end_date'] = _('End date must be after start date')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
+    def get_participants_info(self, obj):
+        return [
+            {'id': user.id, 'name': user.get_full_name(), 'role': user.role}
+            for user in obj.participants.all()
+        ]
+    
+    def get_affected_classes_info(self, obj):
+        return [
+            {'id': class_obj.id, 'name': class_obj.name, 'code': class_obj.code}
+            for class_obj in obj.affected_classes.all()
+        ]
+    
+    def get_event_details(self, obj):
+        return {
+            'duration_days': obj.duration_days,
+            'is_current': obj.is_current(),
+        }
 
 
-class StreamSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for Stream model."""
-    
-    # Related fields
-    core_subjects = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        many=True,
-        required=False
-    )
-    elective_subjects = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        many=True,
-        required=False
-    )
-    
-    # Computed fields
-    core_subjects_count = serializers.SerializerMethodField()
-    elective_subjects_count = serializers.SerializerMethodField()
+class GradingScaleSerializer(TimestampSerializer):
+    """Grading Scale serializer"""
+    scale_info = serializers.SerializerMethodField()
     
     class Meta:
-        model = Stream
+        model = GradingScale
         fields = [
-            # Basic Information
-            'id', 'name', 'code', 'description', 'is_active',
-            
-            # Academic Information
-            'education_level', 'curriculum', 'pathway',
-            
-            # Requirements
-            'minimum_requirements', 'career_pathways',
-            
-            # Subjects
-            'core_subjects', 'elective_subjects',
-            
-            # Computed counts
-            'core_subjects_count', 'elective_subjects_count',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+            'id', 'name', 'scale_type', 'academic_level', 'curriculum',
+            'is_default', 'grade_ranges', 'description', 'scale_info',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'code', 'created_at', 'updated_at']
+        read_only_fields = ['scale_info', 'created_at', 'updated_at']
     
-    def get_core_subjects_count(self, obj):
-        """Get count of core subjects."""
-        return obj.core_subjects.count()
-    
-    def get_elective_subjects_count(self, obj):
-        """Get count of elective subjects."""
-        return obj.elective_subjects.count()
-    
-    def validate_code(self, value):
-        """Validate stream code."""
-        if not value.isalnum():
-            raise serializers.ValidationError(_('Stream code must be alphanumeric'))
-        return value
+    def get_scale_info(self, obj):
+        return {
+            'total_ranges': len(obj.grade_ranges),
+            'points_range': {
+                'min': min(r['points'] for r in obj.grade_ranges) 
+                    if obj.grade_ranges else 0,
+                'max': max(r['points'] for r in obj.grade_ranges) 
+                    if obj.grade_ranges else 4.0,
+            }
+        }
 
 
 # ============================================================================
-# CBC-SPECIFIC SERIALIZERS
+# DASHBOARD AND ANALYTICS SERIALIZERS
 # ============================================================================
 
-class CBCAssessmentSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for CBCAssessment model."""
+class DashboardStatsSerializer(serializers.Serializer):
+    """Dashboard statistics"""
+    overview = serializers.SerializerMethodField()
+    attendance = serializers.SerializerMethodField()
+    performance = serializers.SerializerMethodField()
+    upcoming = serializers.SerializerMethodField()
     
-    # Related fields
-    student = PrimaryKeyRelatedUUIDField(
-        queryset=StudentProfile.objects.all(),
-        required=True
-    )
-    subject = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        required=True
-    )
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    class_assigned = PrimaryKeyRelatedUUIDField(
-        queryset=Class.objects.all(),
-        required=True
-    )
+    def get_overview(self, obj):
+        from .models import Enrollment, User, Class
+        return {
+            'total_students': User.objects.filter(role='student').count(),
+            'total_teachers': User.objects.filter(role='teacher').count(),
+            'total_classes': Class.objects.count(),
+            'total_subjects': Subject.objects.count(),
+        }
     
-    # Computed fields
-    student_name = serializers.SerializerMethodField()
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    class_name = serializers.CharField(source='class_assigned.display_name', read_only=True)
+    def get_attendance(self, obj):
+        from .models import Attendance
+        today = timezone.now().date()
+        attendance = Attendance.objects.filter(date=today)
+        
+        return {
+            'today_present': attendance.filter(status='present').count(),
+            'today_absent': attendance.filter(status='absent').count(),
+            'today_late': attendance.filter(status='late').count(),
+            'attendance_rate': (
+                attendance.filter(status='present').count() / attendance.count() * 100
+                if attendance.count() > 0 else 0
+            ),
+        }
     
-    total_score = serializers.ReadOnlyField()
-    is_national_exam = serializers.ReadOnlyField()
+    def get_performance(self, obj):
+        from .models import Grade
+        grades = Grade.objects.all()
+        
+        return {
+            'average_score': grades.aggregate(Avg('score'))['score__avg'] or 0,
+            'top_performing_class': self._get_top_performing_class(),
+            'pass_rate': (
+                grades.filter(is_passing=True).count() / grades.count() * 100
+                if grades.count() > 0 else 0
+            ),
+        }
     
-    class Meta:
-        model = CBCAssessment
-        fields = [
-            # Relationships
-            'id', 'student', 'student_name', 'subject', 'subject_name',
-            'academic_year', 'academic_year_name', 'class_assigned', 'class_name',
-            'is_active',
-            
-            # Assessment details
-            'assessment_type', 'assessment_date',
-            
-            # Competency-based scores
-            'competency_scores', 'practical_score', 'theory_score', 'project_score',
-            
-            # CBC descriptors
-            'proficiency_level', 'teacher_comments', 'portfolio_evidence',
-            
-            # Computed fields
-            'total_score', 'is_national_exam',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+    def get_upcoming(self, obj):
+        from .models import Assessment, AcademicEvent
+        today = timezone.now().date()
+        next_week = today + timezone.timedelta(days=7)
+        
+        return {
+            'upcoming_assessments': Assessment.objects.filter(
+                date__gte=today, date__lte=next_week
+            ).count(),
+            'upcoming_events': AcademicEvent.objects.filter(
+                start_date__gte=today, start_date__lte=next_week
+            ).count(),
+        }
     
-    def get_student_name(self, obj):
-        """Get student's full name."""
-        if obj.student and obj.student.user:
-            return obj.student.user.get_full_name()
-        return None
+    def _get_top_performing_class(self):
+        from .models import Grade, Class
+        from django.db.models import Avg
+        
+        top_class = Class.objects.annotate(
+            avg_score=Avg('grades__score')
+        ).order_by('-avg_score').first()
+        
+        return top_class.name if top_class else None
+
+
+class PerformanceAnalyticsSerializer(serializers.Serializer):
+    """Performance analytics"""
+    period = serializers.ChoiceField(choices=['daily', 'weekly', 'monthly', 'yearly'])
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
     
     def validate(self, data):
-        """Validate CBC assessment data."""
-        errors = {}
-        
-        # Validate scores
-        practical_score = data.get('practical_score', getattr(self.instance, 'practical_score', None))
-        theory_score = data.get('theory_score', getattr(self.instance, 'theory_score', None))
-        project_score = data.get('project_score', getattr(self.instance, 'project_score', None))
-        
-        if practical_score and (practical_score < 0 or practical_score > 100):
-            errors['practical_score'] = _('Practical score must be between 0 and 100')
-        
-        if theory_score and (theory_score < 0 or theory_score > 100):
-            errors['theory_score'] = _('Theory score must be between 0 and 100')
-        
-        if project_score and (project_score < 0 or project_score > 100):
-            errors['project_score'] = _('Project score must be between 0 and 100')
-        
-        # Validate competency scores structure
-        competency_scores = data.get('competency_scores', getattr(self.instance, 'competency_scores', {}))
-        if not isinstance(competency_scores, dict):
-            errors['competency_scores'] = _('Competency scores must be a dictionary')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
+        if data['end_date'] < data['start_date']:
+            raise serializers.ValidationError(_("End date must be after start date"))
         return data
 
 
-class CBCPortfolioSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for CBCPortfolio model."""
+# ============================================================================
+# EXPORT SERIALIZERS
+# ============================================================================
+
+class ExportSerializerMixin:
+    """Mixin for export serializers"""
     
-    # Related fields
-    student = PrimaryKeyRelatedUUIDField(
-        queryset=StudentProfile.objects.all(),
-        required=True
-    )
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    
-    # Computed fields
-    student_name = serializers.SerializerMethodField()
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    
-    artifacts_count = serializers.ReadOnlyField()
+    @staticmethod
+    def get_export_fields():
+        """Define export field mapping"""
+        return {
+            'id': 'ID',
+            'name': 'Name',
+            'code': 'Code',
+            'date': 'Date',
+            'status': 'Status',
+            'score': 'Score',
+            'grade': 'Grade',
+        }
+
+
+class GradeExportSerializer(serializers.Serializer, ExportSerializerMixin):
+    """Grade export serializer"""
+    student_id = serializers.CharField(source='student.student_id')
+    student_name = serializers.CharField(source='student.get_full_name')
+    student_class = serializers.CharField(source='class_assigned.name')
+    subject = serializers.CharField(source='subject.name')
+    assessment = serializers.CharField(source='assessment.name')
+    score = serializers.FloatField()
+    grade = serializers.CharField()
+    percentage = serializers.FloatField()
+    assessment_date = serializers.DateField(source='assessment.date')
+    graded_by = serializers.CharField(source='graded_by.get_full_name')
     
     class Meta:
-        model = CBCPortfolio
         fields = [
-            # Relationships
-            'id', 'student', 'student_name', 'academic_year', 'academic_year_name',
-            'is_active',
-            
-            # Portfolio details
-            'portfolio_title', 'portfolio_type', 'description', 'artifacts',
-            'skills_demonstrated', 'reflection', 'teacher_feedback',
-            
-            # Status
-            'submission_date', 'is_complete',
-            
-            # Computed fields
-            'artifacts_count',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
+            'student_id', 'student_name', 'student_class', 'subject',
+            'assessment', 'score', 'grade', 'percentage', 'assessment_date',
+            'graded_by'
         ]
-        read_only_fields = ['id', 'submission_date', 'created_at', 'updated_at']
-    
-    def get_student_name(self, obj):
-        """Get student's full name."""
-        if obj.student and obj.student.user:
-            return obj.student.user.get_full_name()
-        return None
-    
-    def validate_artifacts(self, value):
-        """Validate artifacts structure."""
-        if not isinstance(value, list):
-            raise serializers.ValidationError(_('Artifacts must be a list'))
-        
-        for artifact in value:
-            if not isinstance(artifact, dict):
-                raise serializers.ValidationError(_('Each artifact must be an object'))
-            
-            if 'name' not in artifact or 'type' not in artifact:
-                raise serializers.ValidationError(_('Each artifact must have a name and type'))
-        
-        return value
 
 
-class PathwaySelectionSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for PathwaySelection model."""
-    
-    # Related fields
-    student = PrimaryKeyRelatedUUIDField(
-        queryset=StudentProfile.objects.all(),
-        required=True
-    )
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    approved_by = PrimaryKeyRelatedUUIDField(
-        queryset=User.objects.all(),
-        required=False,
+class AttendanceExportSerializer(serializers.Serializer, ExportSerializerMixin):
+    """Attendance export serializer"""
+    student_id = serializers.CharField(source='student.student_id')
+    student_name = serializers.CharField(source='student.get_full_name')
+    student_class = serializers.CharField(source='class_assigned.name')
+    date = serializers.DateField()
+    status = serializers.CharField()
+    check_in_time = serializers.TimeField(allow_null=True)
+    check_out_time = serializers.TimeField(allow_null=True)
+    reason = serializers.CharField(allow_null=True)
+    verified_by = serializers.CharField(
+        source='verified_by.get_full_name', 
         allow_null=True
     )
     
-    # Computed fields
-    student_name = serializers.SerializerMethodField()
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
+    class Meta:
+        fields = [
+            'student_id', 'student_name', 'student_class', 'date',
+            'status', 'check_in_time', 'check_out_time', 'reason',
+            'verified_by'
+        ]
+
+
+# ============================================================================
+# ACADEMIC REPORT SERIALIZERS
+# ============================================================================
+
+class AcademicReportSerializer(TimestampSerializer):
+    """Academic Report serializer"""
+    student_info = serializers.SerializerMethodField()
+    enrollment_info = serializers.SerializerMethodField()
+    performance_summary = serializers.SerializerMethodField()
+    subject_performance = serializers.SerializerMethodField()
+    generated_by_info = serializers.SerializerMethodField()
     
     class Meta:
-        model = PathwaySelection
+        model = AcademicReport
         fields = [
-            # Relationships
-            'id', 'student', 'student_name', 'academic_year', 'academic_year_name',
-            'is_active',
-            
-            # Pathways
-            'preferred_pathway', 'alternative_pathway', 'senior_track',
-            
-            # Selection details
-            'selection_date', 'is_approved', 'approved_by', 'approval_date',
-            
-            # Rationale
-            'student_statement', 'parent_consent', 'teacher_recommendation',
-            
-            # Career aspirations
-            'career_interests',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+            'id', 'student', 'student_info', 'enrollment', 'enrollment_info',
+            'academic_year', 'term', 'report_type', 'report_date', 'gpa', 'cgpa',
+            'overall_score', 'class_rank', 'grade_level_rank', 'overall_rank',
+            'total_credits', 'credits_earned', 'attendance_rate', 'conduct_rating',
+            'extracurricular_activities', 'achievements', 'strengths', 'areas_for_improvement',
+            'form_teacher_comment', 'head_teacher_comment', 'parent_feedback',
+            'recommendations', 'next_term_expectations', 'is_published',
+            'published_date', 'generated_by', 'generated_by_info', 'document',
+            'performance_summary', 'subject_performance',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'selection_date', 'created_at', 'updated_at']
+        read_only_fields = [
+            'performance_summary', 'subject_performance', 'created_at', 'updated_at'
+        ]
     
-    def get_student_name(self, obj):
-        """Get student's full name."""
-        if obj.student and obj.student.user:
-            return obj.student.user.get_full_name()
+    def get_student_info(self, obj):
+        return {
+            'id': obj.student.id,
+            'name': obj.student.get_full_name(),
+            'student_id': obj.student.student_id,
+            'profile_picture': obj.student.profile_picture.url 
+                if obj.student.profile_picture else None,
+        }
+    
+    def get_enrollment_info(self, obj):
+        return {
+            'id': obj.enrollment.id,
+            'class_name': obj.enrollment.class_assigned.name,
+            'grade_level': obj.enrollment.class_assigned.grade_level.name,
+            'academic_year': obj.enrollment.academic_year,
+            'term': obj.enrollment.term,
+        }
+    
+    def get_performance_summary(self, obj):
+        from .models import Grade, Attendance
+        
+        grades = Grade.objects.filter(
+            student=obj.student,
+            assessment__academic_year=obj.academic_year,
+            assessment__term=obj.term
+        )
+        
+        attendance = Attendance.objects.filter(
+            student=obj.student,
+            academic_year=obj.academic_year,
+            term=obj.term
+        )
+        
+        return {
+            'total_subjects': grades.values('subject').distinct().count(),
+            'average_score': grades.aggregate(Avg('score'))['score__avg'] or 0,
+            'attendance_days': attendance.filter(status='present').count(),
+            'total_school_days': attendance.count(),
+            'best_subject': self._get_best_subject(grades),
+            'weakest_subject': self._get_weakest_subject(grades),
+        }
+    
+    def get_subject_performance(self, obj):
+        from .models import Grade
+        
+        grades = Grade.objects.filter(
+            student=obj.student,
+            assessment__academic_year=obj.academic_year,
+            assessment__term=obj.term
+        ).select_related('subject')
+        
+        subject_data = {}
+        for grade in grades:
+            subject_id = grade.subject.id
+            if subject_id not in subject_data:
+                subject_data[subject_id] = {
+                    'subject': {
+                        'id': grade.subject.id,
+                        'name': grade.subject.name,
+                        'code': grade.subject.code,
+                    },
+                    'grades': [],
+                    'scores': [],
+                }
+            
+            subject_data[subject_id]['grades'].append({
+                'assessment': grade.assessment.name,
+                'type': grade.assessment.get_assessment_type_display(),
+                'score': float(grade.score),
+                'grade': grade.grade,
+                'date': grade.assessment.date,
+            })
+            subject_data[subject_id]['scores'].append(float(grade.score))
+        
+        # Calculate subject statistics
+        result = []
+        for subject_id, data in subject_data.items():
+            scores = data['scores']
+            avg_score = sum(scores) / len(scores) if scores else 0
+            max_score = max(scores) if scores else 0
+            min_score = min(scores) if scores else 0
+            
+            result.append({
+                'subject': data['subject'],
+                'average_score': avg_score,
+                'highest_score': max_score,
+                'lowest_score': min_score,
+                'grade_count': len(scores),
+                'grades': data['grades'],
+            })
+        
+        return result
+    
+    def get_generated_by_info(self, obj):
+        if obj.generated_by:
+            return {
+                'id': obj.generated_by.id,
+                'name': obj.generated_by.get_full_name(),
+                'role': obj.generated_by.role,
+            }
         return None
     
-    def validate(self, data):
-        """Validate pathway selection data."""
-        errors = {}
+    def _get_best_subject(self, grades):
+        from django.db.models import Avg
         
-        # Validate that alternative pathway is different from preferred pathway
-        preferred_pathway = data.get('preferred_pathway', getattr(self.instance, 'preferred_pathway', None))
-        alternative_pathway = data.get('alternative_pathway', getattr(self.instance, 'alternative_pathway', None))
+        best = grades.values('subject__name').annotate(
+            avg_score=Avg('score')
+        ).order_by('-avg_score').first()
         
-        if preferred_pathway and alternative_pathway and preferred_pathway == alternative_pathway:
-            errors['alternative_pathway'] = _('Alternative pathway must be different from preferred pathway')
+        return best['subject__name'] if best else None
+    
+    def _get_weakest_subject(self, grades):
+        from django.db.models import Avg
         
-        # Validate senior track for senior school
-        academic_year = data.get('academic_year', getattr(self.instance, 'academic_year', None))
-        if academic_year and academic_year.is_cbc:
-            if preferred_pathway and not data.get('senior_track'):
-                errors['senior_track'] = _('Senior track is required when a pathway is selected')
+        weakest = grades.values('subject__name').annotate(
+            avg_score=Avg('score')
+        ).order_by('avg_score').first()
         
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
-
-
-class CompetencyTrackingSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for CompetencyTracking model."""
-    
-    # Related fields
-    student = PrimaryKeyRelatedUUIDField(
-        queryset=StudentProfile.objects.all(),
-        required=True
-    )
-    academic_year = PrimaryKeyRelatedUUIDField(
-        queryset=AcademicYear.objects.all(),
-        required=True
-    )
-    
-    # Computed fields
-    student_name = serializers.SerializerMethodField()
-    academic_year_name = serializers.CharField(source='academic_year.name', read_only=True)
-    
-    has_improved = serializers.ReadOnlyField()
-    
-    class Meta:
-        model = CompetencyTracking
-        fields = [
-            # Relationships
-            'id', 'student', 'student_name', 'academic_year', 'academic_year_name',
-            'is_active',
-            
-            # Competency details
-            'competency_area', 'baseline_level', 'current_level', 'target_level',
-            
-            # Evidence and tracking
-            'evidence', 'teacher_comments', 'last_assessed', 'next_review',
-            
-            # Computed fields
-            'has_improved',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
-    
-    def get_student_name(self, obj):
-        """Get student's full name."""
-        if obj.student and obj.student.user:
-            return obj.student.user.get_full_name()
-        return None
-    
-    def validate(self, data):
-        """Validate competency tracking data."""
-        errors = {}
-        
-        # Validate level progression
-        baseline_level = data.get('baseline_level', getattr(self.instance, 'baseline_level', None))
-        current_level = data.get('current_level', getattr(self.instance, 'current_level', None))
-        target_level = data.get('target_level', getattr(self.instance, 'target_level', None))
-        
-        levels = ['beginning', 'developing', 'proficient', 'advanced']
-        
-        if baseline_level and current_level:
-            try:
-                baseline_index = levels.index(baseline_level)
-                current_index = levels.index(current_level)
-                
-                if current_index < baseline_index:
-                    errors['current_level'] = _('Current level cannot be lower than baseline level')
-            except ValueError:
-                pass
-        
-        if current_level and target_level:
-            try:
-                current_index = levels.index(current_level)
-                target_index = levels.index(target_level)
-                
-                if target_index < current_index:
-                    errors['target_level'] = _('Target level cannot be lower than current level')
-            except ValueError:
-                pass
-        
-        # Validate evidence structure
-        evidence = data.get('evidence', getattr(self.instance, 'evidence', []))
-        if not isinstance(evidence, list):
-            errors['evidence'] = _('Evidence must be a list')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
-
-
-class CurriculumMappingSerializer(AuditFieldsMixin, serializers.ModelSerializer):
-    """Serializer for CurriculumMapping model."""
-    
-    # Related fields
-    subject = PrimaryKeyRelatedUUIDField(
-        queryset=Subject.objects.all(),
-        required=True
-    )
-    
-    # Computed fields
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    curriculum_system_display = serializers.CharField(source='get_curriculum_system_display', read_only=True)
-    grade_level_display = serializers.CharField(source='get_grade_level_display', read_only=True)
-    
-    class Meta:
-        model = CurriculumMapping
-        fields = [
-            # Basic Information
-            'id', 'curriculum_system', 'curriculum_system_display', 'grade_level',
-            'grade_level_display', 'subject', 'subject_name', 'is_active',
-            
-            # Standards mapping
-            'standard_code', 'standard_description',
-            
-            # Competency alignment
-            'aligned_competencies', 'learning_outcomes', 'assessment_criteria',
-            
-            # Resources and links
-            'resources', 'international_equivalents',
-            
-            # Audit fields
-            'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
-    
-    def validate(self, data):
-        """Validate curriculum mapping data."""
-        errors = {}
-        
-        # Validate uniqueness
-        curriculum_system = data.get('curriculum_system', getattr(self.instance, 'curriculum_system', None))
-        grade_level = data.get('grade_level', getattr(self.instance, 'grade_level', None))
-        subject = data.get('subject', getattr(self.instance, 'subject', None))
-        standard_code = data.get('standard_code', getattr(self.instance, 'standard_code', None))
-        
-        if curriculum_system and grade_level and subject and standard_code:
-            duplicate_mapping = CurriculumMapping.objects.filter(
-                curriculum_system=curriculum_system,
-                grade_level=grade_level,
-                subject=subject,
-                standard_code=standard_code
-            ).exclude(pk=getattr(self.instance, 'pk', None)).exists()
-            
-            if duplicate_mapping:
-                errors['standard_code'] = _('A mapping with this standard code already exists for this combination')
-        
-        # Validate JSON fields
-        aligned_competencies = data.get('aligned_competencies', getattr(self.instance, 'aligned_competencies', []))
-        if not isinstance(aligned_competencies, list):
-            errors['aligned_competencies'] = _('Aligned competencies must be a list')
-        
-        learning_outcomes = data.get('learning_outcomes', getattr(self.instance, 'learning_outcomes', []))
-        if not isinstance(learning_outcomes, list):
-            errors['learning_outcomes'] = _('Learning outcomes must be a list')
-        
-        if errors:
-            raise serializers.ValidationError(errors)
-        
-        return data
-
-
-# ============================================================================
-# DETAILED SERIALIZERS WITH NESTED RELATIONSHIPS
-# ============================================================================
-
-class AcademicYearDetailSerializer(AcademicYearSerializer):
-    """Detailed serializer for Academic Year with nested terms and classes."""
-    
-    terms = AcademicTermSerializer(many=True, read_only=True)
-    classes = ClassMinimalSerializer(many=True, read_only=True)
-    events = AcademicEventSerializer(many=True, read_only=True)
-    statistics = serializers.SerializerMethodField()
-    
-    class Meta(AcademicYearSerializer.Meta):
-        fields = AcademicYearSerializer.Meta.fields + ['terms', 'classes', 'events', 'statistics']
-    
-    def get_statistics(self, obj):
-        """Get academic year statistics."""
-        return obj.get_statistics()
-
-
-class AcademicTermDetailSerializer(AcademicTermSerializer):
-    """Detailed serializer for Academic Term with nested events."""
-    
-    events = AcademicEventSerializer(many=True, read_only=True)
-    lesson_plans = LessonPlanSerializer(many=True, read_only=True)
-    
-    class Meta(AcademicTermSerializer.Meta):
-        fields = AcademicTermSerializer.Meta.fields + ['events', 'lesson_plans']
-
-
-class SubjectDetailSerializer(SubjectSerializer):
-    """Detailed serializer for Subject with nested syllabus and assignments."""
-    
-    syllabi = SyllabusSerializer(many=True, read_only=True)
-    subject_assignments = SubjectAssignmentSerializer(many=True, read_only=True)
-    sub_topics = SubTopicMinimalSerializer(many=True, read_only=True)
-    prerequisite_details = SubjectMinimalSerializer(source='prerequisites', many=True, read_only=True)
-    
-    class Meta(SubjectSerializer.Meta):
-        fields = SubjectSerializer.Meta.fields + [
-            'syllabi', 'subject_assignments', 'sub_topics', 'prerequisite_details'
-        ]
-
-
-class ClassDetailSerializer(ClassSerializer):
-    """Detailed serializer for Class with nested enrollments and assignments."""
-    
-    enrollments = StudentEnrollmentSerializer(many=True, read_only=True)
-    subject_assignments = SubjectAssignmentSerializer(many=True, read_only=True)
-    lesson_plans = LessonPlanSerializer(many=True, read_only=True)
-    class_teacher_details = TeacherMinimalSerializer(source='class_teacher', read_only=True)
-    class_statistics = serializers.SerializerMethodField()
-    
-    class Meta(ClassSerializer.Meta):
-        fields = ClassSerializer.Meta.fields + [
-            'enrollments', 'subject_assignments', 'lesson_plans',
-            'class_teacher_details', 'class_statistics'
-        ]
-    
-    def get_class_statistics(self, obj):
-        """Get class statistics."""
-        return obj.get_class_statistics()
-
-
-class SubTopicDetailSerializer(SubTopicSerializer):
-    """Detailed serializer for SubTopic with nested lesson plans."""
-    
-    lesson_plans = LessonPlanSerializer(many=True, read_only=True)
-    subject_details = SubjectMinimalSerializer(source='subject', read_only=True)
-    
-    class Meta(SubTopicSerializer.Meta):
-        fields = SubTopicSerializer.Meta.fields + ['lesson_plans', 'subject_details']
-
-
-class StudentEnrollmentDetailSerializer(StudentEnrollmentSerializer):
-    """Detailed serializer for StudentEnrollment with nested assignments."""
-    
-    student_assignments = StudentClassAssignmentSerializer(many=True, read_only=True)
-    student_details = StudentMinimalSerializer(source='student', read_only=True)
-    class_details = ClassMinimalSerializer(source='class_enrolled', read_only=True)
-    attendance_summary = serializers.SerializerMethodField()
-    
-    class Meta(StudentEnrollmentSerializer.Meta):
-        fields = StudentEnrollmentSerializer.Meta.fields + [
-            'student_assignments', 'student_details', 'class_details', 'attendance_summary'
-        ]
-    
-    def get_attendance_summary(self, obj):
-        """Get attendance summary."""
-        return obj.get_attendance_summary()
-
-
-# ============================================================================
-# STATISTICS AND REPORT SERIALIZERS
-# ============================================================================
-
-class AcademicStatisticsSerializer(serializers.Serializer):
-    """Serializer for academic statistics."""
-    
-    total_students = serializers.IntegerField()
-    total_teachers = serializers.IntegerField()
-    total_classes = serializers.IntegerField()
-    total_subjects = serializers.IntegerField()
-    active_academic_year = serializers.CharField(required=False, allow_null=True)
-    current_term = serializers.CharField(required=False, allow_null=True)
-    upcoming_events = serializers.IntegerField()
-    enrollment_rate = serializers.FloatField()
-    class_occupancy_rate = serializers.FloatField()
-    cbc_students_count = serializers.IntegerField(required=False)
-    portfolio_completion_rate = serializers.FloatField(required=False)
-
-
-class ClassStatisticsSerializer(serializers.Serializer):
-    """Serializer for class statistics."""
-    
-    class_id = serializers.UUIDField()
-    class_name = serializers.CharField()
-    display_name = serializers.CharField()
-    total_students = serializers.IntegerField()
-    capacity = serializers.IntegerField()
-    occupancy_rate = serializers.FloatField()
-    subject_count = serializers.IntegerField()
-    teacher_count = serializers.IntegerField()
-    average_performance = serializers.FloatField(required=False, allow_null=True)
-    attendance_rate = serializers.FloatField(required=False, allow_null=True)
-    is_cbc_class = serializers.BooleanField()
-
-
-class TeacherWorkloadSerializer(serializers.Serializer):
-    """Serializer for teacher workload statistics."""
-    
-    teacher_id = serializers.UUIDField()
-    teacher_name = serializers.CharField()
-    total_periods = serializers.IntegerField()
-    total_classes = serializers.IntegerField()
-    total_subjects = serializers.IntegerField()
-    workload_percentage = serializers.FloatField()
-    is_class_teacher = serializers.BooleanField()
-    current_assignments = serializers.IntegerField()
+        return weakest['subject__name'] if weakest else None
 
 
 # ============================================================================
 # BULK OPERATION SERIALIZERS
 # ============================================================================
 
-class BulkStudentEnrollmentSerializer(serializers.Serializer):
-    """Serializer for bulk student enrollment."""
-    
+class EnrollmentBulkCreateSerializer(BaseValidationSerializer):
+    """Bulk enrollment creation serializer"""
+    class_assigned = serializers.PrimaryKeyRelatedField(queryset=Class.objects.all())
+    academic_year = serializers.CharField()
+    term = serializers.CharField()
     student_ids = serializers.ListField(
-        child=serializers.UUIDField(),
-        help_text="List of student profile IDs to enroll"
+        child=serializers.IntegerField(),
+        min_length=1
     )
-    class_id = serializers.UUIDField()
-    academic_year_id = serializers.UUIDField()
-    enrollment_date = serializers.DateField(default=serializers.CreateOnlyDefault(timezone.now))
-    assign_roll_numbers = serializers.BooleanField(default=True)
-
-
-class BulkSubjectAssignmentSerializer(serializers.Serializer):
-    """Serializer for bulk subject assignment."""
-    
-    teacher_ids = serializers.ListField(
-        child=serializers.UUIDField(),
-        help_text="List of teacher profile IDs to assign"
+    enrollment_type = serializers.ChoiceField(
+        choices=[
+            ('new', 'New Student'),
+            ('transfer', 'Transfer Student'),
+            ('repeat', 'Repeating Student'),
+            ('promoted', 'Promoted Student'),
+        ],
+        default='new'
     )
-    subject_id = serializers.UUIDField()
-    class_id = serializers.UUIDField()
-    academic_year_id = serializers.UUIDField()
-    periods_per_week = serializers.IntegerField(default=5, min_value=1, max_value=20)
-
-
-class BulkLessonPlanSerializer(serializers.Serializer):
-    """Serializer for bulk lesson plan creation."""
     
-    teacher_id = serializers.UUIDField()
-    subject_id = serializers.UUIDField()
-    class_id = serializers.UUIDField()
-    start_date = serializers.DateField()
-    end_date = serializers.DateField()
-    duration_minutes = serializers.IntegerField(default=40, min_value=5, max_value=120)
-    days_of_week = serializers.ListField(
-        child=serializers.IntegerField(min_value=0, max_value=6),
-        help_text="Days of week (0=Sunday, 6=Saturday)"
-    )
-
-
-# ============================================================================
-# SEARCH AND FILTER SERIALIZERS
-# ============================================================================
-
-class AcademicSearchSerializer(serializers.Serializer):
-    """Serializer for academic search parameters."""
+    def validate(self, data):
+        # Validate students exist and are not already enrolled
+        student_ids = data['student_ids']
+        class_obj = data['class_assigned']
+        academic_year = data['academic_year']
+        term = data['term']
+        
+        existing_enrollments = Enrollment.objects.filter(
+            student_id__in=student_ids,
+            class_assigned=class_obj,
+            academic_year=academic_year,
+            term=term,
+            status='active'
+        ).values_list('student_id', flat=True)
+        
+        for student_id in student_ids:
+            try:
+                student = User.objects.get(id=student_id, role='student')
+                if student_id in existing_enrollments:
+                    raise serializers.ValidationError(
+                        _(f"Student {student.get_full_name()} is already enrolled in this class")
+                    )
+            except User.DoesNotExist:
+                raise serializers.ValidationError(
+                    _(f"Student not found: {student_id}")
+                )
+        
+        return data
     
-    query = serializers.CharField(required=False, allow_blank=True)
-    academic_year = serializers.UUIDField(required=False)
-    term = serializers.UUIDField(required=False)
-    grade_level = serializers.CharField(required=False)
-    category = serializers.CharField(required=False)
-    curriculum = serializers.CharField(required=False)
-    is_active = serializers.BooleanField(required=False)
-    page = serializers.IntegerField(default=1, min_value=1)
-    page_size = serializers.IntegerField(default=20, min_value=1, max_value=100)
-
-
-class EnrollmentReportSerializer(serializers.Serializer):
-    """Serializer for enrollment reports."""
-    
-    academic_year = serializers.UUIDField()
-    grade_level = serializers.CharField(required=False)
-    status = serializers.CharField(required=False)
-    cbc_pathway = serializers.CharField(required=False)
-    report_type = serializers.ChoiceField(
-        choices=['summary', 'detailed', 'analytics', 'export'],
-        default='summary'
-    )
-    format = serializers.ChoiceField(
-        choices=['json', 'csv', 'pdf'],
-        default='json'
-    )
-
-
-# ============================================================================
-# EXPORT AND IMPORT SERIALIZERS
-# ============================================================================
-
-class AcademicDataExportSerializer(serializers.Serializer):
-    """Serializer for academic data export."""
-    
-    include_academic_years = serializers.BooleanField(default=True)
-    include_terms = serializers.BooleanField(default=True)
-    include_subjects = serializers.BooleanField(default=True)
-    include_classes = serializers.BooleanField(default=True)
-    include_enrollments = serializers.BooleanField(default=True)
-    include_assignments = serializers.BooleanField(default=True)
-    include_syllabi = serializers.BooleanField(default=True)
-    include_cbc_data = serializers.BooleanField(default=True)
-    
-    format = serializers.ChoiceField(choices=['json', 'csv', 'excel'], default='json')
-    academic_year = serializers.UUIDField(required=False)
-    start_date = serializers.DateField(required=False)
-    end_date = serializers.DateField(required=False)
-    compress = serializers.BooleanField(default=False)
-
-
-class AcademicDataImportSerializer(serializers.Serializer):
-    """Serializer for academic data import."""
-    
-    file = serializers.FileField()
-    format = serializers.ChoiceField(choices=['json', 'csv', 'excel'], default='json')
-    academic_year = serializers.UUIDField(required=False)
-    overwrite = serializers.BooleanField(default=False)
-    validate_only = serializers.BooleanField(default=False)
+    def create(self, validated_data):
+        class_obj = validated_data['class_assigned']
+        academic_year = validated_data['academic_year']
+        term = validated_data['term']
+        student_ids = validated_data['student_ids']
+        enrollment_type = validated_data['enrollment_type']
+        request_user = self.context.get('request').user
+        
+        created_enrollments = []
+        errors = []
+        
+        for student_id in student_ids:
+            try:
+                student = User.objects.get(id=student_id, role='student')
+                
+                # Generate enrollment number
+                enrollment_number = Enrollment.generate_enrollment_number(
+                    student, class_obj, academic_year, term
+                )
+                
+                # Create enrollment
+                enrollment = Enrollment.objects.create(
+                    student=student,
+                    class_assigned=class_obj,
+                    academic_year=academic_year,
+                    term=term,
+                    enrollment_number=enrollment_number,
+                    enrollment_type=enrollment_type,
+                    status='active',
+                    academic_status='passing',
+                    created_by=request_user,
+                )
+                
+                created_enrollments.append(enrollment)
+                
+            except Exception as e:
+                errors.append({
+                    'student_id': student_id,
+                    'error': str(e)
+                })
+        
+        return {
+            'created': len(created_enrollments),
+            'errors': errors,
+            'enrollments': EnrollmentSerializer(created_enrollments, many=True).data
+        }
 
 
 # ============================================================================
 # SETUP AND CONFIGURATION SERIALIZERS
 # ============================================================================
 
-class AcademicSetupRequirementsSerializer(serializers.Serializer):
-    """Serializer for academic setup requirements check."""
+class AcademicConfigurationSerializer(TimestampSerializer):
+    """Academic Configuration serializer"""
+    current_academic_year = serializers.SerializerMethodField()
+    current_term = serializers.SerializerMethodField()
     
-    has_academic_years = serializers.BooleanField()
-    has_terms = serializers.BooleanField()
-    has_subjects = serializers.BooleanField()
-    has_classes = serializers.BooleanField()
-    has_enrollments = serializers.BooleanField()
-    has_teachers = serializers.BooleanField()
-    has_students = serializers.BooleanField()
-    
-    missing_items = serializers.ListField(child=serializers.CharField())
-    setup_complete = serializers.BooleanField()
-    
-    current_academic_year = serializers.CharField(required=False, allow_null=True)
-    current_term = serializers.CharField(required=False, allow_null=True)
-    total_students = serializers.IntegerField()
-    total_teachers = serializers.IntegerField()
-
-
-class QuickSetupSerializer(serializers.Serializer):
-    """Serializer for quick academic setup."""
-    
-    academic_year_name = serializers.CharField(max_length=100)
-    start_date = serializers.DateField()
-    end_date = serializers.DateField()
-    curriculum_system = serializers.ChoiceField(
-        choices=AcademicYear.CURRICULUM_SYSTEMS,
-        default='cbc_kenya'
-    )
-    
-    create_terms = serializers.BooleanField(default=True)
-    terms = serializers.ListField(
-        child=serializers.DictField(),
-        required=False
-    )
-    
-    create_sample_subjects = serializers.BooleanField(default=True)
-    subject_categories = serializers.ListField(
-        child=serializers.CharField(),
-        required=False,
-        default=['core', 'elective', 'cbc_core']
-    )
-    
-    create_sample_classes = serializers.BooleanField(default=True)
-    grade_levels = serializers.ListField(
-        child=serializers.CharField(),
-        required=False,
-        default=['grade_1', 'grade_2', 'grade_3']
-    )
-    
-    auto_configure = serializers.BooleanField(default=True)
-
-
-class CBCConfigurationSerializer(serializers.Serializer):
-    """Serializer for CBC configuration."""
-    
-    pathways = serializers.ListField(
-        child=serializers.ChoiceField(choices=[
-            ('stem', 'STEM'),
-            ('social_sciences', 'Social Sciences'),
-            ('arts_sports', 'Arts & Sports')
-        ]),
-        default=['stem', 'social_sciences', 'arts_sports']
-    )
-    
-    assessment_windows = serializers.DictField(default={
-        'kpsea': {'grade': 6, 'month': 'November'},
-        'kjsea': {'grade': 9, 'month': 'October'},
-        'kcse': {'grade': 12, 'month': 'November'},
-    })
-    
-    competency_areas = serializers.ListField(
-        child=serializers.ChoiceField(choices=[
-            ('communication', 'Communication'),
-            ('critical_thinking', 'Critical Thinking'),
-            ('creativity', 'Creativity'),
-            ('citizenship', 'Citizenship'),
-            ('digital_literacy', 'Digital Literacy'),
-            ('learning_to_learn', 'Learning to Learn'),
-            ('self_efficacy', 'Self-efficacy'),
-        ]),
-        default=[
-            'communication', 'critical_thinking', 'creativity',
-            'citizenship', 'digital_literacy'
+    class Meta:
+        model = AcademicConfiguration
+        fields = [
+            'id', 'academic_year_format', 'term_structure', 'grading_system',
+            'minimum_attendance_percentage', 'passing_grade', 'max_absent_days',
+            'assessment_weights', 'report_cards_per_year', 'transcript_requirements',
+            'competency_assessment_frequency', 'cbc_strands', 'special_needs_support',
+            'is_active', 'current_academic_year', 'current_term',
+            'created_at', 'updated_at'
         ]
-    )
     
-    portfolio_required = serializers.BooleanField(default=True)
-    community_service_hours = serializers.IntegerField(default=40, min_value=0, max_value=200)
-    parental_engagement_required = serializers.BooleanField(default=True)
+    def get_current_academic_year(self, obj):
+        current_year = AcademicYear.objects.filter(is_current=True).first()
+        if current_year:
+            return AcademicYearSerializer(current_year).data
+        return None
     
-    senior_tracks = serializers.ListField(
-        child=serializers.DictField(),
-        required=False
-    )
+    def get_current_term(self, obj):
+        current_term = AcademicTerm.objects.filter(is_current=True).first()
+        if current_term:
+            return AcademicTermSerializer(current_term).data
+        return None
 
 
 # ============================================================================
-# VALIDATION AND UTILITY SERIALIZERS
+# EXPORT SERIALIZERS
 # ============================================================================
 
-class ValidationResultSerializer(serializers.Serializer):
-    """Serializer for validation results."""
+class StudentPerformanceExportSerializer(serializers.Serializer):
+    """Student performance export serializer"""
+    student_id = serializers.CharField()
+    student_name = serializers.CharField()
+    class_name = serializers.CharField()
+    grade_level = serializers.CharField()
+    average_score = serializers.FloatField()
+    attendance_rate = serializers.FloatField()
+    gpa = serializers.FloatField()
+    class_rank = serializers.IntegerField()
     
-    is_valid = serializers.BooleanField()
-    errors = serializers.DictField(required=False)
-    warnings = serializers.ListField(child=serializers.CharField(), required=False)
-    suggestions = serializers.ListField(child=serializers.CharField(), required=False)
-
-
-class ImportResultSerializer(serializers.Serializer):
-    """Serializer for import results."""
-    
-    success = serializers.BooleanField()
-    imported_count = serializers.IntegerField()
-    failed_count = serializers.IntegerField()
-    total_count = serializers.IntegerField()
-    errors = serializers.ListField(child=serializers.DictField(), required=False)
-    warnings = serializers.ListField(child=serializers.CharField(), required=False)
-
-
-class SyncStatusSerializer(serializers.Serializer):
-    """Serializer for sync status."""
-    
-    last_sync = serializers.DateTimeField()
-    sync_type = serializers.CharField()
-    status = serializers.ChoiceField(choices=['pending', 'in_progress', 'completed', 'failed'])
-    processed_count = serializers.IntegerField()
-    total_count = serializers.IntegerField()
-    errors = serializers.ListField(child=serializers.CharField(), required=False)
+    class Meta:
+        fields = [
+            'student_id', 'student_name', 'class_name', 'grade_level',
+            'average_score', 'attendance_rate', 'gpa', 'class_rank'
+        ]
 
 
 # ============================================================================
-# COMPREHENSIVE LIST SERIALIZERS
+# API VIEW SERIALIZERS
 # ============================================================================
 
-class AcademicListSerializer(serializers.Serializer):
-    """Serializer for listing academic entities with counts."""
-    
-    academic_years = AcademicYearMinimalSerializer(many=True, read_only=True)
-    terms = AcademicTermMinimalSerializer(many=True, read_only=True)
-    subjects = SubjectMinimalSerializer(many=True, read_only=True)
-    classes = ClassMinimalSerializer(many=True, read_only=True)
-    streams = StreamSerializer(many=True, read_only=True)
-    
-    counts = serializers.DictField(read_only=True)
-    current_academic_year = AcademicYearMinimalSerializer(read_only=True)
-    current_term = AcademicTermMinimalSerializer(read_only=True)
+class SetupCheckSerializer(serializers.Serializer):
+    """Setup check serializer"""
+    is_setup_complete = serializers.BooleanField()
+    checks = serializers.DictField()
+    missing_items = serializers.ListField()
+    missing_count = serializers.IntegerField()
+    timestamp = serializers.DateTimeField()
 
 
-class DashboardSummarySerializer(serializers.Serializer):
-    """Serializer for academic dashboard summary."""
-    
-    academic_summary = AcademicStatisticsSerializer(read_only=True)
-    recent_enrollments = StudentEnrollmentSerializer(many=True, read_only=True)
-    upcoming_events = AcademicEventSerializer(many=True, read_only=True)
-    class_occupancy = ClassStatisticsSerializer(many=True, read_only=True)
-    teacher_workload = TeacherWorkloadSerializer(many=True, read_only=True)
-    
-    cbc_stats = serializers.DictField(read_only=True, required=False)
-    attendance_summary = serializers.DictField(read_only=True)
-    performance_trend = serializers.ListField(read_only=True)
+class EssentialDataSerializer(serializers.Serializer):
+    """Essential data serializer"""
+    academic_years = serializers.ListField()
+    grade_levels = serializers.ListField()
+    subjects = serializers.ListField()
+    classrooms = serializers.ListField()
+    competency_areas = serializers.ListField()
+    counts = serializers.DictField()
+    has_minimum_data = serializers.BooleanField()
+    timestamp = serializers.DateTimeField()
 
 
-# ============================================================================
-# REQUEST/RESPONSE WRAPPER SERIALIZERS
-# ============================================================================
-
-class ApiResponseSerializer(serializers.Serializer):
-    """Standard API response serializer."""
-    
-    success = serializers.BooleanField()
-    message = serializers.CharField(required=False)
-    data = serializers.DictField(required=False)
-    errors = serializers.ListField(child=serializers.CharField(), required=False)
-    warnings = serializers.ListField(child=serializers.CharField(), required=False)
-    timestamp = serializers.DateTimeField(default=timezone.now)
+class DashboardStatisticsSerializer(serializers.Serializer):
+    """Dashboard statistics serializer"""
+    overview = serializers.DictField()
+    attendance = serializers.DictField()
+    performance = serializers.DictField()
+    upcoming = serializers.DictField()
+    current_academic = serializers.DictField()
+    date = serializers.DateField()
 
 
-class PaginatedResponseSerializer(serializers.Serializer):
-    """Paginated API response serializer."""
-    
-    count = serializers.IntegerField()
-    next = serializers.URLField(required=False, allow_null=True)
-    previous = serializers.URLField(required=False, allow_null=True)
-    results = serializers.ListField(child=serializers.DictField())
-    page = serializers.IntegerField()
-    page_size = serializers.IntegerField()
-    total_pages = serializers.IntegerField()
+class ClassPerformanceSerializer(serializers.Serializer):
+    """Class performance serializer"""
+    class_id = serializers.IntegerField()
+    class_name = serializers.CharField()
+    grade_level = serializers.CharField()
+    total_students = serializers.IntegerField()
+    average_score = serializers.FloatField()
+    highest_score = serializers.FloatField()
+    lowest_score = serializers.FloatField()
+    pass_rate = serializers.FloatField()
+    attendance_rate = serializers.FloatField()
+
+
+class StudentProgressSerializer(serializers.Serializer):
+    """Student progress serializer"""
+    student = serializers.DictField()
+    current_class = serializers.CharField()
+    current_grade_level = serializers.CharField()
+    current_gpa = serializers.FloatField()
+    attendance_percentage = serializers.FloatField()
+    improvement_rate = serializers.FloatField()
+    subject_progress = serializers.ListField()
+    predicted_grade = serializers.CharField(allow_null=True)
+    timestamp = serializers.DateTimeField()

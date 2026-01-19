@@ -1,119 +1,62 @@
 # teachers/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import (
-    DepartmentViewSet, TeacherProfileViewSet, TeacherDocumentViewSet,
-    TeacherQualificationViewSet, TeacherTrainingViewSet, TeacherAssignmentViewSet,
-    TeacherAttendanceViewSet, TeacherLeaveViewSet, ProfessionalStandingViewSet,
-    PerformanceIndicatorViewSet, TeacherTransferViewSet, TeacherDashboardView,
-    AdminDashboardView, TeacherReportView, ExportTeachersView, PublicTeacherListView,
-    SendNotificationView, SyncTSCDataView, TeacherProfileByDepartmentView
-)
+from . import views
 
-# Create a router and register our viewsets
 router = DefaultRouter()
-router.register(r'departments', DepartmentViewSet, basename='department')
-router.register(r'teacher-profiles', TeacherProfileViewSet, basename='teacher-profile')
-router.register(r'documents', TeacherDocumentViewSet, basename='teacher-document')
-router.register(r'qualifications', TeacherQualificationViewSet, basename='teacher-qualification')
-router.register(r'trainings', TeacherTrainingViewSet, basename='teacher-training')
-router.register(r'assignments', TeacherAssignmentViewSet, basename='teacher-assignment')
-router.register(r'attendance', TeacherAttendanceViewSet, basename='teacher-attendance')
-router.register(r'leaves', TeacherLeaveViewSet, basename='teacher-leave')
-router.register(r'professional-standing', ProfessionalStandingViewSet, basename='professional-standing')
-router.register(r'performance-indicators', PerformanceIndicatorViewSet, basename='performance-indicator')
-router.register(r'transfers', TeacherTransferViewSet, basename='teacher-transfer')
+router.register(r'departments', views.DepartmentViewSet)
+router.register(r'teacher-profiles', views.TeacherProfileViewSet)
+router.register(r'documents', views.TeacherDocumentViewSet)
+router.register(r'qualifications', views.TeacherQualificationViewSet)
+router.register(r'trainings', views.TeacherTrainingViewSet)
+router.register(r'assignments', views.TeacherAssignmentViewSet)
+router.register(r'attendance', views.TeacherAttendanceViewSet)
+router.register(r'leaves', views.TeacherLeaveViewSet)
+router.register(r'professional-standings', views.ProfessionalStandingViewSet)
+router.register(r'performance-indicators', views.PerformanceIndicatorViewSet)
+router.register(r'transfers', views.TeacherTransferViewSet)
 
-# Custom URL patterns for non-viewset views
 urlpatterns = [
-    # Include router URLs
     path('', include(router.urls)),
     
-    # Dashboard URLs
-    path('dashboard/teacher/', TeacherDashboardView.as_view(), name='teacher-dashboard'),
-    path('dashboard/admin/', AdminDashboardView.as_view(), name='admin-dashboard'),
+    # Custom endpoints
+    path('my-profile/', views.CurrentTeacherProfileView.as_view(), name='my-profile'),
+    path('dashboard/teacher/', views.TeacherDashboardView.as_view(), name='teacher-dashboard'),
+    path('dashboard/admin/', views.AdminDashboardView.as_view(), name='admin-dashboard'),
+    path('export/', views.ExportTeachersView.as_view(), name='export-teachers'),
     
-    # Report URLs
-    path('reports/', TeacherReportView.as_view(), name='teacher-reports'),
-    path('export/teachers/', ExportTeachersView.as_view(), name='export-teachers'),
+    # Bulk operations
+    path('bulk/create/', views.BulkCreateTeachersView.as_view(), name='bulk-create-teachers'),
+    path('bulk/update/', views.BulkUpdateTeachersView.as_view(), name='bulk-update-teachers'),
+    path('bulk/delete/', views.BulkDeleteTeachersView.as_view(), name='bulk-delete-teachers'),
+    path('bulk/activate/', views.BulkActivateTeachersView.as_view(), name='bulk-activate-teachers'),
     
-    # Public URLs
-    path('public/', PublicTeacherListView.as_view(), name='public-teacher-list'),
+    # Reports
+    path('reports/', views.TeacherReportView.as_view(), name='teacher-reports'),
     
-    # Custom action URLs (these are also available via viewset actions, but explicit URLs can be added)
-    path('notifications/send/', SendNotificationView.as_view(), name='send-notifications'),
-    path('sync/tsc/', SyncTSCDataView.as_view(), name='sync-tsc-data'),
+    # Notifications
+    path('send-notification/', views.SendNotificationView.as_view(), name='send-notification'),
+    path('sync-tsc/', views.SyncTSCDataView.as_view(), name='sync-tsc'),
     
-    # Specialized URLs
-    path('by-department/<int:department_id>/', TeacherProfileByDepartmentView.as_view(), name='teachers-by-department'),
+    # Search
+    path('search/', views.TeacherSearchView.as_view(), name='teacher-search'),
+    path('public/', views.PublicTeacherListView.as_view(), name='public-teachers'),
     
-    # Additional action endpoints that might be useful
-    path('teacher-profiles/<int:pk>/dashboard/', TeacherProfileViewSet.as_view({'get': 'dashboard'}), name='teacher-profile-dashboard'),
-    path('teacher-profiles/<int:pk>/tsc-report/', TeacherProfileViewSet.as_view({'get': 'tsc_report'}), name='teacher-tsc-report'),
-    path('teacher-profiles/<int:pk>/update-tpd/', TeacherProfileViewSet.as_view({'post': 'update_tpd'}), name='update-tpd'),
-    path('teacher-profiles/<int:pk>/mark-cbc-trained/', TeacherProfileViewSet.as_view({'post': 'mark_cbc_trained'}), name='mark-cbc-trained'),
+    # Statistics
+    path('statistics/summary/', views.TeacherStatisticsView.as_view(), name='teacher-statistics'),
+    path('statistics/department/', views.DepartmentStatisticsView.as_view(), name='department-statistics'),
+    path('statistics/attendance/', views.AttendanceStatisticsView.as_view(), name='attendance-statistics'),
     
-    # Department specific endpoints
-    path('departments/<int:pk>/teachers/', DepartmentViewSet.as_view({'get': 'teachers'}), name='department-teachers'),
+    # My endpoints
+    path('my-assignments/', views.MyAssignmentsView.as_view(), name='my-assignments'),
     
-    # Document endpoints
-    path('documents/<int:pk>/verify/', TeacherDocumentViewSet.as_view({'post': 'verify'}), name='verify-document'),
-    path('documents/expiring-soon/', TeacherDocumentViewSet.as_view({'get': 'expiring_soon'}), name='documents-expiring-soon'),
+    # Expiring documents
+    path('documents/expiring-soon/', views.ExpiringDocumentsView.as_view(), name='expiring-documents'),
     
-    # Qualification endpoints
-    path('qualifications/<int:pk>/verify/', TeacherQualificationViewSet.as_view({'post': 'verify'}), name='verify-qualification'),
+    # Pending approvals
+    path('leaves/pending/', views.PendingLeavesView.as_view(), name='pending-leaves'),
+    path('transfers/pending/', views.PendingTransfersView.as_view(), name='pending-transfers'),
     
-    # Training endpoints
-    path('trainings/<int:pk>/complete/', TeacherTrainingViewSet.as_view({'post': 'complete'}), name='complete-training'),
-    path('trainings/upcoming/', TeacherTrainingViewSet.as_view({'get': 'upcoming'}), name='upcoming-trainings'),
-    
-    # Assignment endpoints
-    path('assignments/<int:pk>/approve/', TeacherAssignmentViewSet.as_view({'post': 'approve'}), name='approve-assignment'),
-    path('assignments/<int:pk>/activate/', TeacherAssignmentViewSet.as_view({'post': 'activate'}), name='activate-assignment'),
-    path('assignments/<int:pk>/deactivate/', TeacherAssignmentViewSet.as_view({'post': 'deactivate'}), name='deactivate-assignment'),
-    path('assignments/current/', TeacherAssignmentViewSet.as_view({'get': 'current'}), name='current-assignments'),
-    
-    # Attendance endpoints
-    path('attendance/bulk-update/', TeacherAttendanceViewSet.as_view({'post': 'bulk_update'}), name='bulk-update-attendance'),
-    path('attendance/report/', TeacherAttendanceViewSet.as_view({'get': 'report'}), name='attendance-report'),
-    path('attendance/monthly-summary/', TeacherAttendanceViewSet.as_view({'get': 'monthly_summary'}), name='monthly-attendance-summary'),
-    
-    # Leave endpoints
-    path('leaves/<int:pk>/submit/', TeacherLeaveViewSet.as_view({'post': 'submit'}), name='submit-leave'),
-    path('leaves/<int:pk>/approve/', TeacherLeaveViewSet.as_view({'post': 'approve'}), name='approve-leave'),
-    path('leaves/<int:pk>/reject/', TeacherLeaveViewSet.as_view({'post': 'reject'}), name='reject-leave'),
-    path('leaves/pending/', TeacherLeaveViewSet.as_view({'get': 'pending'}), name='pending-leaves'),
-    path('leaves/current/', TeacherLeaveViewSet.as_view({'get': 'current'}), name='current-leaves'),
-    
-    # Performance indicator endpoints
-    path('performance-indicators/summary/', PerformanceIndicatorViewSet.as_view({'get': 'summary'}), name='performance-summary'),
-    
-    # Transfer endpoints
-    path('transfers/<int:pk>/approve-sending/', TeacherTransferViewSet.as_view({'post': 'approve_sending'}), name='approve-transfer-sending'),
-    path('transfers/<int:pk>/approve-receiving/', TeacherTransferViewSet.as_view({'post': 'approve_receiving'}), name='approve-transfer-receiving'),
-    path('transfers/<int:pk>/approve-tsc/', TeacherTransferViewSet.as_view({'post': 'approve_tsc'}), name='approve-transfer-tsc'),
-    path('transfers/<int:pk>/complete/', TeacherTransferViewSet.as_view({'post': 'complete'}), name='complete-transfer'),
-    path('transfers/pending/', TeacherTransferViewSet.as_view({'get': 'pending'}), name='pending-transfers'),
-
-
-#    # Assignment extended actions
-path('assignments/my/', TeacherAssignmentViewSet.as_view({'get': 'my_assignments'}), name='my-assignments'),
-path('assignments/<int:pk>/publish/', TeacherAssignmentViewSet.as_view({'post': 'publish'}), name='publish-assignment'),
-path('assignments/<int:pk>/unpublish/', TeacherAssignmentViewSet.as_view({'post': 'unpublish'}), name='unpublish-assignment'),
-path('assignments/<int:pk>/close/', TeacherAssignmentViewSet.as_view({'post': 'close'}), name='close-assignment'),
-path('assignments/<int:pk>/duplicate/', TeacherAssignmentViewSet.as_view({'post': 'duplicate'}), name='duplicate-assignment'),
-path('assignments/statistics/', TeacherAssignmentViewSet.as_view({'get': 'statistics'}), name='assignment-statistics'),
-path('assignments/<int:pk>/submissions/', TeacherAssignmentViewSet.as_view({'get': 'submissions'}), name='assignment-submissions'),
-path('assignments/export/<str:format>/', TeacherAssignmentViewSet.as_view({'get': 'export'}), name='export-assignments'),
-
-
-
-
-
-
-
+    # Debug endpoint
+    path('debug/', views.APIDebugView.as_view(), name='api-debug'),
 ]
-
-# Add API versioning (optional but recommended)
-app_name = 'teachers'
-

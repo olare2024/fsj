@@ -2248,3 +2248,690 @@ class SyncTSCDataView(APIView):
             'status': 'synced',
             'data': tsc_data
         }
+
+
+# ============================================================================
+# ADDITIONAL VIEWS FOR FRONTEND INTEGRATION
+# ============================================================================
+
+class CurrentTeacherProfileView(generics.RetrieveUpdateAPIView):
+    """Get or update current teacher's profile"""
+    
+    permission_classes = [IsAuthenticated]
+    serializer_class = TeacherProfileSerializer
+    
+    def get_object(self):
+        """Get current teacher's profile"""
+        if hasattr(self.request.user, 'teacher_profile'):
+            return self.request.user.teacher_profile
+        raise Http404("Teacher profile not found")
+
+
+class MyAssignmentsView(generics.ListAPIView):
+    """Get current teacher's assignments"""
+    
+    permission_classes = [IsAuthenticated]
+    serializer_class = TeacherAssignmentSerializer
+    pagination_class = TeacherPagination
+    
+    def get_queryset(self):
+        """Get assignments for current teacher"""
+        if hasattr(self.request.user, 'teacher_profile'):
+            return TeacherAssignment.objects.filter(
+                teacher=self.request.user.teacher_profile,
+                is_active=True
+            ).select_related(
+                'subject', 'class_assigned', 'academic_year', 'term'
+            ).order_by('-start_date')
+        return TeacherAssignment.objects.none()
+
+
+class TeacherSearchView(generics.ListAPIView):
+    """Advanced search for teachers"""
+    
+    permission_classes = [IsAuthenticated]
+    serializer_class = TeacherProfileSummarySerializer
+    pagination_class = TeacherPagination
+    
+    def get_queryset(self):
+        """Search teachers with multiple criteria"""
+        queryset = TeacherProfile.objects.filter(is_active=True).select_related(
+            'teacher', 'department'
+        )
+        
+        # Apply filters
+        search_query = self.request.query_params.get('q', '')
+        if search_query:
+            queryset = queryset.filter(
+                Q(teacher__first_name__icontains=search_query) |
+                Q(teacher__last_name__icontains=search_query) |
+                Q(tsc_number__icontains=search_query) |
+                Q(teacher__id_number__icontains=search_query) |
+                Q(teacher__email__icontains=search_query)
+            )
+        
+        # Department filter
+        department_id = self.request.query_params.get('department_id')
+        if department_id:
+            queryset = queryset.filter(department_id=department_id)
+        
+        # Teaching level filter
+        teaching_level = self.request.query_params.get('teaching_level')
+        if teaching_level:
+            queryset = queryset.filter(teaching_level=teaching_level)
+        
+        # Employment status filter
+        employment_status = self.request.query_params.get('employment_status')
+        if employment_status:
+            queryset = queryset.filter(employment_status=employment_status)
+        
+        # CBC trained filter
+        cbc_trained = self.request.query_params.get('cbc_trained')
+        if cbc_trained is not None:
+            queryset = queryset.filter(cbc_trained=cbc_trained.lower() == 'true')
+        
+        return queryset
+
+
+class TeacherStatisticsView(APIView):
+    """Get teacher statistics"""
+    
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get comprehensive teacher statistics"""
+        queryset = TeacherProfile.objects.filter(is_active=True)
+        
+        stats = {
+            'total': queryset.count(),
+            'by_gender': queryset.values('teacher__gender').annotate(
+                count=Count('id')
+            ),
+            'by_department': queryset.values('department__name').annotate(
+                count=Count('id')
+            ).order_by('-count'),
+            'by_teaching_level': queryset.values('teaching_level').annotate(
+                count=Count('id')
+            ),
+            'by_employment_type': queryset.values('employment_type').annotate(
+                count=Count('id')
+            ),
+            'tsc_compliant': queryset.filter(tsc_compliant=True).count(),
+            'cbc_trained': queryset.filter(cbc_trained=True).count(),
+            'on_leave': queryset.filter(
+                employment_status__in=['on_leave', 'study_leave', 'maternity_leave', 'paternity_leave', 'sick_leave']
+            ).count(),
+            'workload_distribution': {
+                'overloaded': queryset.filter(weekly_periods__gt=36).count(),
+                'optimal': queryset.filter(weekly_periods__range=[23, 36]).count(),
+                'underutilized': queryset.filter(weekly_periods__lt=23).count(),
+            }
+        }
+        
+        return Response(stats)
+
+
+class DepartmentStatisticsView(APIView):
+    """Get department statistics"""
+    
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get department-wise statistics"""
+        departments = Department.objects.filter(is_active=True)
+        
+        stats = []
+        for dept in departments:
+            teachers = dept.teachers.filter(is_active=True)
+            stats.append({
+                'id': dept.id,
+                'name': dept.name,
+                'code': dept.code,
+                'total_teachers': teachers.count(),
+                'active_teachers': teachers.filter(employment_status='active').count(),
+                'cbc_trained': teachers.filter(cbc_trained=True).count(),
+                'hod': dept.hod.full_name if dept.hod else None,
+            })
+        
+        return Response(stats)
+
+
+class AttendanceStatisticsView(APIView):
+    """Get attendance statistics"""
+    
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        """Get attendance statistics for current month"""
+        today = timezone.now().date()
+        first_day = today.replace(day=1)
+        
+        stats = TeacherAttendance.objects.filter(
+            date__range=[first_day, today]
+        ).aggregate(
+            total_days=Count('id'),
+            present=Count('id', filter=Q(status='present')),
+            absent=Count('id', filter=Q(status='absent')),
+            leave=Count('id', filter=Q(status='leave')),
+            late=Count('id', filter=Q(is_late=True)),
+            average_hours=Avg('working_hours')
+        )
+        
+        return Response(stats)
+
+
+class ExpiringDocumentsView(generics.ListAPIView):
+    """Get documents expiring soon"""
+    
+    permission_classes = [IsAuthenticated]
+    serializer_class = TeacherDocumentSerializer
+    
+    def get_queryset(self):
+        """Get documents expiring within 30 days"""
+        thirty_days_later = timezone.now().date() + timedelta(days=30)
+        
+        queryset = TeacherDocument.objects.filter(
+            expiry_date__range=[timezone.now().date(), thirty_days_later],
+            status__in=['verified', 'pending'],
+            is_active=True
+        ).select_related('teacher')
+        
+        if not self.request.user.is_staff:
+            queryset = queryset.filter(teacher__teacher=self.request.user)
+        
+        return queryset.order_by('expiry_date')
+
+
+class PendingLeavesView(generics.ListAPIView):
+    """Get pending leave applications (admin only)"""
+    
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    serializer_class = TeacherLeaveSerializer
+    pagination_class = TeacherPagination
+    
+    def get_queryset(self):
+        return TeacherLeave.objects.filter(
+            status='pending',
+            is_active=True
+        ).select_related('teacher', 'approved_by').order_by('applied_date')
+
+
+class PendingTransfersView(generics.ListAPIView):
+    """Get pending transfer applications (admin only)"""
+    
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    serializer_class = TeacherTransferSerializer
+    pagination_class = TeacherPagination
+    
+    def get_queryset(self):
+        return TeacherTransfer.objects.filter(
+            status='pending',
+            is_active=True
+        ).select_related('teacher', 'from_school', 'to_school').order_by('applied_date')
+
+
+class BulkCreateTeachersView(APIView):
+    """Bulk create teachers from CSV/Excel"""
+    
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+    
+    def post(self, request):
+        """Handle bulk teacher creation"""
+        file = request.FILES.get('file')
+        
+        if not file:
+            return Response(
+                {"error": "No file provided"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Process file based on type
+            if file.name.endswith('.csv'):
+                result = self._process_csv(file)
+            elif file.name.endswith(('.xlsx', '.xls')):
+                result = self._process_excel(file)
+            else:
+                return Response(
+                    {"error": "Unsupported file format. Use CSV or Excel."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            return Response({
+                "success": True,
+                "message": f"Successfully processed {result['created']} teachers",
+                "details": result
+            })
+            
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    
+    def _process_csv(self, file):
+        """Process CSV file"""
+        import csv
+        import io
+        
+        content = file.read().decode('utf-8')
+        csv_data = csv.DictReader(io.StringIO(content))
+        
+        created = 0
+        errors = []
+        
+        for i, row in enumerate(csv_data, 1):
+            try:
+                # Convert CSV row to teacher data
+                teacher_data = self._csv_row_to_teacher_data(row)
+                serializer = TeacherProfileCreateSerializer(data=teacher_data)
+                
+                if serializer.is_valid():
+                    serializer.save()
+                    created += 1
+                else:
+                    errors.append(f"Row {i}: {serializer.errors}")
+                    
+            except Exception as e:
+                errors.append(f"Row {i}: {str(e)}")
+        
+        return {'created': created, 'errors': errors}
+    
+    def _csv_row_to_teacher_data(self, row):
+        """Convert CSV row to teacher data dictionary"""
+        # Map CSV columns to serializer fields
+        return {
+            'first_name': row.get('first_name', ''),
+            'last_name': row.get('last_name', ''),
+            'email': row.get('email', ''),
+            'phone_number': row.get('phone_number', ''),
+            'id_number': row.get('id_number', ''),
+            'date_of_birth': row.get('date_of_birth', ''),
+            'gender': row.get('gender', ''),
+            'nationality': row.get('nationality', 'Kenyan'),
+            'tsc_number': row.get('tsc_number', ''),
+            'employment_type': row.get('employment_type', 'permanent_tsc'),
+            # Add other fields as needed
+        }
+    
+    def _process_excel(self, file):
+        """Process Excel file"""
+        import pandas as pd
+        
+        df = pd.read_excel(file)
+        created = 0
+        errors = []
+        
+        for i, row in df.iterrows():
+            try:
+                teacher_data = row.to_dict()
+                serializer = TeacherProfileCreateSerializer(data=teacher_data)
+                
+                if serializer.is_valid():
+                    serializer.save()
+                    created += 1
+                else:
+                    errors.append(f"Row {i}: {serializer.errors}")
+                    
+            except Exception as e:
+                errors.append(f"Row {i}: {str(e)}")
+        
+
+        return {'created': created, 'errors': errors}
+
+
+
+class BulkDeleteTeachersView(APIView):
+    """Bulk delete teacher profiles"""
+    
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def post(self, request):
+        """Delete multiple teacher profiles"""
+        teacher_ids = request.data.get('teacher_ids', [])
+        
+        if not teacher_ids:
+            return Response(
+                {"error": "Teacher IDs are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        teachers = TeacherProfile.objects.filter(id__in=teacher_ids)
+        deleted_count = teachers.count()
+        
+        # Soft delete teachers
+        teachers.update(is_active=False)
+        
+        return Response({
+            "success": True,
+            "message": f"Successfully deleted {deleted_count} teachers",
+            "deleted": deleted_count
+        })
+
+class BulkActivateTeachersView(APIView):
+    """Bulk activate teacher profiles"""
+    
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def post(self, request):
+        """Activate multiple teacher profiles"""
+        teacher_ids = request.data.get('teacher_ids', [])
+        
+        if not teacher_ids:
+            return Response(
+                {"error": "Teacher IDs are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        teachers = TeacherProfile.objects.filter(
+            id__in=teacher_ids,
+            is_active=False
+        )
+        activated_count = teachers.update(is_active=True)
+        
+        return Response({
+            "success": True,
+            "message": f"Successfully activated {activated_count} teachers",
+            "activated": activated_count
+        })
+
+
+# Add this to teachers/views.py
+
+class BulkUpdateTeachersView(APIView):
+    """Bulk update teacher profiles"""
+    
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def post(self, request):
+        """Update multiple teacher profiles"""
+        teacher_ids = request.data.get('teacher_ids', [])
+        updates = request.data.get('updates', {})
+        
+        if not teacher_ids or not updates:
+            return Response(
+                {"error": "Teacher IDs and updates are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        teachers = TeacherProfile.objects.filter(
+            id__in=teacher_ids,
+            is_active=True
+        )
+        
+        updated_count = 0
+        errors = []
+        
+        for teacher in teachers:
+            try:
+                serializer = TeacherProfileSerializer(
+                    teacher,
+                    data=updates,
+                    partial=True,
+                    context={'request': request}
+                )
+                
+                if serializer.is_valid():
+                    serializer.save()
+                    updated_count += 1
+                else:
+                    errors.append({
+                        'teacher_id': teacher.id,
+                        'teacher_name': teacher.full_name,
+                        'errors': serializer.errors
+                    })
+                    
+            except Exception as e:
+                errors.append({
+                    'teacher_id': teacher.id,
+                    'teacher_name': teacher.full_name,
+                    'error': str(e)
+                })
+        
+        return Response({
+            "success": True,
+            "message": f"Successfully updated {updated_count} teachers",
+            "updated": updated_count,
+            "failed": len(errors),
+            "errors": errors if errors else None
+        })
+
+
+# teachers/views.py
+from django.urls import reverse
+from django.conf import settings
+
+class APIDebugView(APIView):
+    """Debug view to test API endpoints and list available routes"""
+    
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        """List all available API endpoints"""
+        base_url = request.build_absolute_uri('/')
+        
+        endpoints = {
+            'api_info': {
+                'base_url': base_url,
+                'version': 'v1',
+                'debug_mode': settings.DEBUG,
+            },
+            'authentication': {
+                'token_obtain': f'{base_url}api/token/',
+                'token_refresh': f'{base_url}api/token/refresh/',
+                'token_verify': f'{base_url}api/token/verify/',
+            },
+            'teacher_endpoints': {
+                # ViewSets (CRUD operations)
+                'departments': {
+                    'list': f'{base_url}api/v1/teachers/departments/',
+                    'create': f'{base_url}api/v1/teachers/departments/',
+                    'detail': f'{base_url}api/v1/teachers/departments/{{id}}/',
+                    'department_teachers': f'{base_url}api/v1/teachers/departments/{{id}}/teachers/',
+                    'statistics': f'{base_url}api/v1/teachers/departments/statistics/',
+                },
+                'teacher_profiles': {
+                    'list': f'{base_url}api/v1/teachers/teacher-profiles/',
+                    'create': f'{base_url}api/v1/teachers/teacher-profiles/',
+                    'detail': f'{base_url}api/v1/teachers/teacher-profiles/{{id}}/',
+                    'my_profile': f'{base_url}api/v1/teachers/my-profile/',
+                    'dashboard': f'{base_url}api/v1/teachers/dashboard/teacher/',
+                    'tsc_report': f'{base_url}api/v1/teachers/teacher-profiles/{{id}}/tsc_report/',
+                    'update_tpd': f'{base_url}api/v1/teachers/teacher-profiles/{{id}}/update_tpd/',
+                    'mark_cbc_trained': f'{base_url}api/v1/teachers/teacher-profiles/{{id}}/mark_cbc_trained/',
+                    'statistics': f'{base_url}api/v1/teachers/teacher-profiles/statistics/',
+                    'search': f'{base_url}api/v1/teachers/teacher-profiles/search/',
+                },
+                'documents': {
+                    'list': f'{base_url}api/v1/teachers/documents/',
+                    'create': f'{base_url}api/v1/teachers/documents/',
+                    'detail': f'{base_url}api/v1/teachers/documents/{{id}}/',
+                    'verify': f'{base_url}api/v1/teachers/documents/{{id}}/verify/',
+                    'expiring_soon': f'{base_url}api/v1/teachers/documents/expiring-soon/',
+                },
+                'qualifications': {
+                    'list': f'{base_url}api/v1/teachers/qualifications/',
+                    'create': f'{base_url}api/v1/teachers/qualifications/',
+                    'detail': f'{base_url}api/v1/teachers/qualifications/{{id}}/',
+                    'verify': f'{base_url}api/v1/teachers/qualifications/{{id}}/verify/',
+                },
+                'trainings': {
+                    'list': f'{base_url}api/v1/teachers/trainings/',
+                    'create': f'{base_url}api/v1/teachers/trainings/',
+                    'detail': f'{base_url}api/v1/teachers/trainings/{{id}}/',
+                    'complete': f'{base_url}api/v1/teachers/trainings/{{id}}/complete/',
+                    'upcoming': f'{base_url}api/v1/teachers/trainings/upcoming/',
+                },
+                'assignments': {
+                    'list': f'{base_url}api/v1/teachers/assignments/',
+                    'create': f'{base_url}api/v1/teachers/assignments/',
+                    'detail': f'{base_url}api/v1/teachers/assignments/{{id}}/',
+                    'my_assignments': f'{base_url}api/v1/teachers/assignments/my-assignments/',
+                    'approve': f'{base_url}api/v1/teachers/assignments/{{id}}/approve/',
+                    'activate': f'{base_url}api/v1/teachers/assignments/{{id}}/activate/',
+                    'deactivate': f'{base_url}api/v1/teachers/assignments/{{id}}/deactivate/',
+                    'current': f'{base_url}api/v1/teachers/assignments/current/',
+                },
+                'attendance': {
+                    'list': f'{base_url}api/v1/teachers/attendance/',
+                    'create': f'{base_url}api/v1/teachers/attendance/',
+                    'detail': f'{base_url}api/v1/teachers/attendance/{{id}}/',
+                    'bulk_update': f'{base_url}api/v1/teachers/attendance/bulk_update/',
+                    'report': f'{base_url}api/v1/teachers/attendance/report/',
+                    'monthly_summary': f'{base_url}api/v1/teachers/attendance/monthly_summary/',
+                },
+                'leaves': {
+                    'list': f'{base_url}api/v1/teachers/leaves/',
+                    'create': f'{base_url}api/v1/teachers/leaves/',
+                    'detail': f'{base_url}api/v1/teachers/leaves/{{id}}/',
+                    'submit': f'{base_url}api/v1/teachers/leaves/{{id}}/submit/',
+                    'approve': f'{base_url}api/v1/teachers/leaves/{{id}}/approve/',
+                    'reject': f'{base_url}api/v1/teachers/leaves/{{id}}/reject/',
+                    'pending': f'{base_url}api/v1/teachers/leaves/pending/',
+                    'current': f'{base_url}api/v1/teachers/leaves/current/',
+                },
+                'transfers': {
+                    'list': f'{base_url}api/v1/teachers/transfers/',
+                    'create': f'{base_url}api/v1/teachers/transfers/',
+                    'detail': f'{base_url}api/v1/teachers/transfers/{{id}}/',
+                    'approve_sending': f'{base_url}api/v1/teachers/transfers/{{id}}/approve_sending/',
+                    'approve_receiving': f'{base_url}api/v1/teachers/transfers/{{id}}/approve_receiving/',
+                    'approve_tsc': f'{base_url}api/v1/teachers/transfers/{{id}}/approve_tsc/',
+                    'complete': f'{base_url}api/v1/teachers/transfers/{{id}}/complete/',
+                    'pending': f'{base_url}api/v1/teachers/transfers/pending/',
+                },
+                
+                # Admin endpoints
+                'admin_dashboard': f'{base_url}api/v1/teachers/dashboard/admin/',
+                'export_teachers': f'{base_url}api/v1/teachers/export/',
+                'bulk_operations': {
+                    'create': f'{base_url}api/v1/teachers/bulk/create/',
+                    'update': f'{base_url}api/v1/teachers/bulk/update/',
+                    'delete': f'{base_url}api/v1/teachers/bulk/delete/',
+                    'activate': f'{base_url}api/v1/teachers/bulk/activate/',
+                },
+                'reports': f'{base_url}api/v1/teachers/reports/',
+                'send_notification': f'{base_url}api/v1/teachers/send-notification/',
+                'sync_tsc': f'{base_url}api/v1/teachers/sync-tsc/',
+                
+                # Statistics
+                'teacher_statistics': f'{base_url}api/v1/teachers/statistics/summary/',
+                'department_statistics': f'{base_url}api/v1/teachers/statistics/department/',
+                'attendance_statistics': f'{base_url}api/v1/teachers/statistics/attendance/',
+                
+                # Search and public
+                'teacher_search': f'{base_url}api/v1/teachers/search/',
+                'public_teachers': f'{base_url}api/v1/teachers/public/',
+                
+                # Personal endpoints
+                'my_assignments': f'{base_url}api/v1/teachers/my-assignments/',
+            },
+            'sample_requests': {
+                'create_teacher': {
+                    'method': 'POST',
+                    'url': f'{base_url}api/v1/teachers/teacher-profiles/',
+                    'body_example': {
+                        "first_name": "John",
+                        "last_name": "Doe",
+                        "email": "john.doe@school.edu",
+                        "phone_number": "+254712345678",
+                        "id_number": "12345678",
+                        "date_of_birth": "1985-01-15",
+                        "gender": "male",
+                        "nationality": "Kenyan",
+                        "tsc_number": "TSC/12345/2023",
+                        "tsc_registration_date": "2023-01-15",
+                        "tsc_status": "registered",
+                        "highest_qualification": "bachelor_education",
+                        "qualification_institution": "University of Nairobi",
+                        "year_of_graduation": 2010,
+                        "kcse_mean_grade": "B+",
+                        "employment_type": "permanent_tsc",
+                        "teaching_level": "secondary",
+                        "employment_date": "2023-02-01"
+                    }
+                },
+                'login': {
+                    'method': 'POST',
+                    'url': f'{base_url}api/token/',
+                    'body_example': {
+                        "username": "your_username",
+                        "password": "your_password"
+                    }
+                }
+            },
+            'query_parameters': {
+                'teacher_search': {
+                    'q': 'Search term (name, TSC number, ID)',
+                    'department_id': 'Filter by department',
+                    'teaching_level': 'primary, secondary, etc.',
+                    'employment_status': 'active, on_leave, etc.',
+                    'cbc_trained': 'true or false'
+                },
+                'attendance_report': {
+                    'start_date': 'YYYY-MM-DD',
+                    'end_date': 'YYYY-MM-DD',
+                    'teacher_id': 'Filter by teacher',
+                    'department_id': 'Filter by department'
+                },
+                'reports': {
+                    'type': 'summary, tsc_compliance, workload, attendance'
+                }
+            }
+        }
+        
+        return Response(endpoints)
+    
+    def post(self, request):
+        """Test endpoint connectivity"""
+        test_results = []
+        
+        # Test database connection
+        try:
+            teacher_count = TeacherProfile.objects.count()
+            test_results.append({
+                'test': 'database_connection',
+                'status': 'success',
+                'message': f'Database connected. Found {teacher_count} teachers.'
+            })
+        except Exception as e:
+            test_results.append({
+                'test': 'database_connection',
+                'status': 'failed',
+                'message': str(e)
+            })
+        
+        # Test authentication if user is authenticated
+        if request.user.is_authenticated:
+            test_results.append({
+                'test': 'authentication',
+                'status': 'success',
+                'message': f'User authenticated: {request.user.username}'
+            })
+        else:
+            test_results.append({
+                'test': 'authentication',
+                'status': 'info',
+                'message': 'User not authenticated (anonymous access)'
+            })
+        
+        # Test permissions
+        if request.user.is_staff:
+            test_results.append({
+                'test': 'admin_permissions',
+                'status': 'success',
+                'message': 'User has admin permissions'
+            })
+        else:
+            test_results.append({
+                'test': 'admin_permissions',
+                'status': 'info',
+                'message': 'User does not have admin permissions'
+            })
+        
+        return Response({
+            'status': 'debug_test_completed',
+            'results': test_results,
+            'timestamp': timezone.now().isoformat()
+        })

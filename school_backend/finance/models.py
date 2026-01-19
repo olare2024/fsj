@@ -1,4 +1,3 @@
-# finance/models.py
 from django.db import models, transaction
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -8,10 +7,10 @@ import uuid
 import logging
 from datetime import timedelta
 
-# Use your existing models
+# Use your existing models - UPDATED TO MATCH YOUR STRUCTURE
 from accounts.models import User
-from administration.models import School
-from academics.models import Class, AcademicYear, AcademicTerm
+# Remove StudentClassAssignment import since it doesn't exist in your academics/models.py
+from academics.models import AcademicYear, AcademicTerm, GradeLevel
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +32,12 @@ class BaseFinancialModel(models.Model):
 
 # ==================== ENUMS AND CHOICES ====================
 class PaymentStatus(models.TextChoices):
-    PENDING = "Pending", "Pending"
-    COMPLETED = "Completed", "Completed"
-    CANCELLED = "Cancelled", "Cancelled"
-    FAILED = "Failed", "Failed"
-    REFUNDED = "Refunded", "Refunded"
-    PARTIALLY_PAID = "Partially Paid", "Partially Paid"
+    PENDING = "pending", "Pending"
+    COMPLETED = "completed", "Completed"
+    CANCELLED = "cancelled", "Cancelled"
+    FAILED = "failed", "Failed"
+    REFUNDED = "refunded", "Refunded"
+    PARTIALLY_PAID = "partially_paid", "Partially Paid"
 
 
 class KenyaPaymentMethod(models.TextChoices):
@@ -172,10 +171,10 @@ class PaymentAllocation(BaseFinancialModel):
     @property
     def spent_this_year(self):
         """Calculate total spent this academic year"""
-        current_year = AcademicYear.get_current_year()
+        current_year = AcademicYear.objects.filter(is_current=True, is_active=True).first()
         if current_year:
             payments = Payment.objects.filter(
-                paid_for=self,
+                allocation=self,
                 status=PaymentStatus.COMPLETED,
                 date__range=[current_year.start_date, current_year.end_date]
             )
@@ -194,7 +193,7 @@ class PaymentAllocation(BaseFinancialModel):
 # ==================== FEE STRUCTURE ENHANCEMENTS ====================
 class FeeStructure(BaseFinancialModel):
     """Enhanced Kenya school fee structure with CBC and 8-4-4 support"""
-    name = models.CharField(max_length=255, help_text="e.g., AcademicTerm 1 Fees 2024")
+    name = models.CharField(max_length=255, help_text="e.g., Term 1 Fees 2024")
     curriculum = models.CharField(
         max_length=20,
         choices=[
@@ -205,38 +204,10 @@ class FeeStructure(BaseFinancialModel):
         ],
         default='cbc'
     )
-    grade_level = models.CharField(
-        max_length=20,
-        choices=[
-            # CBC Levels
-            ('pre_primary_1', 'Pre-Primary 1 (PP1)'),
-            ('pre_primary_2', 'Pre-Primary 2 (PP2)'),
-            ('grade_1', 'Grade 1'),
-            ('grade_2', 'Grade 2'),
-            ('grade_3', 'Grade 3'),
-            ('grade_4', 'Grade 4'),
-            ('grade_5', 'Grade 5'),
-            ('grade_6', 'Grade 6'),
-            ('grade_7', 'Grade 7'),
-            ('grade_8', 'Grade 8'),
-            ('grade_9', 'Grade 9'),
-            ('grade_10', 'Grade 10'),
-            ('grade_11', 'Grade 11'),
-            ('grade_12', 'Grade 12'),
-            # 8-4-4 Levels
-            ('class_1', 'Class 1'),
-            ('class_2', 'Class 2'),
-            ('class_3', 'Class 3'),
-            ('class_4', 'Class 4'),
-            ('class_5', 'Class 5'),
-            ('class_6', 'Class 6'),
-            ('class_7', 'Class 7'),
-            ('class_8', 'Class 8'),
-            ('form_1', 'Form 1'),
-            ('form_2', 'Form 2'),
-            ('form_3', 'Form 3'),
-            ('form_4', 'Form 4'),
-        ]
+    grade_level = models.ForeignKey(
+        GradeLevel,
+        on_delete=models.CASCADE,
+        help_text="Grade level for this fee structure"
     )
     term = models.ForeignKey(AcademicTerm, on_delete=models.CASCADE)
     
@@ -277,7 +248,7 @@ class FeeStructure(BaseFinancialModel):
 
     class Meta:
         unique_together = ('curriculum', 'grade_level', 'term')
-        ordering = ['curriculum', 'grade_level', 'term']
+        ordering = ['curriculum', 'grade_level__level', 'term']
         verbose_name = "Fee Structure"
         verbose_name_plural = "Fee Structures"
         indexes = [
@@ -286,22 +257,22 @@ class FeeStructure(BaseFinancialModel):
         ]
 
     def __str__(self):
-        return f"{self.name} - {self.get_grade_level_display()} ({self.term})"
+        return f"{self.name} - {self.grade_level.name} ({self.term})"
 
     def initialize_fee_components(self):
         """Initialize fee components with default structure"""
         if not self.fee_components:
             self.fee_components = {
-                'tuition': {'amount': Decimal('0.00'), 'required': True},
-                'activity': {'amount': Decimal('0.00'), 'required': True},
-                'examination': {'amount': Decimal('0.00'), 'required': True},
-                'boarding': {'amount': Decimal('0.00'), 'required': False},
-                'transport': {'amount': Decimal('0.00'), 'required': False},
-                'medical': {'amount': Decimal('0.00'), 'required': True},
-                'development': {'amount': Decimal('0.00'), 'required': True},
-                'caution': {'amount': Decimal('0.00'), 'required': False},
-                'uniform': {'amount': Decimal('0.00'), 'required': False},
-                'library': {'amount': Decimal('0.00'), 'required': False},
+                'tuition': {'amount': 0.00, 'required': True},
+                'activity': {'amount': 0.00, 'required': True},
+                'examination': {'amount': 0.00, 'required': True},
+                'boarding': {'amount': 0.00, 'required': False},
+                'transport': {'amount': 0.00, 'required': False},
+                'medical': {'amount': 0.00, 'required': True},
+                'development': {'amount': 0.00, 'required': True},
+                'caution': {'amount': 0.00, 'required': False},
+                'uniform': {'amount': 0.00, 'required': False},
+                'library': {'amount': 0.00, 'required': False},
             }
     
     def save(self, *args, **kwargs):
@@ -529,7 +500,38 @@ class DebtRecord(BaseFinancialModel):
         if self.payment_plan.get('due_dates') and paid_installments < len(self.payment_plan['due_dates']):
             self.next_installment_due = self.payment_plan['due_dates'][paid_installments]
 
-    # ... rest of the enhanced methods (apply_late_penalty, reverse, send_reminder, etc.)
+    def apply_late_penalty(self, penalty_rate=0.5):
+        """Apply late payment penalty"""
+        if self.due_date and timezone.now().date() > self.due_date:
+            overdue_days = (timezone.now().date() - self.due_date).days
+            penalty = (self.balance * Decimal(penalty_rate) / 100 * overdue_days)
+            self.late_penalty_applied += penalty
+            self.is_overdue = True
+            self.overdue_days = overdue_days
+            self.save()
+
+    def reverse(self, reversed_by, reason=""):
+        """Reverse debt record"""
+        self.is_reversed = True
+        self.reversed_on = timezone.now()
+        self.reversed_by = reversed_by
+        self.save()
+        logger.info(f"Debt record {self.id} reversed by {reversed_by.get_full_name()}")
+
+    def send_reminder(self, sms=True, email=True):
+        """Send payment reminder"""
+        self.last_reminder_sent = timezone.now()
+        
+        if sms:
+            # Implement SMS sending logic here
+            self.sent_reminder_sms = True
+        
+        if email:
+            # Implement email sending logic here
+            self.sent_reminder_email = True
+        
+        self.save()
+        logger.info(f"Reminder sent for debt record {self.id}")
 
 
 # ==================== ENHANCED TRANSACTION MODELS ====================
@@ -701,6 +703,12 @@ class Receipt(BaseFinancialModel):
         self.printed_at = timezone.now()
         self.printed_count += 1
         self.save()
+
+    def create_payment_record(self):
+        """Create payment record for this receipt"""
+        # This would be implemented based on your PaymentRecord model
+        pass
+
 
 # ==================== PAYMENT MODELS ====================
 class Payment(BaseFinancialModel):
@@ -994,516 +1002,6 @@ class PaymentRecord(BaseFinancialModel):
         return f"Payment Record - {self.payment.payment_number} - {self.allocated_amount}"
 
 
-# ==================== ENHANCED FINANCIAL REPORTS ====================
-class FinancialReport(BaseFinancialModel):
-    """Enhanced financial reports with multiple report types"""
-    REPORT_TYPES = (
-        ('daily', 'Daily Collection'),
-        ('weekly', 'Weekly Collection'),
-        ('monthly', 'Monthly Financial'),
-        ('termly', 'AcademicTerm Financial'),
-        ('annual', 'Annual Financial'),
-        ('fee_collection', 'Fee Collection'),
-        ('expenditure', 'Expenditure'),
-        ('profit_loss', 'Profit & Loss'),
-        ('balance_sheet', 'Balance Sheet'),
-        ('cash_flow', 'Cash Flow'),
-    )
-    
-    report_type = models.CharField(max_length=20, choices=REPORT_TYPES)
-    title = models.CharField(max_length=255)
-    description = models.TextField(blank=True)
-    
-    # Period covered
-    period_start = models.DateField()
-    period_end = models.DateField()
-    
-    # Report data (store computed data for quick access)
-    report_data = models.JSONField(
-        default=dict,
-        help_text="Computed report data in structured format"
-    )
-    
-    # Summary statistics
-    total_income = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    total_expenses = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    net_profit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    
-    # Generated by
-    generated_by = models.ForeignKey(User, on_delete=models.PROTECT)
-    generated_at = models.DateTimeField(default=timezone.now)
-    
-    # Approval
-    is_approved = models.BooleanField(default=False)
-    approved_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='approved_reports'
-    )
-    approved_at = models.DateTimeField(null=True, blank=True)
-    
-    # Export details
-    exported_formats = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="List of exported formats (PDF, Excel, etc.)"
-    )
-    last_exported = models.DateTimeField(null=True, blank=True)
-    
-    class Meta:
-        ordering = ['-period_end', '-generated_at']
-        verbose_name = "Financial Report"
-        verbose_name_plural = "Financial Reports"
-        indexes = [
-            models.Index(fields=['report_type', 'period_start']),
-            models.Index(fields=['generated_at', 'is_approved']),
-        ]
-
-    def __str__(self):
-        return f"{self.title} - {self.period_start} to {self.period_end}"
-
-    def generate_report_data(self):
-        """Generate comprehensive report data"""
-        # This method would compute and populate report_data
-        # Implementation depends on report type
-        pass
-
-    def calculate_summary(self):
-        """Calculate summary statistics"""
-        # This would calculate based on report_data
-        pass
-
-
-class Budget(BaseFinancialModel):
-    """Enhanced budget model for school financial planning"""
-    name = models.CharField(max_length=255)
-    academic_year = models.ForeignKey(AcademicYear, on_delete=models.CASCADE)
-    term = models.ForeignKey(AcademicTerm, on_delete=models.CASCADE, null=True, blank=True)
-    
-    # Budget categories
-    budget_items = models.JSONField(
-        default=list,
-        help_text="Structured budget items with categories and amounts"
-    )
-    
-    # Enhanced budget details
-    total_budget = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    allocated_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    actual_spent = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    
-    # Status
-    is_approved = models.BooleanField(default=False)
-    approved_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='approved_budgets'
-    )
-    approved_at = models.DateTimeField(null=True, blank=True)
-    
-    # Monitoring
-    variance_percentage = models.DecimalField(
-        max_digits=5, 
-        decimal_places=2, 
-        default=Decimal('0.00'),
-        help_text="Percentage variance between budget and actual"
-    )
-    is_on_track = models.BooleanField(default=True)
-    
-    class Meta:
-        ordering = ['academic_year', 'term']
-        verbose_name = "Budget"
-        verbose_name_plural = "Budgets"
-        indexes = [
-            models.Index(fields=['academic_year', 'is_approved']),
-        ]
-
-    def __str__(self):
-        term_str = f" - {self.term.name}" if self.term else ""
-        return f"{self.name} - {self.academic_year.name}{term_str}"
-
-    def calculate_totals(self):
-        """Calculate budget totals"""
-        total = Decimal('0.00')
-        for item in self.budget_items:
-            total += Decimal(str(item.get('amount', 0)))
-        self.total_budget = total
-        self.save()
-
-    def update_actual_spent(self):
-        """Update actual spent amount based on payments"""
-        if self.term:
-            payments = Payment.objects.filter(
-                date__gte=self.term.start_date,
-                date__lte=self.term.end_date,
-                status=PaymentStatus.COMPLETED
-            )
-        else:
-            payments = Payment.objects.filter(
-                date__gte=self.academic_year.start_date,
-                date__lte=self.academic_year.end_date,
-                status=PaymentStatus.COMPLETED
-            )
-        
-        self.actual_spent = payments.aggregate(total=models.Sum('total_amount'))['total'] or Decimal('0.00')
-        
-        # Calculate variance
-        if self.total_budget > 0:
-            self.variance_percentage = ((self.actual_spent - self.allocated_amount) / self.total_budget * 100).quantize(Decimal('0.01'))
-        
-        self.is_on_track = self.actual_spent <= self.allocated_amount
-        self.save()
-
-
-# ==================== TAX AND COMPLIANCE MODELS ====================
-class TaxConfiguration(BaseFinancialModel):
-    """Enhanced tax configuration for Kenya"""
-    tax_name = models.CharField(max_length=100, help_text="e.g., VAT, Withholding Tax")
-    tax_rate = models.DecimalField(
-        max_digits=5, 
-        decimal_places=2, 
-        help_text="Tax rate in percentage"
-    )
-    applies_to = models.CharField(
-        max_length=20,
-        choices=[
-            ('all', 'All Payments'),
-            ('receipts', 'Receipts Only'),
-            ('payments', 'Payments Only'),
-            ('specific', 'Specific Categories'),
-        ],
-        default='all'
-    )
-    
-    # Kenya-specific tax details
-    kra_pin_required = models.BooleanField(default=False)
-    tax_code = models.CharField(max_length=50, blank=True, null=True)
-    effective_from = models.DateField(default=timezone.now)
-    effective_to = models.DateField(null=True, blank=True)
-    
-    # Configuration
-    is_active = models.BooleanField(default=True)
-    auto_calculate = models.BooleanField(
-        default=True,
-        help_text="Automatically calculate tax on applicable transactions"
-    )
-    
-    class Meta:
-        verbose_name = "Tax Configuration"
-        verbose_name_plural = "Tax Configurations"
-        ordering = ['tax_name', 'effective_from']
-
-    def __str__(self):
-        return f"{self.tax_name} - {self.tax_rate}%"
-
-    def calculate_tax(self, amount):
-        """Calculate tax amount for given amount"""
-        return (amount * self.tax_rate / 100).quantize(Decimal('0.01'))
-
-
-class ComplianceRecord(BaseFinancialModel):
-    """Enhanced compliance and audit records"""
-    record_type = models.CharField(
-        max_length=50,
-        choices=[
-            ('audit', 'Internal Audit'),
-            ('tax', 'Tax Filing'),
-            ('license', 'License Renewal'),
-            ('inspection', 'Regulatory Inspection'),
-            ('other', 'Other Compliance'),
-        ]
-    )
-    title = models.CharField(max_length=255)
-    description = models.TextField()
-    
-    # Compliance period
-    due_date = models.DateField()
-    completion_date = models.DateField(null=True, blank=True)
-    
-    # Status
-    status = models.CharField(
-        max_length=20,
-        choices=[
-            ('pending', 'Pending'),
-            ('in_progress', 'In Progress'),
-            ('completed', 'Completed'),
-            ('overdue', 'Overdue'),
-            ('cancelled', 'Cancelled'),
-        ],
-        default='pending'
-    )
-    
-    # Responsible parties
-    responsible_person = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name='compliance_responsibilities'
-    )
-    verified_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='verified_compliance'
-    )
-    
-    # Documents and evidence
-    supporting_documents = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="List of compliance documents"
-    )
-    evidence_of_compliance = models.TextField(blank=True)
-    
-    # Notes and follow-up
-    notes = models.TextField(blank=True)
-    next_review_date = models.DateField(null=True, blank=True)
-    
-    # Kenya-specific
-    kra_filing = models.BooleanField(default=False)
-    kra_reference = models.CharField(max_length=100, blank=True, null=True)
-    ministry_registration = models.BooleanField(default=False)
-    ministry_reference = models.CharField(max_length=100, blank=True, null=True)
-
-    class Meta:
-        ordering = ['due_date', 'status']
-        verbose_name = "Compliance Record"
-        verbose_name_plural = "Compliance Records"
-
-    def __str__(self):
-        return f"{self.title} - Due: {self.due_date}"
-
-
-# ==================== ANALYTICS AND DASHBOARD MODELS ====================
-class FinancialDashboard(BaseFinancialModel):
-    """Enhanced financial dashboard with real-time metrics"""
-    dashboard_date = models.DateField(default=timezone.now)
-    
-    # Key metrics
-    total_receipts_today = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    total_payments_today = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    cash_balance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    
-    # Enhanced metrics
-    fee_collection_rate = models.DecimalField(
-        max_digits=5, 
-        decimal_places=2, 
-        default=Decimal('0.00'),
-        help_text="Percentage of fees collected for current term"
-    )
-    outstanding_debt = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    pending_approvals = models.IntegerField(default=0)
-    
-    # AcademicTerm-wise metrics (stored as JSON for flexibility)
-    term_metrics = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="AcademicTerm-wise financial metrics"
-    )
-    
-    # Daily trends
-    daily_trends = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="Last 30 days trend data"
-    )
-    
-    # Generated and refreshed
-    generated_at = models.DateTimeField(default=timezone.now)
-    last_refreshed = models.DateTimeField(auto_now=True)
-    is_current = models.BooleanField(default=True)
-
-    class Meta:
-        ordering = ['-dashboard_date']
-        verbose_name = "Financial Dashboard"
-        verbose_name_plural = "Financial Dashboards"
-        indexes = [
-            models.Index(fields=['dashboard_date', 'is_current']),
-        ]
-
-    def __str__(self):
-        return f"Financial Dashboard - {self.dashboard_date}"
-
-    def refresh_metrics(self):
-        """Refresh all dashboard metrics"""
-        today = timezone.now().date()
-        
-        # Today's receipts
-        today_receipts = Receipt.objects.filter(
-            date=today,
-            status=PaymentStatus.COMPLETED
-        ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
-        
-        # Today's payments
-        today_payments = Payment.objects.filter(
-            date=today,
-            status=PaymentStatus.COMPLETED
-        ).aggregate(total=models.Sum('total_amount'))['total'] or Decimal('0.00')
-        
-        # Update metrics
-        self.total_receipts_today = today_receipts
-        self.total_payments_today = today_payments
-        
-        # Calculate cash balance (simplified)
-        self.cash_balance = today_receipts - today_payments
-        
-        # Update outstanding debt
-        current_term = AcademicTerm.get_current_term()
-        if current_term:
-            outstanding = DebtRecord.objects.filter(
-                term=current_term,
-                is_active=True
-            ).aggregate(total=models.Sum('balance'))['total'] or Decimal('0.00')
-            self.outstanding_debt = outstanding
-        
-        # Update pending approvals
-        self.pending_approvals = Payment.objects.filter(
-            requires_approval=True,
-            status=PaymentStatus.PENDING
-        ).count()
-        
-        self.save()
-
-
-# ==================== UTILITY FUNCTIONS ====================
-class FinancialUtils:
-    """Utility class for financial calculations and operations"""
-    
-    @staticmethod
-    def calculate_discount(original_amount, discount_percentage):
-        """Calculate discount amount"""
-        return (original_amount * discount_percentage / 100).quantize(Decimal('0.01'))
-    
-    @staticmethod
-    def calculate_late_penalty(original_amount, overdue_days, penalty_rate=0.5):
-        """Calculate late payment penalty (0.5% per day by default)"""
-        penalty = original_amount * (penalty_rate / 100) * overdue_days
-        return penalty.quantize(Decimal('0.01'))
-    
-    @staticmethod
-    def format_currency(amount):
-        """Format amount as Kenya Shillings"""
-        return f"KSh {amount:,.2f}"
-    
-    @staticmethod
-    def get_financial_year():
-        """Get current financial year (July to June)"""
-        today = timezone.now().date()
-        if today.month >= 7:
-            return today.year, today.year + 1
-        else:
-            return today.year - 1, today.year
-    
-    @staticmethod
-    def generate_report_period(report_type):
-        """Generate period dates based on report type"""
-        today = timezone.now().date()
-        
-        if report_type == 'daily':
-            start_date = today
-            end_date = today
-        elif report_type == 'weekly':
-            start_date = today - timedelta(days=today.weekday())
-            end_date = start_date + timedelta(days=6)
-        elif report_type == 'monthly':
-            start_date = today.replace(day=1)
-            next_month = today.replace(day=28) + timedelta(days=4)
-            end_date = next_month - timedelta(days=next_month.day)
-        elif report_type == 'termly':
-            # Would need to get current term dates
-            start_date = today.replace(month=1, day=1)
-            end_date = today.replace(month=3, day=31)
-        elif report_type == 'annual':
-            start_date = today.replace(month=1, day=1)
-            end_date = today.replace(month=12, day=31)
-        else:
-            start_date = today
-            end_date = today
-        
-        return start_date, end_date
-
-
-class FinancialSettings(models.Model):
-    """Financial system settings"""
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    school_name = models.CharField(max_length=200, default='Delvok Academy')
-    currency = models.CharField(max_length=3, default='KES')
-    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=16.00)
-    late_payment_fee = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
-    late_payment_days = models.IntegerField(default=30)
-    installment_fee = models.DecimalField(max_digits=10, decimal_places=2, default=200.00)
-    
-    # M-Pesa settings
-    mpesa_shortcode = models.CharField(max_length=10, blank=True)
-    mpesa_passkey = models.CharField(max_length=200, blank=True)
-    mpesa_callback_url = models.URLField(blank=True)
-    
-    # Bank details
-    bank_name = models.CharField(max_length=100, blank=True)
-    bank_account_number = models.CharField(max_length=50, blank=True)
-    bank_account_name = models.CharField(max_length=200, blank=True)
-    bank_branch = models.CharField(max_length=100, blank=True)
-    
-    # Notification settings
-    enable_auto_reminders = models.BooleanField(default=True)
-    reminder_days_before = models.IntegerField(default=7)
-    enable_late_fees = models.BooleanField(default=True)
-    enable_sms_notifications = models.BooleanField(default=True)
-    enable_email_notifications = models.BooleanField(default=True)
-    
-    # Document settings
-    receipt_prefix = models.CharField(max_length=10, default='RC')
-    payment_prefix = models.CharField(max_length=10, default='PM')
-    invoice_prefix = models.CharField(max_length=10, default='INV')
-    
-    # Audit fields
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
-    
-    class Meta:
-        verbose_name = 'Financial Settings'
-        verbose_name_plural = 'Financial Settings'
-    
-    def __str__(self):
-        return f"Financial Settings - {self.school_name}"
-    
-    def save(self, *args, **kwargs):
-        # Ensure only one settings instance exists
-        if not self.pk and FinancialSettings.objects.exists():
-            # Update existing instance instead of creating new one
-            existing = FinancialSettings.objects.first()
-            existing.school_name = self.school_name
-            existing.currency = self.currency
-            existing.tax_rate = self.tax_rate
-            existing.late_payment_fee = self.late_payment_fee
-            existing.late_payment_days = self.late_payment_days
-            existing.installment_fee = self.installment_fee
-            existing.mpesa_shortcode = self.mpesa_shortcode
-            existing.mpesa_passkey = self.mpesa_passkey
-            existing.mpesa_callback_url = self.mpesa_callback_url
-            existing.bank_name = self.bank_name
-            existing.bank_account_number = self.bank_account_number
-            existing.bank_account_name = self.bank_account_name
-            existing.bank_branch = self.bank_branch
-            existing.enable_auto_reminders = self.enable_auto_reminders
-            existing.reminder_days_before = self.reminder_days_before
-            existing.enable_late_fees = self.enable_late_fees
-            existing.enable_sms_notifications = self.enable_sms_notifications
-            existing.enable_email_notifications = self.enable_email_notifications
-            existing.receipt_prefix = self.receipt_prefix
-            existing.payment_prefix = self.payment_prefix
-            existing.invoice_prefix = self.invoice_prefix
-            existing.save()
-            return existing
-        return super().save(*args, **kwargs)
-
-# Add these missing models to your finance/models.py file
-
 # ==================== INSTALLMENT PLAN MODELS ====================
 class InstallmentPlan(BaseFinancialModel):
     """Installment payment plans for students"""
@@ -1543,12 +1041,12 @@ class InstallmentPlan(BaseFinancialModel):
             ('paid', 'Paid'),
             ('overdue', 'Overdue'),
             ('cancelled', 'Cancelled'),
+            ('partially_paid', 'Partially Paid'),
         ],
         default='pending'
     )
     
     notes = models.TextField(blank=True)
-    is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ['due_date', 'installment_number']
@@ -1589,6 +1087,86 @@ class InstallmentPlan(BaseFinancialModel):
         
         self.status = 'paid' if self.balance == Decimal('0.00') else 'partially_paid'
         self.save()
+
+
+# ==================== FINANCIAL SETTINGS ====================
+class FinancialSettings(BaseFinancialModel):
+    """Financial system settings"""
+    school_name = models.CharField(max_length=200, default='Delvok Academy')
+    currency = models.CharField(max_length=3, default='KES')
+    currency_symbol = models.CharField(max_length=5, default='KSh')
+    tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=16.00)
+    late_payment_fee = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
+    late_payment_days = models.IntegerField(default=30)
+    installment_fee = models.DecimalField(max_digits=10, decimal_places=2, default=200.00)
+    
+    # M-Pesa settings
+    mpesa_shortcode = models.CharField(max_length=10, blank=True)
+    mpesa_passkey = models.CharField(max_length=200, blank=True)
+    mpesa_callback_url = models.URLField(blank=True)
+    
+    # Bank details
+    bank_name = models.CharField(max_length=100, blank=True)
+    bank_account_number = models.CharField(max_length=50, blank=True)
+    bank_account_name = models.CharField(max_length=200, blank=True)
+    bank_branch = models.CharField(max_length=100, blank=True)
+    
+    # Notification settings
+    enable_auto_reminders = models.BooleanField(default=True)
+    reminder_days_before = models.IntegerField(default=7)
+    enable_late_fees = models.BooleanField(default=True)
+    enable_sms_notifications = models.BooleanField(default=True)
+    enable_email_notifications = models.BooleanField(default=True)
+    
+    # Document settings
+    receipt_prefix = models.CharField(max_length=10, default='DELVOK')
+    payment_prefix = models.CharField(max_length=10, default='PAY')
+    invoice_prefix = models.CharField(max_length=10, default='INV')
+    
+    # Audit fields
+    updated_by = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True
+    )
+    
+    class Meta:
+        verbose_name = 'Financial Settings'
+        verbose_name_plural = 'Financial Settings'
+    
+    def __str__(self):
+        return f"Financial Settings - {self.school_name}"
+    
+    def save(self, *args, **kwargs):
+        # Ensure only one settings instance exists
+        if not self.pk and FinancialSettings.objects.exists():
+            # Update existing instance instead of creating new one
+            existing = FinancialSettings.objects.first()
+            existing.school_name = self.school_name
+            existing.currency = self.currency
+            existing.tax_rate = self.tax_rate
+            existing.late_payment_fee = self.late_payment_fee
+            existing.late_payment_days = self.late_payment_days
+            existing.installment_fee = self.installment_fee
+            existing.mpesa_shortcode = self.mpesa_shortcode
+            existing.mpesa_passkey = self.mpesa_passkey
+            existing.mpesa_callback_url = self.mpesa_callback_url
+            existing.bank_name = self.bank_name
+            existing.bank_account_number = self.bank_account_number
+            existing.bank_account_name = self.bank_account_name
+            existing.bank_branch = self.bank_branch
+            existing.enable_auto_reminders = self.enable_auto_reminders
+            existing.reminder_days_before = self.reminder_days_before
+            existing.enable_late_fees = self.enable_late_fees
+            existing.enable_sms_notifications = self.enable_sms_notifications
+            existing.enable_email_notifications = self.enable_email_notifications
+            existing.receipt_prefix = self.receipt_prefix
+            existing.payment_prefix = self.payment_prefix
+            existing.invoice_prefix = self.invoice_prefix
+            existing.save()
+            return existing
+        return super().save(*args, **kwargs)
 
 
 # ==================== DISCOUNT MODELS ====================
@@ -1711,11 +1289,6 @@ class Waiver(BaseFinancialModel):
     )
     waiver_amount = models.DecimalField(max_digits=12, decimal_places=2)
     reason = models.TextField()
-    supporting_documents = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="List of supporting document references"
-    )
     
     # Status and approval
     status = models.CharField(
@@ -1751,6 +1324,160 @@ class Waiver(BaseFinancialModel):
 
     def __str__(self):
         return f"{self.get_waiver_type_display()} - {self.student.get_full_name()}"
+
+
+# ==================== BUDGET MODELS ====================
+class Budget(BaseFinancialModel):
+    """Budget model for school financial planning"""
+    name = models.CharField(max_length=255)
+    academic_year = models.ForeignKey(AcademicYear, on_delete=models.CASCADE)
+    term = models.ForeignKey(AcademicTerm, on_delete=models.CASCADE, null=True, blank=True)
+    
+    # Budget categories
+    budget_items = models.JSONField(
+        default=list,
+        help_text="Structured budget items with categories and amounts"
+    )
+    
+    # Enhanced budget details
+    total_budget = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    allocated_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    actual_spent = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    
+    # Status
+    is_approved = models.BooleanField(default=False)
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_budgets'
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    
+    # Monitoring
+    variance_percentage = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        default=Decimal('0.00'),
+        help_text="Percentage variance between budget and actual"
+    )
+    is_on_track = models.BooleanField(default=True)
+    
+    class Meta:
+        ordering = ['academic_year', 'term']
+        verbose_name = "Budget"
+        verbose_name_plural = "Budgets"
+        indexes = [
+            models.Index(fields=['academic_year', 'is_approved']),
+        ]
+
+    def __str__(self):
+        term_str = f" - {self.term.name}" if self.term else ""
+        return f"{self.name} - {self.academic_year.name}{term_str}"
+
+    def calculate_totals(self):
+        """Calculate budget totals"""
+        total = Decimal('0.00')
+        for item in self.budget_items:
+            total += Decimal(str(item.get('amount', 0)))
+        self.total_budget = total
+        self.save()
+
+    def update_actual_spent(self):
+        """Update actual spent amount based on payments"""
+        if self.term:
+            payments = Payment.objects.filter(
+                date__gte=self.term.start_date,
+                date__lte=self.term.end_date,
+                status=PaymentStatus.COMPLETED
+            )
+        else:
+            payments = Payment.objects.filter(
+                date__gte=self.academic_year.start_date,
+                date__lte=self.academic_year.end_date,
+                status=PaymentStatus.COMPLETED
+            )
+        
+        self.actual_spent = payments.aggregate(total=models.Sum('total_amount'))['total'] or Decimal('0.00')
+        
+        # Calculate variance
+        if self.total_budget > 0:
+            self.variance_percentage = ((self.actual_spent - self.allocated_amount) / self.total_budget * 100).quantize(Decimal('0.01'))
+        
+        self.is_on_track = self.actual_spent <= self.allocated_amount
+        self.save()
+
+
+# ==================== FINANCIAL REPORT MODELS ====================
+class FinancialReport(BaseFinancialModel):
+    """Financial reports with multiple report types"""
+    REPORT_TYPES = (
+        ('daily', 'Daily Collection'),
+        ('weekly', 'Weekly Collection'),
+        ('monthly', 'Monthly Financial'),
+        ('termly', 'Term Financial'),
+        ('annual', 'Annual Financial'),
+        ('fee_collection', 'Fee Collection'),
+        ('expenditure', 'Expenditure'),
+        ('profit_loss', 'Profit & Loss'),
+        ('balance_sheet', 'Balance Sheet'),
+        ('cash_flow', 'Cash Flow'),
+    )
+    
+    report_type = models.CharField(max_length=20, choices=REPORT_TYPES)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    
+    # Period covered
+    period_start = models.DateField()
+    period_end = models.DateField()
+    
+    # Report data
+    report_data = models.JSONField(
+        default=dict,
+        help_text="Computed report data in structured format"
+    )
+    
+    # Summary statistics
+    total_income = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    total_expenses = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    net_profit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    
+    # Generated by
+    generated_by = models.ForeignKey(User, on_delete=models.PROTECT)
+    generated_at = models.DateTimeField(default=timezone.now)
+    
+    # Approval
+    is_approved = models.BooleanField(default=False)
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_reports'
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    
+    # Export details
+    exported_formats = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of exported formats (PDF, Excel, etc.)"
+    )
+    last_exported = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-period_end', '-generated_at']
+        verbose_name = "Financial Report"
+        verbose_name_plural = "Financial Reports"
+        indexes = [
+            models.Index(fields=['report_type', 'period_start']),
+            models.Index(fields=['generated_at', 'is_approved']),
+        ]
+
+    def __str__(self):
+        return f"{self.title} - {self.period_start} to {self.period_end}"
 
 
 # ==================== AUDIT LOG MODELS ====================
@@ -1842,225 +1569,31 @@ class FinancialAuditLog(models.Model):
         return log_entry
 
 
-# ==================== BUDGET MODELS (enhanced) ====================
-
-class BudgetItem(models.Model):
-    """Individual budget items for detailed tracking"""
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    budget = models.ForeignKey(
-        'Budget',
-        on_delete=models.CASCADE,
-        related_name='items'
-    )
-    category = models.CharField(max_length=100)
-    description = models.TextField()
-    allocated_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    actual_spent = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    variance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    notes = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['category']
-        verbose_name = "Budget Item"
-        verbose_name_plural = "Budget Items"
-
-    def __str__(self):
-        return f"{self.category} - {self.description}"
-
-    def calculate_variance(self):
-        """Calculate variance between allocated and actual"""
-        self.variance = self.actual_spent - self.allocated_amount
-        self.save()
-
-
-# ==================== NOTIFICATION MODELS ====================
-class FinancialNotification(BaseFinancialModel):
-    """Financial notifications and reminders"""
-    NOTIFICATION_TYPES = [
-        ('fee_reminder', 'Fee Payment Reminder'),
-        ('overdue_alert', 'Overdue Fee Alert'),
-        ('receipt_confirmation', 'Receipt Confirmation'),
-        ('payment_confirmation', 'Payment Confirmation'),
-        ('budget_alert', 'Budget Alert'),
-        ('compliance_reminder', 'Compliance Reminder'),
-        ('installment_due', 'Installment Due Reminder'),
-        ('other', 'Other'),
-    ]
+# ==================== UTILITY CLASSES ====================
+class FinancialUtils:
+    """Utility class for financial calculations and operations"""
     
-    CHANNELS = [
-        ('sms', 'SMS'),
-        ('email', 'Email'),
-        ('push', 'Push Notification'),
-        ('in_app', 'In-App Notification'),
-    ]
+    @staticmethod
+    def calculate_discount(original_amount, discount_percentage):
+        """Calculate discount amount"""
+        return (original_amount * discount_percentage / 100).quantize(Decimal('0.01'))
     
-    notification_type = models.CharField(max_length=30, choices=NOTIFICATION_TYPES)
-    recipient = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='financial_notifications'
-    )
-    title = models.CharField(max_length=255)
-    message = models.TextField()
-    channel = models.CharField(max_length=20, choices=CHANNELS)
-    scheduled_time = models.DateTimeField(null=True, blank=True)
-    sent_time = models.DateTimeField(null=True, blank=True)
-    status = models.CharField(
-        max_length=20,
-        choices=[
-            ('pending', 'Pending'),
-            ('sent', 'Sent'),
-            ('failed', 'Failed'),
-            ('delivered', 'Delivered'),
-            ('read', 'Read'),
-        ],
-        default='pending'
-    )
-    entity_type = models.CharField(max_length=50, blank=True, null=True)
-    entity_id = models.UUIDField(blank=True, null=True)
-    priority = models.PositiveIntegerField(default=1, help_text="1=Low, 2=Medium, 3=High, 4=Urgent")
-    retry_count = models.PositiveIntegerField(default=0)
-    error_message = models.TextField(blank=True, null=True)
+    @staticmethod
+    def calculate_late_penalty(original_amount, overdue_days, penalty_rate=0.5):
+        """Calculate late payment penalty (0.5% per day by default)"""
+        penalty = original_amount * (penalty_rate / 100) * overdue_days
+        return penalty.quantize(Decimal('0.01'))
     
-    class Meta:
-        ordering = ['-scheduled_time', 'priority']
-        verbose_name = "Financial Notification"
-        verbose_name_plural = "Financial Notifications"
-        indexes = [
-            models.Index(fields=['recipient', 'status']),
-            models.Index(fields=['notification_type', 'scheduled_time']),
-        ]
-
-    def __str__(self):
-        return f"{self.get_notification_type_display()} - {self.recipient.get_full_name()}"
-
-    def mark_as_sent(self):
-        """Mark notification as sent"""
-        self.status = 'sent'
-        self.sent_time = timezone.now()
-        self.save()
-
-    def mark_as_failed(self, error_message):
-        """Mark notification as failed"""
-        self.status = 'failed'
-        self.error_message = error_message
-        self.retry_count += 1
-        self.save()
-
-
-# ==================== RECONCILIATION MODELS ====================
-class BankReconciliation(BaseFinancialModel):
-    """Bank account reconciliation records"""
-    bank_name = models.CharField(max_length=100)
-    account_number = models.CharField(max_length=50)
-    statement_date = models.DateField()
-    statement_balance = models.DecimalField(max_digits=12, decimal_places=2)
-    system_balance = models.DecimalField(max_digits=12, decimal_places=2)
-    reconciled_balance = models.DecimalField(max_digits=12, decimal_places=2)
-    variance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    @staticmethod
+    def format_currency(amount):
+        """Format amount as Kenya Shillings"""
+        return f"KSh {amount:,.2f}"
     
-    # Reconciliation status
-    status = models.CharField(
-        max_length=20,
-        choices=[
-            ('pending', 'Pending'),
-            ('in_progress', 'In Progress'),
-            ('completed', 'Completed'),
-            ('discrepancy', 'Discrepancy Found'),
-        ],
-        default='pending'
-    )
-    
-    # Transactions
-    matched_transactions = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="List of matched transactions"
-    )
-    unmatched_transactions = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="List of unmatched transactions"
-    )
-    
-    reconciled_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='reconciled_bank_statements'
-    )
-    reconciled_at = models.DateTimeField(null=True, blank=True)
-    notes = models.TextField(blank=True)
-
-    class Meta:
-        ordering = ['-statement_date']
-        verbose_name = "Bank Reconciliation"
-        verbose_name_plural = "Bank Reconciliations"
-        indexes = [
-            models.Index(fields=['bank_name', 'statement_date']),
-        ]
-
-    def __str__(self):
-        return f"{self.bank_name} - {self.account_number} - {self.statement_date}"
-
-    def calculate_variance(self):
-        """Calculate variance between statement and system"""
-        self.variance = self.statement_balance - self.reconciled_balance
-        self.save()
-
-
-class MPesaReconciliation(BaseFinancialModel):
-    """M-Pesa reconciliation records"""
-    business_shortcode = models.CharField(max_length=20)
-    transaction_date = models.DateField()
-    mpesa_total = models.DecimalField(max_digits=12, decimal_places=2)
-    system_total = models.DecimalField(max_digits=12, decimal_places=2)
-    reconciled_total = models.DecimalField(max_digits=12, decimal_places=2)
-    variance = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    
-    # Transaction details
-    mpesa_transactions = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="List of M-Pesa transactions"
-    )
-    system_transactions = models.JSONField(
-        default=list,
-        blank=True,
-        help_text="List of system transactions"
-    )
-    
-    status = models.CharField(
-        max_length=20,
-        choices=[
-            ('pending', 'Pending'),
-            ('matched', 'Matched'),
-            ('discrepancy', 'Discrepancy'),
-            ('resolved', 'Resolved'),
-        ],
-        default='pending'
-    )
-    
-    reconciled_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='reconciled_mpesa_statements'
-    )
-    reconciled_at = models.DateTimeField(null=True, blank=True)
-    notes = models.TextField(blank=True)
-
-    class Meta:
-        ordering = ['-transaction_date']
-        verbose_name = "M-Pesa Reconciliation"
-        verbose_name_plural = "M-Pesa Reconciliations"
-        indexes = [
-            models.Index(fields=['business_shortcode', 'transaction_date']),
-        ]
-
-    def __str__(self):
-        return f"M-Pesa - {self.business_shortcode} - {self.transaction_date}"
+    @staticmethod
+    def get_financial_year():
+        """Get current financial year (July to June)"""
+        today = timezone.now().date()
+        if today.month >= 7:
+            return today.year, today.year + 1
+        else:
+            return today.year - 1, today.year

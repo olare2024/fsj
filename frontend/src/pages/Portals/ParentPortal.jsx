@@ -55,7 +55,7 @@ import {
 // Import APIs
 import authAPI from '../../services/authAPI';
 import {parentAPI} from '../../services/parentAPI';
-import { academicAPI } from '../../services/academicAPI';
+import { academicsAPI } from '../../services/academicAPI';
 import { attendanceAPI } from '../../services/attendanceAPI';
 import {financeAPI} from '../../services/financeAPI';
 import { assignmentsAPI } from '../../services/assignmentsAPI';

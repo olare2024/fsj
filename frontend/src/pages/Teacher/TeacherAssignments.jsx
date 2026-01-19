@@ -88,8 +88,8 @@ import {
 
 
 
-import { assignmentsAPI, ASSIGNMENT_CONSTANTS } from '../../services/assignmentsAPI-old';
-import { academicAPI } from '../../services/academicAPI';
+import { assignmentsAPI, ASSIGNMENT_CONSTANTS } from '../../services/assignmentsAPI';
+import { academicsAPI } from '../../services/academicAPI';
 import { useAuth } from '../../context/AuthContext';
 import  useDebounce  from '../../hooks/useDebounce';
 import { toast } from 'react-toastify';

@@ -1,64 +1,35 @@
-# find_teacher_leave_fk.py
+# find_date_hierarchy_errors.py
 import os
 import sys
 import django
 
+# Setup Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'school_backend.settings')
-django.setup()
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from teachers.models import TeacherLeave
-    from teachers.models import TeacherProfile
+    django.setup()
     
-    print("Checking TeacherLeave model structure...")
-    print("=" * 60)
+    from django.apps import apps
     
-    # Get all fields
-    print("\nAll fields in TeacherLeave:")
-    for field in TeacherLeave._meta.get_fields():
-        field_type = field.__class__.__name__
-        print(f"  - {field.name}: {field_type}")
-        
-        # If it's a relation field, show what it points to
-        if hasattr(field, 'related_model') and field.related_model:
-            print(f"     → points to: {field.related_model.__name__}")
+    print("Checking admin configurations...")
     
-    print("\n" + "=" * 60)
-    print("Checking ForeignKeys specifically:")
+    # Check all admin classes
+    from django.contrib import admin
     
-    # Count ForeignKeys to TeacherProfile
-    fk_to_teacherprofile = []
-    for field in TeacherLeave._meta.get_fields():
-        if hasattr(field, 'related_model') and field.related_model == TeacherProfile:
-            fk_to_teacherprofile.append(field.name)
-            print(f"  - {field.name}: ForeignKey to TeacherProfile")
+    for model, admin_class in admin.site._registry.items():
+        if hasattr(admin_class, 'date_hierarchy'):
+            model_name = model.__name__
+            field_name = admin_class.date_hierarchy
+            
+            # Check if field exists in the model
+            if not hasattr(model, field_name):
+                print(f"ERROR: {admin_class.__class__.__name__} for {model_name}")
+                print(f"  → date_hierarchy='{field_name}' but field doesn't exist in {model_name}")
+                print(f"  → Available fields: {[f.name for f in model._meta.get_fields()]}")
+                print()
     
-    print(f"\nTotal ForeignKeys to TeacherProfile: {len(fk_to_teacherprofile)}")
+    print("Check complete.")
     
-    if len(fk_to_teacherprofile) > 1:
-        print("\n⚠️ WARNING: Multiple ForeignKeys found. TeacherLeaveInline MUST specify fk_name.")
-        print("\nPossible fk_name values:")
-        for fk in fk_to_teacherprofile:
-            print(f"  fk_name = '{fk}'")
-    elif len(fk_to_teacherprofile) == 1:
-        print(f"\n✅ Only one ForeignKey found. fk_name should be: '{fk_to_teacherprofile[0]}'")
-    else:
-        print("\n❌ No ForeignKey to TeacherProfile found!")
-        
-    print("\n" + "=" * 60)
-    print("Checking model string attributes (potential problem sources):")
-    
-    for attr_name in dir(TeacherLeave):
-        if not attr_name.startswith('_'):  # Skip private attributes
-            attr_value = getattr(TeacherLeave, attr_name, None)
-            if isinstance(attr_value, str):
-                print(f"  - {attr_name}: '{attr_value}'")
-                
-except ImportError as e:
-    print(f"Error: {e}")
-    import traceback
-    traceback.print_exc()
 except Exception as e:
     print(f"Error: {e}")
-    import traceback
-    traceback.print_exc()

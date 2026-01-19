@@ -1,10 +1,20 @@
-// src/context/AuthContext.jsx - COMPLETE FIXED VERSION WITH PROFILE COMPLETION TRACKING
+// src/context/AuthContext.jsx - FIXED VERSION WITH NO DUPLICATES
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import authAPI from '../services/authAPI.js';
 import api from '../services/api.js';
 
 const AuthContext = createContext();
+
+// ==================== AUTH CONFIGURATION ====================
+const AUTH_CONFIG = {
+  TOKEN_REFRESH_INTERVAL: 10 * 60 * 1000, // 10 minutes
+  MAX_IDLE_TIME: 30 * 60 * 1000, // 30 minutes
+  AUTH_CHECK_THROTTLE: 2000, // 2 seconds
+  RETRY_ATTEMPTS: 3,
+  RETRY_DELAY: 1000,
+  TOKEN_EXPIRY_BUFFER: 5 * 60 * 1000, // 5 minutes buffer before actual expiry
+};
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -14,6 +24,70 @@ export const useAuth = () => {
   return context;
 };
 
+// ==================== PROTECTED ROUTE COMPONENT ====================
+export const ProtectedRoute = ({ 
+  children, 
+  requiredPermissions = [], 
+  requiredRole = null,
+  requireProfileCompleted = false,
+  redirectTo = '/unauthorized'
+}) => {
+  const { 
+    isAuthenticated, 
+    loading, 
+    hasPermission, 
+    hasRole,
+    hasCompletedProfile,
+    currentUser 
+  } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!loading && !isAuthenticated) {
+      navigate('/login', { 
+        state: { from: location }, 
+        replace: true 
+      });
+    }
+  }, [loading, isAuthenticated, navigate, location]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return null; // Will redirect in useEffect
+  }
+
+  if (requiredRole && !hasRole(requiredRole)) {
+    navigate(redirectTo, { replace: true });
+    return null;
+  }
+
+  if (requiredPermissions.length > 0 && !hasAnyPermission(requiredPermissions)) {
+    navigate(redirectTo, { replace: true });
+    return null;
+  }
+
+  if (requireProfileCompleted && !hasCompletedProfile()) {
+    if (location.pathname !== '/complete-profile') {
+      navigate('/complete-profile', { 
+        state: { from: location },
+        replace: true 
+      });
+    }
+    return null;
+  }
+
+  return children;
+};
+
+// ==================== AUTH PROVIDER ====================
 export const AuthProvider = ({ children }) => {
   // ==================== STATE ====================
   const [currentUser, setCurrentUser] = useState(null);
@@ -36,6 +110,8 @@ export const AuthProvider = ({ children }) => {
   const isCheckingAuth = useRef(false);
   const lastCheckTime = useRef(0);
   const profileCheckComplete = useRef(false);
+  const refreshIntervalRef = useRef(null);
+  const idleCheckIntervalRef = useRef(null);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -57,8 +133,28 @@ export const AuthProvider = ({ children }) => {
   // ==================== UTILITY FUNCTIONS ====================
   const clearError = () => setError(null);
 
+  // ==================== ENHANCED: CLEAR AUTH ====================
   const clearAuth = useCallback((message = 'Session expired. Please login again.') => {
-    console.log('🧹 Clearing auth data...');
+    console.log('🧹 Clearing auth data with enhanced cleanup...');
+    
+    // Cancel any pending requests
+    if (window.activeRequests) {
+      Object.values(window.activeRequests).forEach(controller => {
+        controller.abort();
+      });
+      window.activeRequests = {};
+    }
+    
+    // Clear all timeouts and intervals
+    if (refreshIntervalRef.current) {
+      clearInterval(refreshIntervalRef.current);
+      refreshIntervalRef.current = null;
+    }
+    
+    if (idleCheckIntervalRef.current) {
+      clearInterval(idleCheckIntervalRef.current);
+      idleCheckIntervalRef.current = null;
+    }
     
     // Clear all storage
     localStorage.removeItem('access_token');
@@ -96,11 +192,50 @@ export const AuthProvider = ({ children }) => {
     lastCheckTime.current = 0;
     profileCheckComplete.current = false;
     
+    // Dispatch logout event for other components
+    window.dispatchEvent(new CustomEvent('auth:logout', { 
+      detail: { message } 
+    }));
+    
     // Redirect to login
     if (window.location.pathname !== '/login' && !window.location.pathname.includes('/auth/')) {
-      navigate('/login?session=expired', { replace: true });
+      navigate('/login?session=expired', { 
+        replace: true,
+        state: { logoutMessage: message }
+      });
     }
   }, [navigate]);
+
+  // ==================== TOKEN UTILITIES ====================
+  const isTokenExpired = useCallback(() => {
+    const token = localStorage.getItem('access_token');
+    if (!token) return true;
+    
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      const expiryTime = payload.exp * 1000;
+      const currentTime = Date.now();
+      const bufferTime = AUTH_CONFIG.TOKEN_EXPIRY_BUFFER;
+      
+      // Consider token expired if it will expire within the buffer time
+      return (expiryTime - bufferTime) < currentTime;
+    } catch (error) {
+      console.error('❌ Error parsing token:', error);
+      return true;
+    }
+  }, []);
+
+  const getTokenExpiryTime = useCallback(() => {
+    const token = localStorage.getItem('access_token');
+    if (!token) return null;
+    
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return payload.exp * 1000;
+    } catch {
+      return null;
+    }
+  }, []);
 
   // ==================== PERMISSION LOADING FUNCTIONS ====================
   const loadUserPermissions = useCallback((user) => {
@@ -220,21 +355,19 @@ export const AuthProvider = ({ children }) => {
     return DASHBOARD_URLS[userData.role] || '/dashboard';
   };
 
-  // ==================== FIXED: PROFILE COMPLETION CHECKING ====================
-  const hasCompletedProfile = (user = null) => {
+  // ==================== ENHANCED: PROFILE COMPLETION ====================
+  const hasCompletedProfile = useCallback((user = null) => {
     const targetUser = user || currentUser;
     const userData = getUserData(targetUser);
     
     if (!userData) return false;
 
     // Use the backend's profile_completed flag if available
-    // This is the key fix - we check the stored flag, not recalculate
     if (userData.profile_completed !== undefined) {
       return userData.profile_completed === true;
     }
 
     // Fallback to field-based check for backward compatibility
-    // This is only used if the backend doesn't send profile_completed flag
     const requiredFields = ['first_name', 'last_name', 'phone_number'];
 
     if (userData.role === 'student') {
@@ -253,15 +386,14 @@ export const AuthProvider = ({ children }) => {
     }
 
     return true;
-  };
+  }, [currentUser]);
 
-  // ==================== MARK PROFILE AS COMPLETED ====================
+  // ==================== ENHANCED: PROFILE COMPLETION WITH LOCK ====================
   const markProfileCompleted = async () => {
     try {
       const response = await api.post('/auth/profile/mark-completed/');
       
       if (response.data.success) {
-        // Update local user data
         const updatedUser = {
           ...currentUser,
           profile_completed: true,
@@ -275,7 +407,8 @@ export const AuthProvider = ({ children }) => {
         
         return {
           success: true,
-          message: 'Profile marked as completed'
+          message: 'Profile marked as completed',
+          user: updatedUser
         };
       }
       
@@ -292,7 +425,23 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // ==================== CHECK PROFILE COMPLETION ON BACKEND ====================
+  const checkProfileCompletionWithLock = async () => {
+    if (profileCheckComplete.current) {
+      console.log('⏳ Profile check already in progress');
+      return {
+        success: false,
+        message: 'Profile check already in progress'
+      };
+    }
+    
+    profileCheckComplete.current = true;
+    try {
+      return await checkProfileCompletionOnBackend();
+    } finally {
+      profileCheckComplete.current = false;
+    }
+  };
+
   const checkProfileCompletionOnBackend = async () => {
     try {
       const response = await api.get('/auth/profile/completion-status/');
@@ -300,7 +449,6 @@ export const AuthProvider = ({ children }) => {
       if (response.data.success) {
         const { profile_completed, profile_completion_date, missing_fields } = response.data;
         
-        // Update local user data with backend status
         if (currentUser) {
           const updatedUser = {
             ...currentUser,
@@ -351,7 +499,6 @@ export const AuthProvider = ({ children }) => {
     const userData = getUserData(user);
     if (!userData) return '/login';
     
-    // Use the stored profile_completed flag from backend
     if (userData.profile_completed === false) {
       console.log('📝 Profile not completed, redirecting to complete-profile');
       return '/complete-profile';
@@ -372,17 +519,50 @@ export const AuthProvider = ({ children }) => {
     return getDashboardUrl(userData);
   };
 
-  // ==================== FIXED: CHECK AUTH STATUS ====================
+  // ==================== FIXED: HANDLE TOKEN REFRESH ====================
+  const handleTokenRefresh = useCallback(async () => {
+    try {
+      const refreshToken = localStorage.getItem('refresh_token');
+      if (!refreshToken) {
+        console.log('🔐 No refresh token available');
+        clearAuth('No refresh token available');
+        return false;
+      }
+
+      console.log('🔄 Attempting to refresh token...');
+      
+      const refreshResponse = await authAPI.refreshToken();
+      
+      if (refreshResponse.success) {
+        console.log('✅ Token refresh successful');
+        return true;
+      }
+      
+      console.log('❌ Token refresh failed:', refreshResponse.message);
+      clearAuth('Token refresh failed');
+      return false;
+    } catch (error) {
+      console.error('❌ Token refresh error:', error);
+      
+      if (error.message.includes('Network') || error.message.includes('timeout')) {
+        console.log('🌐 Network error during token refresh, retrying later...');
+        return false;
+      }
+      
+      clearAuth('Authentication failed. Please login again.');
+      return false;
+    }
+  }, [clearAuth]);
+
+  // ==================== ENHANCED: CHECK AUTH STATUS ====================
   const checkAuthStatus = useCallback(async (forceCheck = false) => {
-    // Prevent concurrent checks
     if (isCheckingAuth.current && !forceCheck) {
       console.log('⏳ Auth check already in progress, skipping...');
       return;
     }
     
-    // Throttle checks (minimum 2 seconds between checks)
     const now = Date.now();
-    if (!forceCheck && now - lastCheckTime.current < 2000) {
+    if (!forceCheck && now - lastCheckTime.current < AUTH_CONFIG.AUTH_CHECK_THROTTLE) {
       console.log('⏳ Auth check throttled, skipping...');
       return;
     }
@@ -393,7 +573,6 @@ export const AuthProvider = ({ children }) => {
     try {
       const token = localStorage.getItem('access_token');
       
-      // If no token, user is not authenticated
       if (!token) {
         console.log('🔐 No token found, user is not authenticated');
         setIsAuthenticated(false);
@@ -402,17 +581,25 @@ export const AuthProvider = ({ children }) => {
         return;
       }
 
+      // Check token expiry first
+      if (isTokenExpired()) {
+        console.log('⚠️ Token expired or near expiry, attempting refresh...');
+        const refreshed = await handleTokenRefresh();
+        if (!refreshed) {
+          clearAuth('Session expired. Please login again.');
+          return;
+        }
+      }
+
       console.log('🔄 Checking authentication status...');
       setLoading(true);
       
       try {
-        // Get fresh user data from server
         const userResponse = await authAPI.getCurrentUser();
         
         if (userResponse.success) {
           console.log('✅ User authenticated:', userResponse.user.email);
           
-          // Ensure profile_completed field is included
           const userWithProfileFlag = {
             ...userResponse.user,
             profile_completed: userResponse.user.profile_completed || false
@@ -421,13 +608,12 @@ export const AuthProvider = ({ children }) => {
           setCurrentUser(userWithProfileFlag);
           setIsAuthenticated(true);
           
-          // Load permissions and feature flags
           loadUserPermissions(userWithProfileFlag);
           loadFeatureFlags(userWithProfileFlag);
           
-          // Store auth timestamp and user data
           localStorage.setItem('auth_timestamp', Date.now().toString());
           localStorage.setItem('user_data', JSON.stringify(userWithProfileFlag));
+          localStorage.setItem('last_activity', Date.now().toString());
           
           console.log('✅ Profile completion status:', userWithProfileFlag.profile_completed);
         } else {
@@ -437,9 +623,8 @@ export const AuthProvider = ({ children }) => {
       } catch (error) {
         console.log('❌ Auth check failed:', error.message);
         
-        // If it's a 401 error, try to refresh token
         if (error.message.includes('Authentication expired') || error.message.includes('401')) {
-          console.log('🔄 Attempting token refresh...');
+          console.log('🔄 Attempting token refresh after auth failure...');
           const refreshed = await handleTokenRefresh();
           if (!refreshed) {
             clearAuth();
@@ -455,51 +640,97 @@ export const AuthProvider = ({ children }) => {
       setLoading(false);
       isCheckingAuth.current = false;
     }
-  }, [clearAuth, loadUserPermissions, loadFeatureFlags]);
+  }, [clearAuth, loadUserPermissions, loadFeatureFlags, isTokenExpired, handleTokenRefresh]);
 
-  // ==================== FIXED: HANDLE TOKEN REFRESH ====================
-  const handleTokenRefresh = useCallback(async () => {
-    try {
-      const refreshToken = localStorage.getItem('refresh_token');
-      if (!refreshToken) {
-        console.log('🔐 No refresh token available');
-        clearAuth('No refresh token available');
-        return false;
-      }
+  // ==================== USER ACTIVITY TRACKING ====================
+  useEffect(() => {
+    if (!isAuthenticated) return;
 
-      console.log('🔄 Attempting to refresh token...');
-      
-      // Use the correct endpoint from authAPI
-      const refreshResponse = await authAPI.refreshToken();
-      
-      if (refreshResponse.success) {
-        console.log('✅ Token refresh successful');
-        return true;
+    const activities = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+    const resetIdleTimer = () => {
+      localStorage.setItem('last_activity', Date.now().toString());
+    };
+
+    activities.forEach(event => {
+      window.addEventListener(event, resetIdleTimer, { passive: true });
+    });
+
+    // Check idle time every minute
+    idleCheckIntervalRef.current = setInterval(() => {
+      const lastActivity = localStorage.getItem('last_activity');
+      if (lastActivity) {
+        const idleTime = Date.now() - parseInt(lastActivity);
+        
+        if (idleTime > AUTH_CONFIG.MAX_IDLE_TIME) {
+          console.log('⏰ Session expired due to inactivity');
+          clearAuth('Session expired due to inactivity');
+        }
       }
+    }, 60 * 1000); // Check every minute
+
+    return () => {
+      activities.forEach(event => {
+        window.removeEventListener(event, resetIdleTimer);
+      });
       
-      console.log('❌ Token refresh failed:', refreshResponse.message);
-      clearAuth('Token refresh failed');
-      return false;
-    } catch (error) {
-      console.error('❌ Token refresh error:', error);
-      
-      // Don't immediately clear tokens for network errors
-      if (error.message.includes('Network') || error.message.includes('timeout')) {
-        console.log('🌐 Network error during token refresh, retrying later...');
-        return false;
+      if (idleCheckIntervalRef.current) {
+        clearInterval(idleCheckIntervalRef.current);
+        idleCheckIntervalRef.current = null;
       }
-      
-      clearAuth('Authentication failed. Please login again.');
-      return false;
+    };
+  }, [isAuthenticated, clearAuth]);
+
+  // ==================== AUTO-REFRESH AUTH ====================
+  useEffect(() => {
+    if (!isAuthenticated) {
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+        refreshIntervalRef.current = null;
+      }
+      return;
     }
-  }, [clearAuth]);
+    
+    refreshIntervalRef.current = setInterval(() => {
+      console.log('🔄 Auto-refreshing auth status...');
+      checkAuthStatus();
+    }, AUTH_CONFIG.TOKEN_REFRESH_INTERVAL);
+    
+    return () => {
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+        refreshIntervalRef.current = null;
+      }
+    };
+  }, [isAuthenticated, checkAuthStatus]);
 
-  // ==================== FIXED: INITIAL AUTH CHECK ====================
+  // ==================== PROFILE SYNC ON NAVIGATION ====================
+  useEffect(() => {
+    if (isAuthenticated && currentUser) {
+      // Check if we're on a non-profile page and profile isn't completed
+      if (!currentUser.profile_completed && 
+          !location.pathname.includes('/complete-profile') &&
+          !location.pathname.includes('/login') &&
+          !location.pathname.includes('/auth/') &&
+          location.pathname !== '/') {
+        
+        console.log('🔄 Profile not completed, checking backend status');
+        checkProfileCompletionWithLock().then(result => {
+          if (result.success && result.profile_completed === false) {
+            navigate('/complete-profile', { 
+              state: { from: location },
+              replace: true 
+            });
+          }
+        });
+      }
+    }
+  }, [location.pathname, isAuthenticated, currentUser, navigate]);
+
+  // ==================== ENHANCED: INITIAL AUTH CHECK ====================
   useEffect(() => {
     console.log('🚀 AuthContext mounting - initial auth check');
     
     const initAuth = async () => {
-      // Check if we have a token
       const token = localStorage.getItem('access_token');
       const userData = localStorage.getItem('user_data');
       
@@ -511,14 +742,24 @@ export const AuthProvider = ({ children }) => {
         return;
       }
       
-      // If we have user data, set it immediately (for faster UI)
+      // Check idle time on initial load
+      const lastActivity = localStorage.getItem('last_activity');
+      if (lastActivity) {
+        const idleTime = Date.now() - parseInt(lastActivity);
+        if (idleTime > AUTH_CONFIG.MAX_IDLE_TIME) {
+          console.log('⏰ Session expired due to inactivity on load');
+          clearAuth('Session expired due to inactivity');
+          return;
+        }
+      }
+      
+      // If we have user data, set it immediately
       if (userData) {
         try {
           const parsedUser = JSON.parse(userData);
           if (parsedUser && parsedUser.email) {
             console.log('📋 Using cached user data while checking auth');
             
-            // Ensure profile_completed flag exists in cached data
             const userWithProfileFlag = {
               ...parsedUser,
               profile_completed: parsedUser.profile_completed || false
@@ -534,25 +775,11 @@ export const AuthProvider = ({ children }) => {
         }
       }
       
-      // Then do the actual auth check
       await checkAuthStatus(true);
     };
     
     initAuth();
-  }, [checkAuthStatus, loadUserPermissions, loadFeatureFlags]);
-
-  // ==================== AUTO-REFRESH AUTH ====================
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    
-    // Set up periodic auth refresh (every 10 minutes)
-    const refreshInterval = setInterval(() => {
-      console.log('🔄 Auto-refreshing auth status...');
-      checkAuthStatus();
-    }, 10 * 60 * 1000); // 10 minutes
-    
-    return () => clearInterval(refreshInterval);
-  }, [isAuthenticated, checkAuthStatus]);
+  }, [checkAuthStatus, loadUserPermissions, loadFeatureFlags, clearAuth]);
 
   // ==================== MAIN AUTH METHODS ====================
   const login = async (credentials) => {
@@ -564,7 +791,6 @@ export const AuthProvider = ({ children }) => {
 
       if (result.success) {
         if (result.user) {
-          // Ensure profile_completed field is included
           const userWithProfileFlag = {
             ...result.user,
             profile_completed: result.user.profile_completed || false
@@ -574,6 +800,7 @@ export const AuthProvider = ({ children }) => {
           setIsAuthenticated(true);
           localStorage.setItem('user_data', JSON.stringify(userWithProfileFlag));
           localStorage.setItem('auth_timestamp', Date.now().toString());
+          localStorage.setItem('last_activity', Date.now().toString());
         }
         
         if (result.tokens) {
@@ -639,13 +866,11 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // ==================== VERIFY LOGIN OTP ====================
   const verifyLoginOTP = async (otpData) => {
     try {
       setLoading(true);
       setError(null);
       
-      // Validate session data
       if (!sessionData || !sessionData.session_token) {
         throw new Error('Session expired. Please login again.');
       }
@@ -654,7 +879,6 @@ export const AuthProvider = ({ children }) => {
 
       if (result.success) {
         if (result.user) {
-          // Ensure profile_completed field is included
           const userWithProfileFlag = {
             ...result.user,
             profile_completed: result.user.profile_completed || false
@@ -664,6 +888,7 @@ export const AuthProvider = ({ children }) => {
           setIsAuthenticated(true);
           localStorage.setItem('user_data', JSON.stringify(userWithProfileFlag));
           localStorage.setItem('auth_timestamp', Date.now().toString());
+          localStorage.setItem('last_activity', Date.now().toString());
         }
         
         if (result.tokens) {
@@ -707,7 +932,6 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // ==================== RESEND OTP ====================
   const resendOTP = async (email, purpose = 'login') => {
     try {
       setLoading(true);
@@ -759,6 +983,7 @@ export const AuthProvider = ({ children }) => {
           setIsAuthenticated(true);
           localStorage.setItem('user_data', JSON.stringify(userWithProfileFlag));
           localStorage.setItem('auth_timestamp', Date.now().toString());
+          localStorage.setItem('last_activity', Date.now().toString());
           
           loadUserPermissions(userWithProfileFlag);
           loadFeatureFlags(userWithProfileFlag);
@@ -799,7 +1024,6 @@ export const AuthProvider = ({ children }) => {
   const updateUser = async (userData = null) => {
     try {
       if (userData) {
-        // Ensure profile_completed is preserved
         const updatedUser = { 
           ...currentUser, 
           ...userData,
@@ -994,6 +1218,33 @@ export const AuthProvider = ({ children }) => {
     return `${firstName} ${lastName}`.trim();
   };
 
+  // ==================== ERROR RECOVERY ====================
+  const recoverFromAuthError = async () => {
+    try {
+      console.log('🔄 Attempting auth error recovery...');
+      
+      // Clear everything
+      clearAuth();
+      
+      // Wait a moment
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Redirect to login with recovery flag
+      navigate('/login?recovery=true&timestamp=' + Date.now());
+      
+      return { 
+        success: true, 
+        message: 'Authentication recovery initiated' 
+      };
+    } catch (error) {
+      console.error('❌ Recovery failed:', error);
+      return { 
+        success: false, 
+        message: 'Recovery failed: ' + error.message 
+      };
+    }
+  };
+
   // ==================== CONTEXT VALUE ====================
   const value = {
     // State
@@ -1023,7 +1274,7 @@ export const AuthProvider = ({ children }) => {
     updateProfile,
     changePassword,
     markProfileCompleted,
-    checkProfileCompletionOnBackend,
+    checkProfileCompletionOnBackend: checkProfileCompletionWithLock,
     
     // Dashboard & Redirection methods
     getDashboardUrl,
@@ -1073,11 +1324,21 @@ export const AuthProvider = ({ children }) => {
     getUserInitials,
     getFullName,
     checkAuthStatus,
+    recoverFromAuthError,
+    isTokenExpired,
+    getTokenExpiryTime,
   };
 
   return (
     <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
+  );
+};
+
+// Helper function for hasAnyPermission used in ProtectedRoute
+const hasAnyPermission = (permissions, userPermissions) => {
+  return permissions.some(permission => 
+    userPermissions.includes('*') || userPermissions.includes(permission)
   );
 };

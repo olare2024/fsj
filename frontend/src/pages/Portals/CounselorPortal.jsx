@@ -72,7 +72,7 @@ import {
 } from 'react-bootstrap-icons';
 import { AuthProvider, useAuth } from '/src/context/AuthContext.jsx';  // ✅ Correct
 import counselingAPI  from '../../services/counselingAPI';
-import { academicAPI } from '../../services/academicAPI';
+import { academicsAPI } from '../../services/academicAPI';
 import { format } from 'date-fns';
 
 const CounselorPortal = () => {

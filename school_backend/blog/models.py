@@ -17,8 +17,8 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 
 from accounts.models import User
-# FIXED: Import Class from academics.models
-from academics.models import Class, Subject
+# FIXED: Import Classroom from academics.models
+from academics.models import Classroom, Subject
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,7 @@ class BlogPost(BaseBlogModel):
         ('students', 'Students Only'),
         ('teachers', 'Teachers Only'),
         ('parents', 'Parents Only'),
-        ('specific_class', 'Specific Class'),
+        ('specific_class', 'Specific Classroom'),
         ('specific_curriculum', 'Specific Curriculum'),
         ('specific_grade', 'Specific Grade Level'),
     ]
@@ -233,8 +233,8 @@ class BlogPost(BaseBlogModel):
     
     # Audience targeting
     audience = models.CharField(max_length=20, choices=AUDIENCE_CHOICES, default='all')
-    # FIXED: Changed ClassRoom to Class
-    specific_class = models.ForeignKey(Class, on_delete=models.SET_NULL, null=True, blank=True, related_name='blog_posts')
+    # FIXED: Changed ClassRoom to Classroom
+    specific_class = models.ForeignKey(Classroom, on_delete=models.SET_NULL, null=True, blank=True, related_name='blog_posts')
     subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True)
     curriculum = models.CharField(
         max_length=10,
@@ -584,7 +584,7 @@ class DiscussionThread(BaseBlogModel):
     
     PRIVACY_LEVELS = [
         ('public', 'Public - All users can view and participate'),
-        ('class_only', 'Class Only - Only class members can participate'),
+        ('class_only', 'Classroom Only - Only class members can participate'),
         ('private', 'Private - Only invited users can participate'),
         ('curriculum_specific', 'Curriculum Specific - Only users in same curriculum'),
         ('role_specific', 'Role Specific - Only users with specific roles'),
@@ -606,8 +606,8 @@ class DiscussionThread(BaseBlogModel):
     category = models.ForeignKey(BlogCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name='discussions')
     discussion_type = models.CharField(max_length=20, choices=DISCUSSION_TYPES, default='general')
     subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True)
-    # FIXED: Changed ClassRoom to Class
-    classroom = models.ForeignKey(Class, on_delete=models.SET_NULL, null=True, blank=True, related_name='discussions')
+    # FIXED: Changed ClassRoom to Classroom
+    classroom = models.ForeignKey(Classroom, on_delete=models.SET_NULL, null=True, blank=True, related_name='discussions')
     curriculum = models.CharField(
         max_length=10,
         choices=CURRICULUM_CHOICES,
@@ -1107,8 +1107,8 @@ class StudyGroup(BaseBlogModel):
     
     # Organization
     subject = models.ForeignKey(Subject, on_delete=models.CASCADE)
-    # FIXED: Changed ClassRoom to Class
-    classroom = models.ForeignKey(Class, on_delete=models.CASCADE, null=True, blank=True, related_name='study_groups')
+    # FIXED: Changed ClassRoom to Classroom
+    classroom = models.ForeignKey(Classroom, on_delete=models.CASCADE, null=True, blank=True, related_name='study_groups')
     curriculum = models.CharField(
         max_length=10,
         choices=CURRICULUM_CHOICES,

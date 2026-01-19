@@ -1,6 +1,7 @@
 """
 students/models.py
-Student models integrated with accounts system.
+Student models integrated with accounts system - FIXED VERSION.
+All ForeignKey conflicts and system check errors resolved.
 """
 
 import uuid
@@ -21,7 +22,7 @@ from django.dispatch import receiver
 from django.db.models.signals import post_save
 from django.apps import apps
 
-from accounts.models import User
+from accounts.models import User, UserRole
 
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,7 @@ class BaseStudentModel(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='created_%(class)s_entries',
+        related_name='students_created_%(class)s_entries',  # UNIQUE related_name
         verbose_name=_("Created By")
     )
     updated_by = models.ForeignKey(
@@ -151,7 +152,7 @@ class BaseStudentModel(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='updated_%(class)s_entries',
+        related_name='students_updated_%(class)s_entries',  # UNIQUE related_name
         verbose_name=_("Updated By")
     )
     
@@ -199,11 +200,11 @@ class StudentProfile(models.Model):
     This model extends the User model with student-specific information.
     """
     
-    # Core relationship with User
+    # Core relationship with User - FIXED: Changed related_name to be unique
     user = models.OneToOneField(
         User,
         on_delete=models.CASCADE,
-        related_name='student_profile_model',  # Different from accounts.StudentProfile
+        related_name='students_student_profile',  # UNIQUE: Changed from 'student_profile_model'
         verbose_name=_("User Account")
     )
     
@@ -241,7 +242,7 @@ class StudentProfile(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='current_students_profile',
+        related_name='students_current_students',  # UNIQUE related_name
         verbose_name=_("Current Class")
     )
     
@@ -250,7 +251,7 @@ class StudentProfile(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='current_year_students_profile',
+        related_name='students_current_year_students',  # UNIQUE related_name
         verbose_name=_("Current Academic Year")
     )
     
@@ -525,21 +526,21 @@ class StudentProfile(models.Model):
     )
     
     transfer_certificate = models.FileField(
-        upload_to='transfer_certificates/%Y/%m/%d/',
+        upload_to='students/transfer_certificates/%Y/%m/%d/',
         blank=True,
         null=True,
         verbose_name=_("Transfer Certificate")
     )
     
     birth_certificate = models.FileField(
-        upload_to='birth_certificates/%Y/%m/%d/',
+        upload_to='students/birth_certificates/%Y/%m/%d/',
         blank=True,
         null=True,
         verbose_name=_("Birth Certificate")
     )
     
     recommendation_letter = models.FileField(
-        upload_to='recommendation_letters/%Y/%m/%d/',
+        upload_to='students/recommendation_letters/%Y/%m/%d/',
         blank=True,
         null=True,
         verbose_name=_("Recommendation Letter")
@@ -601,8 +602,8 @@ class StudentProfile(models.Model):
             self.admission_number = self._generate_admission_number()
         
         # Ensure user has student role
-        if self.user.role != User.Role.STUDENT:
-            self.user.role = User.Role.STUDENT
+        if self.user.role != 'student':
+            self.user.role = 'student'
             self.user.save(update_fields=['role'])
         
         # Update admission number in User model
@@ -932,25 +933,25 @@ class StudentProfile(models.Model):
 
 
 class StudentEnrollment(models.Model):
-
     SENIOR_SCHOOL_TRACKS = (
-    ('stem_science', 'STEM - Pure Sciences'),
-    ('stem_technical', 'STEM - Technical & Engineering'),
-    ('stem_applied', 'STEM - Applied Sciences'),
-    ('social_sciences_general', 'Social Sciences - General'),
-    ('social_sciences_business', 'Social Sciences - Business'),
-    ('social_sciences_humanities', 'Social Sciences - Humanities'),
-    ('arts_performing', 'Arts - Performing Arts'),
-    ('arts_visual', 'Arts - Visual & Creative Arts'),
-    ('sports_performance', 'Sports - Performance'),
-    ('sports_management', 'Sports - Management'),
-)
+        ('stem_science', 'STEM - Pure Sciences'),
+        ('stem_technical', 'STEM - Technical & Engineering'),
+        ('stem_applied', 'STEM - Applied Sciences'),
+        ('social_sciences_general', 'Social Sciences - General'),
+        ('social_sciences_business', 'Social Sciences - Business'),
+        ('social_sciences_humanities', 'Social Sciences - Humanities'),
+        ('arts_performing', 'Arts - Performing Arts'),
+        ('arts_visual', 'Arts - Visual & Creative Arts'),
+        ('sports_performance', 'Sports - Performance'),
+        ('sports_management', 'Sports - Management'),
+    )
+    
     """
     Student enrollment management.
     Links students to classes and academic years.
     """
     
-    # Core Relationships
+    # Core Relationships - FIXED: Added unique related_name
     student_profile = models.ForeignKey(
         StudentProfile,
         on_delete=models.CASCADE,
@@ -961,14 +962,14 @@ class StudentEnrollment(models.Model):
     class_enrolled = models.ForeignKey(
         'academics.Class',
         on_delete=models.CASCADE,
-        related_name='enrollments',
+        related_name='students_enrollments',  # UNIQUE: Changed from 'enrollments'
         verbose_name=_("Class")
     )
     
     academic_year = models.ForeignKey(
         'academics.AcademicYear',
         on_delete=models.CASCADE,
-        related_name='enrollments',
+        related_name='students_enrollments',  # UNIQUE: Changed from 'enrollments'
         verbose_name=_("Academic Year")
     )
     
@@ -1254,7 +1255,7 @@ def create_student_profile_for_user(sender, instance, created, **kwargs):
     """
     Create student profile when a student user is created.
     """
-    if created and instance.role == User.Role.STUDENT:
+    if created and instance.role == UserRole.STUDENT:
         try:
             # Generate admission number if not provided
             admission_number = instance.admission_number or StudentProfile._generate_admission_number(instance)

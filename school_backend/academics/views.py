@@ -1,619 +1,860 @@
-# academics/views.py
-from rest_framework import viewsets, generics, status, filters, permissions
-from rest_framework.decorators import action
+"""
+Academic Views for Kenyan CBC School Management System
+
+This module contains all API views and endpoints for academic management,
+including setup checks, data export, and comprehensive reporting.
+"""
+
+import csv
+import logging
+import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional
+
+from django.core.cache import cache
+from django.db.models import Q, Count, Avg, Max, Min, Sum, Prefetch
+from django.http import HttpResponse, JsonResponse
+from django.utils import timezone
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import viewsets, generics, status, filters, mixins
+from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, DjangoModelPermissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Count, Avg, Q, F, Sum, Prefetch
-from django.utils import timezone
-from django.http import HttpResponse
-from django.shortcuts import get_object_or_404
-from datetime import datetime, timedelta
-import csv
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.exceptions import ValidationError, NotFound
 
-from .models import (
-    AcademicYear, AcademicTerm, Subject, Class, SubjectAssignment,
-    StudentEnrollment, LessonPlan, Syllabus, AcademicEvent
-)
-from .serializers import (
-    AcademicTermMinimalSerializer, AcademicYearSerializer, AcademicYearDetailSerializer,
-    AcademicTermSerializer, AcademicTermDetailSerializer,
-    SubjectSerializer, SubjectDetailSerializer,
-    ClassSerializer, ClassDetailSerializer,
-    SubjectAssignmentSerializer, StudentEnrollmentSerializer,
-    LessonPlanSerializer, SyllabusSerializer, AcademicEventSerializer,
-    AcademicStatisticsSerializer, ClassStatisticsSerializer,
-    TeacherWorkloadSerializer, BulkStudentEnrollmentSerializer,
-    BulkSubjectAssignmentSerializer, AcademicSearchSerializer,
-    EnrollmentReportSerializer
-)
+
+from rest_framework import filters as drf_filters
+from django_filters.rest_framework import DjangoFilterBackend
+
+
+from accounts.models import User
 from students.models import StudentProfile
 from teachers.models import TeacherProfile
-from accounts.models import User
-# In academics/views.py - ADD THIS BEFORE THE VIEWSETS
+from .models import *
+from .serializers import *
+from .filters import *
+from .permissions import *
+from .utils.cache_utils import CacheManager
+from .utils.performance_monitor import performance_monitor
+from .utils.export_utils import ExportManager
 
-from rest_framework.permissions import IsAuthenticated, IsAdminUser, SAFE_METHODS
-from accounts.models import User
+logger = logging.getLogger(__name__)
 
-class IsTeacherOrAdmin(IsAuthenticated):
-    """Check if user is teacher or admin."""
-    def has_permission(self, request, view):
-        if not super().has_permission(request, view):
-            return False
-        
-        # Admin users have access
-        if request.user.is_staff or request.user.is_superuser:
-            return True
-        
-        # Teachers have access
-        if hasattr(request.user, 'role'):
-            return request.user.role in [User.Role.TEACHER, User.Role.ADMIN]
-        
-        # Check if user has teacher profile
-        return hasattr(request.user, 'teacher_profile')
 
-class BaseAcademicViewSet(viewsets.ModelViewSet):
-    """Base ViewSet for academic models with common functionality."""
+# ============================================================================
+# CONSTANTS AND CONFIGURATION
+# ============================================================================
+
+class StandardPagination(PageNumberPagination):
+    """Standard pagination configuration."""
     
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+    page_query_param = 'page'
+
+
+class LargePagination(PageNumberPagination):
+    """Pagination for large datasets."""
+    
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 200
+
+
+# ============================================================================
+# MIXINS AND BASE CLASSES
+# ============================================================================
+
+class CacheMixin:
+    """Mixin for caching view responses."""
+    
+    cache_duration = 60 * 5  # 5 minutes default
+    cache_key_prefix = None
+    
+    def get_cache_key(self, request=None):
+        """Generate cache key for this view."""
+        if not self.cache_key_prefix:
+            self.cache_key_prefix = f"{self.__class__.__name__.lower()}_"
+        
+        if request:
+            user_id = request.user.id if request.user.is_authenticated else 'anonymous'
+            params_str = str(sorted(request.GET.items()))
+            return f"{self.cache_key_prefix}{user_id}_{hash(params_str)}"
+        return f"{self.cache_key_prefix}default"
+    
+    @method_decorator(cache_page(60 * 5))
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+
+class PerformanceMixin:
+    """Mixin for performance monitoring."""
+    
+    @performance_monitor
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+    
+    @performance_monitor
+    def retrieve(self, request, *args, **kwargs):
+        return super().retrieve(request, *args, **kwargs)
+
+
+class BulkOperationsMixin:
+    """Mixin for bulk operations."""
+    
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request):
+        """Bulk create objects."""
+        serializer = self.get_bulk_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+        return Response(result, status=status.HTTP_201_CREATED)
+    
+    def get_bulk_serializer(self, *args, **kwargs):
+        """Get bulk serializer class."""
+        raise NotImplementedError("Subclasses must implement get_bulk_serializer")
+
+
+class ExportMixin:
+    """Mixin for data export functionality."""
+    
+    export_formats = ['csv', 'json', 'excel']
+    
+    @action(detail=False, methods=['get'], url_path='export')
+    def export_data(self, request):
+        """Export data in various formats."""
+        format_type = request.query_params.get('format', 'csv').lower()
+        
+        if format_type not in self.export_formats:
+            return Response(
+                {'error': f'Invalid format. Available formats: {", ".join(self.export_formats)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = self.get_serializer(queryset, many=True)
+        
+        return ExportManager.export_data(
+            data=serializer.data,
+            format_type=format_type,
+            filename=self.get_export_filename(),
+            model_name=self.queryset.model.__name__
+        )
+    
+    def get_export_filename(self):
+        """Get export filename."""
+        return f"{self.queryset.model.__name__.lower()}_export"
+
+
+class BaseViewSet(
+    CacheMixin,
+    PerformanceMixin,
+    ExportMixin,
+    viewsets.ModelViewSet
+):
+    """Base ViewSet with common configuration."""
+    
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    pagination_class = StandardPagination
+    filter_backends = [
+        DjangoFilterBackend,
+        drf_filters.SearchFilter,
+        drf_filters.OrderingFilter
+    ]
     
     def get_queryset(self):
-        """Apply academic year filtering to all querysets."""
+        """Override to apply common filters."""
         queryset = super().get_queryset()
-        academic_year = self.request.query_params.get('academic_year')
-        
-        if academic_year and hasattr(self.model, 'academic_year'):
-            queryset = queryset.filter(academic_year_id=academic_year)
-        
-        return queryset
+        return queryset.filter(is_active=True)
 
 
-class AcademicYearViewSet(BaseAcademicViewSet):
-    """
-    ViewSet for comprehensive Academic Year management
-    """
+# ============================================================================
+# ACADEMIC STRUCTURE VIEWSETS
+# ============================================================================
+
+class AcademicYearViewSet(BaseViewSet):
+    """ViewSet for AcademicYear model."""
     
-    queryset = AcademicYear.objects.all().order_by('-start_date')
-    filterset_fields = ['is_current', 'is_active']
-    search_fields = ['name', 'description', 'code']
+    queryset = AcademicYear.objects.all()
+    serializer_class = AcademicYearSerializer
+    filterset_class = AcademicYearFilter
+    search_fields = ['name', 'academic_year', 'code']
     ordering_fields = ['start_date', 'end_date', 'name']
-    ordering = ['-start_date']
-
-    def get_serializer_class(self):
-        """Return appropriate serializer based on action."""
-        if self.action == 'retrieve':
-            return AcademicYearDetailSerializer
-        return AcademicYearSerializer
-
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related('current_academic_year').prefetch_related('terms')
+    
     @action(detail=True, methods=['post'])
     def set_current(self, request, pk=None):
-        """
-        Set this academic year as current and unset all others.
-        """
-        # Unset current flag from all academic years
-        AcademicYear.objects.filter(is_current=True).update(is_current=False)
-        
-        # Set this academic year as current
+        """Set this academic year as current."""
         academic_year = self.get_object()
+        AcademicYear.objects.filter(is_current=True).update(is_current=False)
         academic_year.is_current = True
         academic_year.save()
         
-        serializer = self.get_serializer(academic_year)
+        return Response({
+            'status': 'success',
+            'message': f'{academic_year.name} set as current academic year',
+            'academic_year': AcademicYearSerializer(academic_year).data
+        })
+    
+    @action(detail=True, methods=['get'])
+    def terms(self, request, pk=None):
+        """Get all terms for this academic year."""
+        academic_year = self.get_object()
+        terms = academic_year.academic_terms.all()
+        serializer = AcademicTermSerializer(terms, many=True)
         return Response(serializer.data)
-
-    @action(detail=False, methods=['get'])
-    def current(self, request):
-        """
-        Get the current academic year with detailed information.
-        """
-        current_year = AcademicYear.objects.filter(is_current=True).first()
-        if not current_year:
-            return Response(
-                {'detail': 'No current academic year set'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Get related data efficiently
-        current_year = AcademicYear.objects.prefetch_related(
-            Prefetch('terms', queryset=AcademicTerm.objects.filter(is_current=True)),
-            Prefetch('classes', queryset=Class.objects.all()),
-            Prefetch('academic_events', queryset=AcademicEvent.objects.filter(
-                start_date__gte=timezone.now().date()
-            )[:10])
-        ).get(id=current_year.id)
-        
-        serializer = AcademicYearDetailSerializer(current_year)
-        return Response(serializer.data)
-
+    
     @action(detail=True, methods=['get'])
     def statistics(self, request, pk=None):
-        """
-        Get comprehensive statistics for an academic year.
-        """
+        """Get statistics for this academic year."""
         academic_year = self.get_object()
         
-        # Optimize queries using aggregation
-        class_stats = Class.objects.filter(academic_year=academic_year).aggregate(
-            total_classes=Count('id'),
-            total_capacity=Sum('capacity')
-        )
-        
-        enrollment_stats = StudentEnrollment.objects.filter(
-            academic_year=academic_year,
-            status='active'
-        ).aggregate(
-            total_students=Count('id'),
-            male_students=Count('id', filter=Q(student__student_profile__gender='male')),
-            female_students=Count('id', filter=Q(student__student_profile__gender='female'))
-        )
-        
-        teacher_stats = TeacherProfile.objects.filter(is_active=True).aggregate(
-            total_teachers=Count('id'),
-            full_time=Count('id', filter=Q(employment_type='full_time')),
-            part_time=Count('id', filter=Q(employment_type='part_time'))
-        )
-        
-        event_stats = AcademicEvent.objects.filter(academic_year=academic_year).aggregate(
-            total_events=Count('id'),
-            upcoming_events=Count('id', filter=Q(start_date__gte=timezone.now().date()))
-        )
-        
-        lesson_plan_stats = LessonPlan.objects.filter(
-            academic_year=academic_year
-        ).aggregate(
-            total_plans=Count('id'),
-            completed_plans=Count('id', filter=Q(is_completed=True))
-        )
-        
         stats = {
-            'academic_year': {
-                'name': academic_year.name,
-                'duration_days': academic_year.duration_days,
-                'progress_percentage': academic_year.progress_percentage
-            },
-            'classes': class_stats,
-            'enrollments': enrollment_stats,
-            'teachers': teacher_stats,
-            'events': event_stats,
-            'lesson_plans': lesson_plan_stats,
-            'subject_stats': self._get_subject_statistics(academic_year),
-            'class_distribution': self._get_class_distribution(academic_year)
+            'total_terms': academic_year.academic_terms.count(),
+            'total_classes': Class.objects.filter(
+                academic_year=academic_year.academic_year
+            ).count(),
+            'total_enrollments': Enrollment.objects.filter(
+                academic_year=academic_year.academic_year
+            ).count(),
+            'total_assessments': Assessment.objects.filter(
+                academic_year=academic_year.academic_year
+            ).count(),
         }
         
         return Response(stats)
 
-    def _get_subject_statistics(self, academic_year):
-        """Get subject statistics for the academic year."""
-        return SubjectAssignment.objects.filter(
-            academic_year=academic_year,
-            is_active=True
-        ).values(
-            'subject__category'
-        ).annotate(
-            count=Count('subject_id', distinct=True),
-            total_periods=Sum('periods_per_week')
-        ).order_by('subject__category')
 
-    def _get_class_distribution(self, academic_year):
-        """Get class distribution statistics."""
-        return Class.objects.filter(
-            academic_year=academic_year
-        ).values(
-            'grade_level'
-        ).annotate(
-            class_count=Count('id'),
-            total_students=Sum('current_strength'),
-            avg_occupancy=Avg('occupancy_rate')
-        ).order_by('grade_level')
-
-
-class AcademicTermViewSet(BaseAcademicViewSet):
-    """
-    ViewSet for Academic Term management.
-    """
+class AcademicTermViewSet(BaseViewSet):
+    """ViewSet for AcademicTerm model."""
     
-    queryset = AcademicTerm.objects.all().order_by('academic_year', 'term_order')
-    filterset_fields = ['academic_year', 'is_current', 'is_active']
-    search_fields = ['name', 'academic_year__name', 'academic_year__code']
-    ordering_fields = ['start_date', 'end_date', 'term_order']
-    ordering = ['academic_year', 'term_order']
-
-    def get_serializer_class(self):
-        """Return appropriate serializer based on action."""
-        if self.action == 'retrieve':
-            return AcademicTermDetailSerializer
-        return AcademicTermSerializer
-
+    queryset = AcademicTerm.objects.all()
+    serializer_class = AcademicTermSerializer
+    filterset_class = AcademicTermFilter
+    search_fields = ['name', 'academic_year__name', 'term_type']
+    ordering_fields = ['start_date', 'end_date', 'term_type']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related('academic_year')
+    
     @action(detail=True, methods=['post'])
     def set_current(self, request, pk=None):
-        """
-        Set this term as current within its academic year.
-        """
+        """Set this term as current."""
         term = self.get_object()
-        
-        # Unset current flag from all terms in the same academic year
         AcademicTerm.objects.filter(
             academic_year=term.academic_year,
             is_current=True
         ).update(is_current=False)
-        
-        # Set this term as current
         term.is_current = True
         term.save()
         
-        serializer = self.get_serializer(term)
-        return Response(serializer.data)
-
-    @action(detail=True, methods=['get'])
-    def events(self, request, pk=None):
-        """
-        Get events for a specific term with pagination.
-        """
-        term = self.get_object()
-        page = self.paginate_queryset(term.academic_events.all())
-        
-        if page is not None:
-            serializer = AcademicEventSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = AcademicEventSerializer(term.academic_events.all(), many=True)
-        return Response(serializer.data)
-
-    @action(detail=True, methods=['get'])
-    def progress(self, request, pk=None):
-        """
-        Get detailed term progress information.
-        """
-        term = self.get_object()
-        
-        # Get lesson plan completion rate
-        lesson_plan_stats = LessonPlan.objects.filter(
-            term=term
-        ).aggregate(
-            total=Count('id'),
-            completed=Count('id', filter=Q(is_completed=True))
-        )
-        
-        # Calculate syllabus completion
-        syllabus_progress = Syllabus.objects.filter(
-            academic_year=term.academic_year
-        ).aggregate(
-            avg_completion=Avg('completion_percentage')
-        )
-        
-        progress_info = {
-            'term': {
-                'name': term.name,
-                'progress_percentage': term.progress_percentage,
-                'days_elapsed': term.days_elapsed,
-                'days_remaining': term.days_remaining
-            },
-            'lesson_plans': {
-                'completion_rate': (
-                    lesson_plan_stats['completed'] / lesson_plan_stats['total'] * 100
-                    if lesson_plan_stats['total'] > 0 else 0
-                ),
-                **lesson_plan_stats
-            },
-            'syllabus': syllabus_progress,
-            'weeks': {
-                'current_week': term.current_week,
-                'total_weeks': term.total_weeks
-            }
-        }
-        
-        return Response(progress_info)
-
-
-class SubjectViewSet(BaseAcademicViewSet):
-    """
-    ViewSet for Subject management with curriculum support.
-    """
-    
-    queryset = Subject.objects.all().order_by('category', 'name')
-    filterset_fields = ['category', 'curriculum', 'is_compulsory', 'is_active', 'difficulty_level']
-    search_fields = ['name', 'code', 'description']
-    ordering_fields = ['name', 'code', 'category', 'credits']
-    ordering = ['category', 'name']
-
-    def get_serializer_class(self):
-        """Return appropriate serializer based on action."""
-        if self.action == 'retrieve':
-            return SubjectDetailSerializer
-        return SubjectSerializer
-
-    @action(detail=True, methods=['get'])
-    def teachers(self, request, pk=None):
-        """
-        Get teachers assigned to this subject.
-        """
-        subject = self.get_object()
-        academic_year = request.query_params.get('academic_year')
-        
-        assignments = SubjectAssignment.objects.filter(
-            subject=subject,
-            is_active=True
-        )
-        
-        if academic_year:
-            assignments = assignments.filter(academic_year_id=academic_year)
-        
-        # Use select_related for better performance
-        teachers = TeacherProfile.objects.filter(
-            id__in=assignments.values('teacher')
-        ).select_related('user')
-        
-        # Use minimal serializer for list view
-        from teachers.serializers import TeacherMinimalSerializer
-        page = self.paginate_queryset(teachers)
-        
-        if page is not None:
-            serializer = TeacherMinimalSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = TeacherMinimalSerializer(teachers, many=True)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['get'])
-    def categories(self, request):
-        """
-        Get available subject categories with counts.
-        """
-        categories = Subject.objects.values('category').annotate(
-            count=Count('id'),
-            active_count=Count('id', filter=Q(is_active=True))
-        ).order_by('category')
-        
         return Response({
-            'categories': dict(Subject.SUBJECT_CATEGORIES),
-            'statistics': list(categories)
+            'status': 'success',
+            'message': f'{term.name} set as current term',
+            'term': AcademicTermSerializer(term).data
         })
-
-    @action(detail=False, methods=['get'])
-    def by_curriculum(self, request):
-        """
-        Get subjects grouped by curriculum.
-        """
-        curriculum = request.query_params.get('curriculum')
-        grade_level = request.query_params.get('grade_level')
-        
-        queryset = self.get_queryset()
-        
-        if curriculum:
-            queryset = queryset.filter(curriculum=curriculum)
-        
-        if grade_level:
-            queryset = queryset.filter(grade_levels__contains=[grade_level])
-        
-        subjects_by_curriculum = {}
-        for subject in queryset.select_related('department'):
-            if subject.curriculum not in subjects_by_curriculum:
-                subjects_by_curriculum[subject.curriculum] = []
-            
-            subjects_by_curriculum[subject.curriculum].append(
-                SubjectSerializer(subject).data
-            )
-        
-        return Response(subjects_by_curriculum)
-
-    @action(detail=True, methods=['get'])
-    def syllabus(self, request, pk=None):
-        """
-        Get syllabus for this subject.
-        """
-        subject = self.get_object()
-        academic_year = request.query_params.get('academic_year')
-        
-        syllabus_qs = Syllabus.objects.filter(subject=subject)
-        
-        if academic_year:
-            syllabus_qs = syllabus_qs.filter(academic_year_id=academic_year)
-        
-        syllabus = syllabus_qs.order_by('-version').first()
-        
-        if syllabus:
-            serializer = SyllabusSerializer(syllabus)
-            return Response(serializer.data)
-        
-        return Response(
-            {'detail': 'No syllabus found for the specified criteria'},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-    @action(detail=True, methods=['get'])
-    def assignments(self, request, pk=None):
-        """
-        Get all assignments for this subject.
-        """
-        subject = self.get_object()
-        academic_year = request.query_params.get('academic_year')
-        
-        assignments = SubjectAssignment.objects.filter(
-            subject=subject,
-            is_active=True
-        ).select_related(
-            'teacher__user', 'class_assigned', 'academic_year'
-        )
-        
-        if academic_year:
-            assignments = assignments.filter(academic_year_id=academic_year)
-        
-        page = self.paginate_queryset(assignments)
-        
-        if page is not None:
-            serializer = SubjectAssignmentSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = SubjectAssignmentSerializer(assignments, many=True)
-        return Response(serializer.data)
-
-
-class ClassViewSet(BaseAcademicViewSet):
-    """
-    ViewSet for Class management with student and subject associations.
-    """
     
-    queryset = Class.objects.all().order_by('grade_level', 'section')
-    filterset_fields = ['academic_year', 'grade_level', 'stream', 'is_active']
-    search_fields = ['name', 'section', 'room_number', 'grade_level']
-    ordering_fields = ['name', 'grade_level', 'section', 'current_strength']
-    ordering = ['grade_level', 'section']
-
-    def get_serializer_class(self):
-        """Return appropriate serializer based on action."""
-        if self.action == 'retrieve':
-            return ClassDetailSerializer
-        return ClassSerializer
-
     @action(detail=True, methods=['get'])
-    def students(self, request, pk=None):
-        """
-        Get students in this class with detailed information.
-        """
-        class_obj = self.get_object()
-        
-        enrollments = StudentEnrollment.objects.filter(
-            class_enrolled=class_obj,
-            status='active'
-        ).select_related(
-            'student__student_profile'
-        ).order_by('roll_number')
-        
-        page = self.paginate_queryset(enrollments)
-        
-        if page is not None:
-            serializer = StudentEnrollmentSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = StudentEnrollmentSerializer(enrollments, many=True)
+    def schedule(self, request, pk=None):
+        """Get schedule for this term."""
+        term = self.get_object()
+        schedules = term.schedules.all()
+        serializer = ScheduleSerializer(schedules, many=True)
         return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def attendance_summary(self, request, pk=None):
+        """Get attendance summary for this term."""
+        term = self.get_object()
+        summary = term.get_attendance_summary()
+        return Response(summary)
+    
+    @action(detail=True, methods=['get'])
+    def performance_summary(self, request, pk=None):
+        """Get performance summary for this term."""
+        term = self.get_object()
+        summary = term.get_performance_summary()
+        return Response(summary)
 
+
+class GradeLevelViewSet(BaseViewSet):
+    """ViewSet for GradeLevel model."""
+    
+    queryset = GradeLevel.objects.all()
+    serializer_class = GradeLevelSerializer
+    filterset_class = GradeLevelFilter
+    search_fields = ['name', 'code', 'level']
+    ordering_fields = ['order', 'level', 'name']
+    
+    @action(detail=True, methods=['get'])
+    def classes(self, request, pk=None):
+        """Get classes for this grade level."""
+        grade_level = self.get_object()
+        classes = grade_level.classes.all()
+        serializer = ClassSerializer(classes, many=True)
+        return Response(serializer.data)
+    
     @action(detail=True, methods=['get'])
     def subjects(self, request, pk=None):
-        """
-        Get subjects taught in this class with teacher assignments.
-        """
-        class_obj = self.get_object()
-        
-        assignments = SubjectAssignment.objects.filter(
-            class_assigned=class_obj,
-            is_active=True
-        ).select_related('subject', 'teacher__user')
-        
-        subjects_data = []
-        for assignment in assignments:
-            subjects_data.append({
-                'assignment_id': assignment.id,
-                'subject': SubjectSerializer(assignment.subject).data,
-                'teacher': {
-                    'id': assignment.teacher.id,
-                    'full_name': assignment.teacher.user.get_full_name() if assignment.teacher.user else None,
-                    'staff_id': assignment.teacher.staff_id,
-                    'email': assignment.teacher.user.email if assignment.teacher.user else None
-                },
-                'periods_per_week': assignment.periods_per_week,
-                'is_class_teacher': assignment.is_class_teacher,
-                'effective_from': assignment.effective_from,
-                'effective_until': assignment.effective_until
-            })
-        
-        return Response({
-            'class': ClassSerializer(class_obj).data,
-            'subjects': subjects_data,
-            'total_subjects': len(subjects_data),
-            'total_periods': sum(item['periods_per_week'] for item in subjects_data)
-        })
-
+        """Get subjects for this grade level."""
+        grade_level = self.get_object()
+        subjects = grade_level.subjects.all()
+        serializer = SubjectSerializer(subjects, many=True)
+        return Response(serializer.data)
+    
     @action(detail=True, methods=['get'])
-    def timetable(self, request, pk=None):
-        """
-        Get class timetable (placeholder for timetable integration).
-        """
-        class_obj = self.get_object()
-        
-        # This would integrate with a timetable app
-        # For now, return basic information
-        return Response({
-            'class': ClassSerializer(class_obj).data,
-            'timetable': {
-                'status': 'not_implemented',
-                'message': 'Timetable functionality to be implemented with timetable module',
-                'integration_hint': 'Use class ID to fetch timetable from timetable service'
-            }
-        })
+    def competency_areas(self, request, pk=None):
+        """Get competency areas for this grade level."""
+        grade_level = self.get_object()
+        competency_areas = grade_level.competency_areas.all()
+        serializer = CompetencyAreaSerializer(competency_areas, many=True)
+        return Response(serializer.data)
 
+
+class SubjectViewSet(BaseViewSet):
+    """ViewSet for Subject model."""
+    
+    queryset = Subject.objects.all()
+    serializer_class = SubjectSerializer
+    filterset_class = SubjectFilter
+    search_fields = ['name', 'code', 'description', 'category']
+    ordering_fields = ['name', 'code', 'is_core', 'category']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.prefetch_related('grade_levels', 'prerequisites')
+    
     @action(detail=True, methods=['get'])
-    def statistics(self, request, pk=None):
-        """
-        Get comprehensive class statistics.
-        """
-        class_obj = self.get_object()
+    def teachers(self, request, pk=None):
+        """Get teachers for this subject."""
+        subject = self.get_object()
+        teachers = subject.get_teachers()
+        serializer = UserBasicSerializer(teachers, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def assessments(self, request, pk=None):
+        """Get assessments for this subject."""
+        subject = self.get_object()
+        assessments = subject.assessments.all()
+        serializer = AssessmentSerializer(assessments, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def performance(self, request, pk=None):
+        """Get performance statistics for this subject."""
+        subject = self.get_object()
         
-        # Get enrollment statistics with aggregation
-        enrollment_stats = StudentEnrollment.objects.filter(
-            class_enrolled=class_obj,
-            status='active'
-        ).aggregate(
-            total_students=Count('id'),
-            male_students=Count('id', filter=Q(student__student_profile__gender='male')),
-            female_students=Count('id', filter=Q(student__student_profile__gender='female')),
-            avg_roll_number=Avg('roll_number')
-        )
-        
-        # Get subject statistics
-        subject_stats = SubjectAssignment.objects.filter(
-            class_assigned=class_obj,
-            is_active=True
-        ).aggregate(
-            total_subjects=Count('subject_id', distinct=True),
-            total_periods=Sum('periods_per_week'),
-            teachers_count=Count('teacher_id', distinct=True)
-        )
-        
-        # Get class teacher info
-        class_teacher_info = None
-        if class_obj.class_teacher and class_obj.class_teacher.user:
-            class_teacher_info = {
-                'id': class_obj.class_teacher.id,
-                'full_name': class_obj.class_teacher.user.get_full_name(),
-                'staff_id': class_obj.class_teacher.staff_id,
-                'email': class_obj.class_teacher.user.email
-            }
-        
-        stats = {
-            'class_info': {
-                'name': class_obj.name,
-                'display_name': class_obj.display_name,
-                'grade_level': class_obj.get_grade_level_display(),
-                'section': class_obj.section,
-                'room_number': class_obj.room_number
-            },
-            'capacity': {
-                'total': class_obj.capacity,
-                'current': class_obj.current_strength,
-                'available': class_obj.available_seats,
-                'occupancy_rate': class_obj.occupancy_rate,
-                'is_full': class_obj.is_full
-            },
-            'enrollments': enrollment_stats,
-            'subjects': subject_stats,
-            'class_teacher': class_teacher_info,
-            'academic_year': {
-                'id': str(class_obj.academic_year.id),
-                'name': class_obj.academic_year.name
-            } if class_obj.academic_year else None
+        performance_data = {
+            'average_score': subject.get_average_score(),
+            'student_count': subject.get_student_count(),
+            'pass_rate': self.calculate_pass_rate(subject),
         }
         
-        return Response(stats)
+        return Response(performance_data)
+    
+    def calculate_pass_rate(self, subject):
+        """Calculate pass rate for a subject."""
+        grades = Grade.objects.filter(subject=subject)
+        total = grades.count()
+        if total == 0:
+            return 0
+        passed = grades.filter(is_passing=True).count()
+        return (passed / total) * 100
 
-    @action(detail=True, methods=['post'])
-    def assign_class_teacher(self, request, pk=None):
-        """
-        Assign or change class teacher.
-        """
+
+# ============================================================================
+# CLASS AND GROUPING VIEWSETS
+# ============================================================================
+
+class ClassViewSet(BaseViewSet):
+    """ViewSet for Class model."""
+    
+    queryset = Class.objects.all()
+    serializer_class = ClassSerializer
+    filterset_class = ClassFilter
+    search_fields = ['name', 'code', 'grade_level__name']
+    ordering_fields = ['name', 'code', 'grade_level__order']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related(
+            'grade_level', 'form_teacher', 'assistant_teacher', 'classroom'
+        ).prefetch_related('enrollments')
+    
+    @action(detail=True, methods=['get'])
+    def students(self, request, pk=None):
+        """Get students in this class."""
         class_obj = self.get_object()
-        teacher_id = request.data.get('teacher_id')
+        enrollments = class_obj.enrollments.filter(status='active')
+        students = [enrollment.student for enrollment in enrollments]
+        serializer = StudentMinimalSerializer(students, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def subjects(self, request, pk=None):
+        """Get subjects taught in this class."""
+        class_obj = self.get_object()
+        subjects = class_obj.get_subjects()
+        serializer = SubjectSerializer(subjects, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def timetable(self, request, pk=None):
+        """Get timetable for this class."""
+        class_obj = self.get_object()
+        timetable = Schedule.objects.filter(
+            class_assigned=class_obj,
+            academic_year=class_obj.academic_year,
+            term=class_obj.term,
+            is_active=True
+        )
+        serializer = ScheduleSerializer(timetable, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def attendance_summary(self, request, pk=None):
+        """Get attendance summary for this class."""
+        class_obj = self.get_object()
+        summary = class_obj.get_attendance_summary()
+        return Response(summary)
+    
+    @action(detail=True, methods=['get'])
+    def performance_summary(self, request, pk=None):
+        """Get performance summary for this class."""
+        class_obj = self.get_object()
+        summary = class_obj.get_average_performance()
+        return Response(summary)
+
+
+# ============================================================================
+# ENROLLMENT VIEWSETS
+# ============================================================================
+
+class EnrollmentViewSet(BaseViewSet):
+    """ViewSet for Enrollment model."""
+    
+    queryset = Enrollment.objects.all()
+    serializer_class = EnrollmentSerializer
+    filterset_class = EnrollmentFilter
+    search_fields = [
+        'student__first_name', 'student__last_name',
+        'class_assigned__name', 'enrollment_number'
+    ]
+    ordering_fields = ['enrollment_date', 'status', 'academic_status']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related(
+            'student', 'class_assigned', 'created_by'
+        ).prefetch_related('subject_enrollments')
+    
+    @action(detail=True, methods=['get'])
+    def academic_performance(self, request, pk=None):
+        """Get academic performance for this enrollment."""
+        enrollment = self.get_object()
+        performance = enrollment.get_academic_performance()
+        return Response(performance)
+    
+    @action(detail=True, methods=['get'])
+    def attendance_summary(self, request, pk=None):
+        """Get attendance summary for this enrollment."""
+        enrollment = self.get_object()
+        summary = enrollment.get_attendance_summary()
+        return Response(summary)
+    
+    @action(detail=True, methods=['get'])
+    def subject_enrollments(self, request, pk=None):
+        """Get subject enrollments for this enrollment."""
+        enrollment = self.get_object()
+        subject_enrollments = enrollment.subject_enrollments.all()
+        serializer = SubjectEnrollmentSerializer(subject_enrollments, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def change_status(self, request, pk=None):
+        """Change enrollment status."""
+        enrollment = self.get_object()
+        new_status = request.data.get('status')
+        remarks = request.data.get('remarks', '')
+        
+        if new_status not in dict(Enrollment._meta.get_field('status').choices):
+            return Response(
+                {'error': 'Invalid status'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        enrollment.status = new_status
+        if remarks:
+            enrollment.remarks = remarks
+        enrollment.save()
+        
+        return Response({
+            'status': 'success',
+            'message': f'Enrollment status changed to {new_status}',
+            'enrollment': EnrollmentSerializer(enrollment).data
+        })
+
+
+class EnrollmentBulkViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+    """ViewSet for bulk enrollment operations."""
+    
+    serializer_class = EnrollmentSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request):
+        """Bulk create enrollments."""
+        serializer = EnrollmentBulkCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        try:
+            result = serializer.save()
+            return Response(result, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+# ============================================================================
+# ASSESSMENT AND GRADING VIEWSETS
+# ============================================================================
+
+class AssessmentViewSet(BaseViewSet):
+    """ViewSet for Assessment model."""
+    
+    queryset = Assessment.objects.all()
+    serializer_class = AssessmentSerializer
+    filterset_class = AssessmentFilter
+    search_fields = ['name', 'code', 'subject__name', 'description']
+    ordering_fields = ['date', 'assessment_type', 'total_marks']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related(
+            'subject', 'class_assigned', 'created_by'
+        ).prefetch_related('grades')
+    
+    @action(detail=True, methods=['post'])
+    def publish(self, request, pk=None):
+        """Publish assessment results."""
+        assessment = self.get_object()
+        assessment.publish_results()
+        
+        return Response({
+            'status': 'success',
+            'message': 'Assessment results published',
+            'assessment': AssessmentSerializer(assessment).data
+        })
+    
+    @action(detail=True, methods=['get'])
+    def grades(self, request, pk=None):
+        """Get grades for this assessment."""
+        assessment = self.get_object()
+        grades = assessment.grades.all()
+        serializer = GradeSerializer(grades, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def statistics(self, request, pk=None):
+        """Get statistics for this assessment."""
+        assessment = self.get_object()
+        
+        statistics = {
+            'class_average': assessment.get_class_average(),
+            'pass_rate': assessment.get_pass_rate(),
+            'total_students': assessment.grades.count(),
+            'top_performers': [
+                {
+                    'student': grade.student.get_full_name(),
+                    'score': grade.score,
+                    'grade': grade.grade
+                }
+                for grade in assessment.get_top_performers(limit=5)
+            ]
+        }
+        
+        return Response(statistics)
+
+
+class GradeViewSet(BaseViewSet):
+    """ViewSet for Grade model."""
+    
+    queryset = Grade.objects.all()
+    serializer_class = GradeSerializer
+    filterset_class = GradeFilter
+    search_fields = [
+        'student__first_name', 'student__last_name',
+        'assessment__name', 'subject__name'
+    ]
+    ordering_fields = ['score', 'percentage', 'grade']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related(
+            'student', 'assessment', 'subject',
+            'class_assigned', 'enrollment', 'graded_by'
+        )
+
+
+class GradeBulkViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+    """ViewSet for bulk grade operations."""
+    
+    serializer_class = GradeSerializer
+    permission_classes = [IsAuthenticated, DjangoModelPermissions]
+    
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request):
+        """Bulk create grades."""
+        serializer = GradeBulkCreateSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        
+        result = serializer.save()
+        return Response(result, status=status.HTTP_201_CREATED)
+
+
+class TranscriptViewSet(BaseViewSet):
+    """ViewSet for Transcript model."""
+    
+    queryset = Transcript.objects.all()
+    serializer_class = TranscriptSerializer
+    filterset_class = TranscriptFilter
+    search_fields = ['student__first_name', 'student__last_name']
+    ordering_fields = ['academic_year', 'gpa', 'class_rank']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related(
+            'student', 'generated_by'
+        )
+    
+    @action(detail=True, methods=['post'])
+    def generate(self, request, pk=None):
+        """Generate transcript."""
+        transcript = self.get_object()
+        transcript.calculate_gpa()
+        transcript.calculate_cgpa()
+        transcript.update_ranks()
+        transcript.save()
+        
+        return Response({
+            'status': 'success',
+            'message': 'Transcript generated successfully',
+            'transcript': TranscriptSerializer(transcript).data
+        })
+
+
+# ============================================================================
+# ATTENDANCE VIEWSETS
+# ============================================================================
+
+class AttendanceViewSet(BaseViewSet):
+    """ViewSet for Attendance model."""
+    
+    queryset = Attendance.objects.all()
+    serializer_class = AttendanceSerializer
+    filterset_class = AttendanceFilter
+    search_fields = [
+        'student__first_name', 'student__last_name',
+        'reason', 'remarks'
+    ]
+    ordering_fields = ['date', 'status', 'check_in_time']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related(
+            'student', 'enrollment', 'class_assigned', 'verified_by'
+        )
+    
+    @action(detail=False, methods=['post'], url_path='bulk-create')
+    def bulk_create(self, request):
+        """Bulk create attendance records."""
+        serializer = AttendanceBulkCreateSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        
+        result = serializer.save()
+        return Response(result, status=status.HTTP_201_CREATED)
+    
+    @action(detail=False, methods=['get'], url_path='daily-summary')
+    def daily_summary(self, request):
+        """Get daily attendance summary."""
+        date_str = request.query_params.get('date', timezone.now().date().isoformat())
+        
+        try:
+            date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'error': 'Invalid date format. Use YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        attendance = Attendance.objects.filter(date=date)
+        summary = attendance.aggregate(
+            total=Count('id'),
+            present=Count('id', filter=Q(status='present')),
+            absent=Count('id', filter=Q(status='absent')),
+            late=Count('id', filter=Q(status='late')),
+            excused=Count('id', filter=Q(status='excused'))
+        )
+        
+        attendance_rate = (
+            (summary['present'] / summary['total'] * 100)
+            if summary['total'] > 0 else 0
+        )
+        
+        return Response({
+            'date': date,
+            'summary': summary,
+            'attendance_rate': round(attendance_rate, 2)
+        })
+    
+    @action(detail=False, methods=['get'], url_path='class-summary')
+    def class_summary(self, request):
+        """Get class attendance summary."""
+        class_id = request.query_params.get('class_id')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date', timezone.now().date().isoformat())
+        
+        if not class_id:
+            return Response(
+                {'error': 'class_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            class_obj = Class.objects.get(id=class_id)
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date() if start_date else None
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except (Class.DoesNotExist, ValueError):
+            return Response(
+                {'error': 'Invalid parameters'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        summary = Attendance.get_class_attendance_summary(
+            class_obj,
+            start_date or class_obj.created_at.date(),
+            end_date
+        )
+        
+        return Response(summary)
+
+
+class AttendanceReportViewSet(BaseViewSet):
+    """ViewSet for AttendanceReport model."""
+    
+    queryset = AttendanceReport.objects.all()
+    serializer_class = AttendanceReportSerializer
+    filterset_class = AttendanceReportFilter
+    search_fields = ['student__first_name', 'student__last_name']
+    ordering_fields = ['period_end', 'attendance_percentage']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related('student', 'enrollment', 'generated_by')
+    
+    @action(detail=True, methods=['post'])
+    def update_statistics(self, request, pk=None):
+        """Update attendance statistics."""
+        report = self.get_object()
+        report.update_statistics()
+        report.detect_patterns()
+        report.save()
+        
+        return Response({
+            'status': 'success',
+            'message': 'Attendance statistics updated',
+            'report': AttendanceReportSerializer(report).data
+        })
+    
+    @action(detail=True, methods=['post'])
+    def notify_parent(self, request, pk=None):
+        """Notify parent about attendance issues."""
+        report = self.get_object()
+        success = report.notify_parent()
+        
+        if success:
+            return Response({
+                'status': 'success',
+                'message': 'Parent notified successfully'
+            })
+        else:
+            return Response({
+                'status': 'error',
+                'message': 'Failed to notify parent or already notified'
+            })
+
+
+# ============================================================================
+# TIMETABLE AND SCHEDULING VIEWSETS
+# ============================================================================
+
+class ScheduleViewSet(BaseViewSet):
+    """ViewSet for Schedule model."""
+    
+    queryset = Schedule.objects.all()
+    serializer_class = ScheduleSerializer
+    filterset_class = ScheduleFilter
+    search_fields = [
+        'subject__name', 'teacher__first_name',
+        'teacher__last_name', 'class_assigned__name'
+    ]
+    ordering_fields = ['day_of_week', 'start_time', 'end_time']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related(
+            'class_assigned', 'subject', 'teacher', 'classroom'
+        )
+    
+    @action(detail=False, methods=['get'], url_path='class-timetable')
+    def class_timetable(self, request):
+        """Get timetable for a class."""
+        class_id = request.query_params.get('class_id')
+        
+        if not class_id:
+            return Response(
+                {'error': 'class_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            class_obj = Class.objects.get(id=class_id)
+        except Class.DoesNotExist:
+            return Response(
+                {'error': 'Class not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        timetable = Schedule.get_class_timetable(class_obj)
+        serializer = ScheduleSerializer(timetable, many=True)
+        
+        return Response({
+            'class': ClassSerializer(class_obj).data,
+            'timetable': serializer.data
+        })
+    
+    @action(detail=False, methods=['get'], url_path='teacher-timetable')
+    def teacher_timetable(self, request):
+        """Get timetable for a teacher."""
+        teacher_id = request.query_params.get('teacher_id')
         
         if not teacher_id:
             return Response(
@@ -622,1548 +863,818 @@ class ClassViewSet(BaseAcademicViewSet):
             )
         
         try:
-            teacher = TeacherProfile.objects.get(id=teacher_id)
-            class_obj.class_teacher = teacher
-            class_obj.save()
-            
-            # Also update subject assignment if exists
-            SubjectAssignment.objects.filter(
-                class_assigned=class_obj,
-                teacher=teacher,
-                is_active=True
-            ).update(is_class_teacher=True)
-            
-            return Response({
-                'message': f'Class teacher assigned successfully to {teacher.user.get_full_name()}',
-                'class': ClassSerializer(class_obj).data
-            })
-            
-        except TeacherProfile.DoesNotExist:
+            teacher = User.objects.get(id=teacher_id, role='teacher')
+        except User.DoesNotExist:
             return Response(
                 {'error': 'Teacher not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-
-
-class SubjectAssignmentViewSet(BaseAcademicViewSet):
-    """
-    ViewSet for Subject Assignment management linking teachers to classes and subjects.
-    """
-    
-    queryset = SubjectAssignment.objects.all().order_by('class_assigned', 'subject')
-    serializer_class = SubjectAssignmentSerializer
-    filterset_fields = ['teacher', 'subject', 'class_assigned', 'academic_year', 'is_active', 'is_class_teacher']
-    search_fields = ['teacher__user__first_name', 'teacher__user__last_name', 'subject__name', 'class_assigned__name']
-    ordering_fields = ['teacher__user__last_name', 'subject__name', 'periods_per_week']
-    ordering = ['class_assigned', 'subject']
-
-    @action(detail=False, methods=['post'])
-    def bulk_assign(self, request):
-        """
-        Bulk assign subjects to teachers with validation.
-        """
-        serializer = BulkSubjectAssignmentSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
-        data = serializer.validated_data
-        created_assignments = []
-        errors = []
+        timetable = Schedule.get_teacher_timetable(teacher)
+        serializer = ScheduleSerializer(timetable, many=True)
         
-        for teacher_id in data['teacher_ids']:
-            try:
-                # Check for existing assignment
-                existing_assignment = SubjectAssignment.objects.filter(
-                    teacher_id=teacher_id,
-                    subject_id=data['subject_id'],
-                    class_assigned_id=data['class_id'],
-                    academic_year_id=data['academic_year_id']
-                ).first()
-                
-                if existing_assignment:
-                    if existing_assignment.is_active:
-                        errors.append(f"Teacher {teacher_id} already has an active assignment")
-                        continue
-                    else:
-                        # Reactivate existing assignment
-                        existing_assignment.is_active = True
-                        existing_assignment.periods_per_week = data['periods_per_week']
-                        existing_assignment.save()
-                        created_assignments.append(existing_assignment)
-                else:
-                    # Create new assignment
-                    assignment = SubjectAssignment.objects.create(
-                        teacher_id=teacher_id,
-                        subject_id=data['subject_id'],
-                        class_assigned_id=data['class_id'],
-                        academic_year_id=data['academic_year_id'],
-                        periods_per_week=data['periods_per_week'],
-                        assigned_date=timezone.now().date()
-                    )
-                    created_assignments.append(assignment)
-                    
-            except Exception as e:
-                errors.append(f"Failed to assign teacher {teacher_id}: {str(e)}")
-        
-        result_serializer = SubjectAssignmentSerializer(created_assignments, many=True)
         return Response({
-            'created': result_serializer.data,
-            'total_created': len(created_assignments),
-            'errors': errors,
-            'total_errors': len(errors)
-        }, status=status.HTTP_207_MULTI_STATUS)
-
-    @action(detail=False, methods=['get'])
-    def teacher_workload(self, request):
-        """
-        Get teacher workload statistics with filtering.
-        """
+            'teacher': UserBasicSerializer(teacher).data,
+            'timetable': serializer.data
+        })
+    
+    @action(detail=False, methods=['get'], url_path='weekly-schedule')
+    def weekly_schedule(self, request):
+        """Generate weekly schedule for a class."""
+        class_id = request.query_params.get('class_id')
         academic_year = request.query_params.get('academic_year')
-        department = request.query_params.get('department')
+        term = request.query_params.get('term')
         
-        queryset = self.get_queryset().filter(is_active=True)
-        
-        if academic_year:
-            queryset = queryset.filter(academic_year_id=academic_year)
-        
-        if department:
-            queryset = queryset.filter(teacher__department_id=department)
-        
-        workload_data = queryset.values(
-            'teacher_id', 'teacher__user__first_name', 'teacher__user__last_name',
-            'teacher__employment_type', 'teacher__department__name'
-        ).annotate(
-            total_periods=Sum('periods_per_week'),
-            total_classes=Count('class_assigned', distinct=True),
-            total_subjects=Count('subject', distinct=True),
-            class_teacher_count=Count('id', filter=Q(is_class_teacher=True))
-        ).order_by('-total_periods')
-        
-        # Calculate workload percentage based on employment type
-        for item in workload_data:
-            max_periods = 40 if item['teacher__employment_type'] == 'full_time' else 20
-            item['workload_percentage'] = min(100, (item['total_periods'] / max_periods) * 100)
-            item['teacher_name'] = f"{item['teacher__user__first_name']} {item['teacher__user__last_name']}"
-            item['employment_type'] = item['teacher__employment_type']
-            item['department'] = item['teacher__department__name']
-            
-            # Clean up the data structure
-            item.pop('teacher__user__first_name', None)
-            item.pop('teacher__user__last_name', None)
-            item.pop('teacher__employment_type', None)
-            item.pop('teacher__department__name', None)
-        
-        serializer = TeacherWorkloadSerializer(workload_data, many=True)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['get'])
-    def by_teacher(self, request):
-        """
-        Get all assignments for a specific teacher.
-        """
-        teacher_id = request.query_params.get('teacher_id')
-        academic_year = request.query_params.get('academic_year')
-        
-        if not teacher_id:
+        if not all([class_id, academic_year, term]):
             return Response(
-                {'error': 'teacher_id query parameter is required'},
+                {'error': 'class_id, academic_year, and term are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        queryset = self.get_queryset().filter(
-            teacher_id=teacher_id,
-            is_active=True
-        ).select_related(
-            'subject', 'class_assigned', 'academic_year'
-        )
-        
-        if academic_year:
-            queryset = queryset.filter(academic_year_id=academic_year)
-        
-        page = self.paginate_queryset(queryset)
-        
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
-
-class StudentEnrollmentViewSet(BaseAcademicViewSet):
-    """
-    ViewSet for Student Enrollment management with bulk operations.
-    """
-    
-    queryset = StudentEnrollment.objects.all().order_by('class_enrolled', 'roll_number')
-    serializer_class = StudentEnrollmentSerializer
-    filterset_fields = ['student', 'class_enrolled', 'academic_year', 'status', 'house']
-    search_fields = [
-        'student__first_name', 'student__last_name',
-        'enrollment_number', 'previous_school',
-        'student__student_profile__admission_number'
-    ]
-    ordering_fields = ['enrollment_date', 'roll_number', 'student__last_name']
-    ordering = ['class_enrolled', 'roll_number']
-
-    @action(detail=False, methods=['post'])
-    def bulk_enroll(self, request):
-        """
-        Bulk enroll students with proper error handling and rollback.
-        """
-        serializer = BulkStudentEnrollmentSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        data = serializer.validated_data
-        created_enrollments = []
-        errors = []
-        
-        # Get class and academic year for validation
         try:
-            class_obj = Class.objects.get(id=data['class_id'])
-            academic_year = AcademicYear.objects.get(id=data['academic_year_id'])
-            
-            # Check class capacity
-            current_enrollments = StudentEnrollment.objects.filter(
-                class_enrolled=class_obj,
-                academic_year=academic_year,
-                status='active'
-            ).count()
-            
-            available_seats = class_obj.capacity - current_enrollments
-            
-            if available_seats < len(data['student_ids']):
-                return Response({
-                    'error': f'Insufficient seats. Available: {available_seats}, Requested: {len(data["student_ids"])}'
-                }, status=status.HTTP_400_BAD_REQUEST)
-                
-        except (Class.DoesNotExist, AcademicYear.DoesNotExist) as e:
+            class_obj = Class.objects.get(id=class_id)
+        except Class.DoesNotExist:
             return Response(
-                {'error': str(e)},
+                {'error': 'Class not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Process each student
-        for student_id in data['student_ids']:
-            try:
-                # Get student user through profile
-                student_profile = StudentProfile.objects.select_related('user').get(id=student_id)
-                student = student_profile.user
-                
-                # Check if student is already enrolled
-                existing_enrollment = StudentEnrollment.objects.filter(
-                    student=student,
-                    academic_year=academic_year
-                ).exists()
-                
-                if existing_enrollment:
-                    errors.append(f"Student {student.get_full_name()} is already enrolled for {academic_year.name}")
-                    continue
-                
-                # Generate roll number if needed
-                if data.get('assign_roll_numbers', True):
-                    last_roll = StudentEnrollment.objects.filter(
-                        class_enrolled=class_obj,
-                        academic_year=academic_year
-                    ).exclude(roll_number=None).order_by('-roll_number').first()
-                    
-                    roll_number = (last_roll.roll_number + 1) if last_roll else 1
-                else:
-                    roll_number = None
-                
-                # Create enrollment
-                enrollment = StudentEnrollment.objects.create(
-                    student=student,
-                    class_enrolled=class_obj,
-                    academic_year=academic_year,
-                    enrollment_date=data['enrollment_date'],
-                    roll_number=roll_number,
-                    status='active'
-                )
-                
-                created_enrollments.append(enrollment)
-                
-            except StudentProfile.DoesNotExist:
-                errors.append(f"Student profile with ID {student_id} not found")
-            except Exception as e:
-                errors.append(f"Failed to enroll student {student_id}: {str(e)}")
+        schedule_data = Schedule.generate_weekly_schedule(
+            class_obj, academic_year, term
+        )
         
-        result_serializer = StudentEnrollmentSerializer(created_enrollments, many=True)
         return Response({
-            'created': result_serializer.data,
-            'total_created': len(created_enrollments),
-            'errors': errors,
-            'total_errors': len(errors)
-        }, status=status.HTTP_207_MULTI_STATUS)
-
-    @action(detail=False, methods=['get'])
-    def export_csv(self, request):
-        """
-        Export enrollments to CSV with filtering options.
-        """
-        response = HttpResponse(content_type='text/csv; charset=utf-8')
-        response['Content-Disposition'] = 'attachment; filename="enrollments_export.csv"'
-        
-        writer = csv.writer(response)
-        writer.writerow([
-            'Enrollment Number', 'Student Name', 'Admission Number',
-            'Class', 'Grade Level', 'Academic Year',
-            'Enrollment Date', 'Status', 'Roll Number', 'House',
-            'Gender', 'Date of Birth'
-        ])
-        
-        # Apply filters to queryset
-        queryset = self.filter_queryset(self.get_queryset())
-        enrollments = queryset.select_related(
-            'student__student_profile', 'class_enrolled', 'academic_year'
-        )
-        
-        for enrollment in enrollments:
-            student_profile = enrollment.student.student_profile
-            writer.writerow([
-                enrollment.enrollment_number,
-                enrollment.student.get_full_name(),
-                student_profile.admission_number if student_profile else 'N/A',
-                enrollment.class_enrolled.display_name,
-                enrollment.class_enrolled.get_grade_level_display(),
-                enrollment.academic_year.name,
-                enrollment.enrollment_date,
-                enrollment.get_status_display(),
-                enrollment.roll_number,
-                enrollment.get_house_display() if enrollment.house else '',
-                student_profile.gender if student_profile else 'N/A',
-                student_profile.date_of_birth if student_profile else ''
-            ])
-        
-        return response
-
-    @action(detail=False, methods=['get'])
-    def report(self, request):
-        """
-        Generate comprehensive enrollment reports.
-        """
-        serializer = EnrollmentReportSerializer(data=request.query_params)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        data = serializer.validated_data
-        report_type = data.get('report_type', 'summary')
-        
-        # Base queryset
-        enrollments = StudentEnrollment.objects.filter(
-            academic_year_id=data['academic_year']
-        ).select_related(
-            'student__student_profile', 'class_enrolled', 'academic_year'
-        )
-        
-        # Apply filters
-        if data.get('grade_level'):
-            enrollments = enrollments.filter(
-                class_enrolled__grade_level=data['grade_level']
-            )
-        
-        if data.get('status'):
-            enrollments = enrollments.filter(status=data['status'])
-        
-        if data.get('cbc_pathway'):
-            enrollments = enrollments.filter(cbc_pathway_selection=data['cbc_pathway'])
-        
-        if report_type == 'summary':
-            summary = enrollments.aggregate(
-                total=Count('id'),
-                active=Count('id', filter=Q(status='active')),
-                transferred=Count('id', filter=Q(status='transferred')),
-                graduated=Count('id', filter=Q(status='graduated')),
-                withdrawn=Count('id', filter=Q(status='withdrawn')),
-                male=Count('id', filter=Q(student__student_profile__gender='male')),
-                female=Count('id', filter=Q(student__student_profile__gender='female'))
-            )
-            
-            # Add class-wise distribution
-            class_distribution = enrollments.values(
-                'class_enrolled__name',
-                'class_enrolled__grade_level'
-            ).annotate(
-                total=Count('id'),
-                active=Count('id', filter=Q(status='active')),
-                male=Count('id', filter=Q(student__student_profile__gender='male')),
-                female=Count('id', filter=Q(student__student_profile__gender='female'))
-            ).order_by('class_enrolled__grade_level', 'class_enrolled__name')
-            
-            return Response({
-                'summary': summary,
-                'class_distribution': list(class_distribution),
-                'generated_at': timezone.now()
-            })
-        
-        elif report_type == 'detailed':
-            page = self.paginate_queryset(enrollments)
-            if page is not None:
-                serializer = self.get_serializer(page, many=True)
-                return self.get_paginated_response(serializer.data)
-            
-            serializer = self.get_serializer(enrollments, many=True)
-            return Response(serializer.data)
-        
-        elif report_type == 'analytics':
-            # Time-based analytics
-            monthly_enrollments = enrollments.extra(
-                select={'month': "DATE_TRUNC('month', enrollment_date)"}
-            ).values('month').annotate(
-                count=Count('id')
-            ).order_by('month')
-            
-            # Status transition analysis
-            status_changes = enrollments.values(
-                'status',
-                'status_changed_date__month'
-            ).annotate(
-                count=Count('id')
-            ).order_by('status_changed_date__month')
-            
-            return Response({
-                'monthly_trends': list(monthly_enrollments),
-                'status_analysis': list(status_changes),
-                'retention_rate': self._calculate_retention_rate(data['academic_year'])
-            })
-        
-        return Response(
-            {'error': 'Invalid report type'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    def _calculate_retention_rate(self, academic_year_id):
-        """Calculate student retention rate."""
-        current_year = AcademicYear.objects.get(id=academic_year_id)
-        previous_year = AcademicYear.objects.filter(
-            end_date__lt=current_year.start_date
-        ).order_by('-end_date').first()
-        
-        if not previous_year:
-            return None
-        
-        # Get students from previous year
-        previous_enrollments = StudentEnrollment.objects.filter(
-            academic_year=previous_year,
-            status='active'
-        ).values_list('student_id', flat=True)
-        
-        # Get returning students
-        returning_students = StudentEnrollment.objects.filter(
-            academic_year=current_year,
-            student_id__in=previous_enrollments,
-            status='active'
-        ).count()
-        
-        total_previous = len(previous_enrollments)
-        
-        return {
-            'previous_year_total': total_previous,
-            'returning_students': returning_students,
-            'retention_rate': (returning_students / total_previous * 100) if total_previous > 0 else 0
-        }
-
-    @action(detail=False, methods=['get'])
-    def active(self, request):
-        """
-        Get active enrollments only with pagination.
-        """
-        active_enrollments = self.filter_queryset(
-            self.get_queryset().filter(status='active')
-        )
-        
-        page = self.paginate_queryset(active_enrollments)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(active_enrollments, many=True)
-        return Response(serializer.data)
+            'class': ClassSerializer(class_obj).data,
+            'academic_year': academic_year,
+            'term': term,
+            'weekly_schedule': schedule_data
+        })
 
 
-class LessonPlanViewSet(BaseAcademicViewSet):
-    """ViewSet for managing lesson plans."""
-    serializer_class = LessonPlanSerializer
-    permission_classes = [IsTeacherOrAdmin]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['teacher', 'subject', 'class_assigned', 'date', 'is_completed', 'is_active']
-    search_fields = ['title', 'sub_topic__name', 'learning_objectives']
-    ordering_fields = ['date', 'title', 'class_assigned__grade_level', 'created_at']
+class TeacherAssignmentViewSet(BaseViewSet):
+    """ViewSet for TeacherAssignment model."""
     
-    # FIX: Changed from 'lesson_date' to 'date'
-    queryset = LessonPlan.objects.all().order_by('-date', 'class_assigned')
-    
-    def get_permissions(self):
-        """Set permissions based on action."""
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            permission_classes = [IsTeacherOrAdmin]
-        else:
-            permission_classes = [IsAuthenticated]
-        return [permission() for permission in permission_classes]
+    queryset = TeacherAssignment.objects.all()
+    serializer_class = TeacherAssignmentSerializer
+    filterset_class = TeacherAssignmentFilter
+    search_fields = [
+        'teacher__first_name', 'teacher__last_name',
+        'subject__name', 'class_assigned__name'
+    ]
+    ordering_fields = ['start_date', 'end_date']
     
     def get_queryset(self):
-        """Override queryset to add filtering."""
         queryset = super().get_queryset()
-        
-        # Non-admin teachers can only see their own lesson plans
-        if not self.request.user.is_staff and hasattr(self.request.user, 'teacher_profile'):
-            queryset = queryset.filter(teacher=self.request.user.teacher_profile)
-        
-        # Filter by date range
-        start_date = self.request.query_params.get('start_date')
-        end_date = self.request.query_params.get('end_date')
-        
-        if start_date:
-            queryset = queryset.filter(date__gte=start_date)
-        if end_date:
-            queryset = queryset.filter(date__lte=end_date)
-        
-        # Filter by academic year
-        academic_year_id = self.request.query_params.get('academic_year')
-        if academic_year_id:
-            queryset = queryset.filter(
-                date__gte=AcademicYear.objects.get(id=academic_year_id).start_date,
-                date__lte=AcademicYear.objects.get(id=academic_year_id).end_date
-            )
-        
-        return queryset
-    
-    def perform_create(self, serializer):
-        """Set teacher when creating lesson plan."""
-        if hasattr(self.request.user, 'teacher_profile'):
-            serializer.save(teacher=self.request.user.teacher_profile)
-        else:
-            serializer.save()
-    
-    @action(detail=False, methods=['GET'])
-    def upcoming(self, request):
-        """Get upcoming lesson plans."""
-        today = timezone.now().date()
-        queryset = self.get_queryset().filter(date__gte=today, is_completed=False)
-        
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['GET'])
-    def completed(self, request):
-        """Get completed lesson plans."""
-        queryset = self.get_queryset().filter(is_completed=True)
-        
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['GET'])
-    def by_subject(self, request):
-        """Get lesson plans grouped by subject."""
-        subject_id = request.query_params.get('subject_id')
-        if not subject_id:
-            return Response(
-                {'error': 'subject_id parameter is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        queryset = self.get_queryset().filter(subject_id=subject_id)
-        
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['GET'])
-    def by_class(self, request):
-        """Get lesson plans grouped by class."""
-        class_id = request.query_params.get('class_id')
-        if not class_id:
-            return Response(
-                {'error': 'class_id parameter is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        queryset = self.get_queryset().filter(class_assigned_id=class_id)
-        
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=True, methods=['POST'])
-    def mark_completed(self, request, pk=None):
-        """Mark lesson plan as completed."""
-        lesson_plan = self.get_object()
-        
-        # Check permissions
-        if not (request.user.is_staff or lesson_plan.teacher.teacher == request.user):
-            return Response(
-                {'error': 'You do not have permission to mark this lesson plan as completed'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        lesson_plan.is_completed = True
-        lesson_plan.save()
-        
-        serializer = self.get_serializer(lesson_plan)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['GET'])
-    def calendar_view(self, request):
-        """Get lesson plans for calendar view."""
-        start_date = request.query_params.get('start_date')
-        end_date = request.query_params.get('end_date')
-        
-        if not start_date or not end_date:
-            # Default to current month
-            today = timezone.now().date()
-            start_date = today.replace(day=1)
-            if today.month == 12:
-                end_date = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
-            else:
-                end_date = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
-        
-        queryset = self.get_queryset().filter(
-            date__range=[start_date, end_date]
-        ).select_related('subject', 'class_assigned', 'teacher')
-        
-        calendar_data = []
-        for lesson_plan in queryset:
-            calendar_data.append({
-                'id': str(lesson_plan.id),
-                'title': f"{lesson_plan.subject.name} - {lesson_plan.class_assigned.display_name}",
-                'start': lesson_plan.date.isoformat(),
-                'end': lesson_plan.date.isoformat(),
-                'color': self._get_subject_color(lesson_plan.subject),
-                'extendedProps': {
-                    'subject': lesson_plan.subject.name,
-                    'class': lesson_plan.class_assigned.display_name,
-                    'teacher': lesson_plan.teacher.teacher.get_full_name(),
-                    'is_completed': lesson_plan.is_completed,
-                    'url': f"/api/v1/academics/lesson-plans/{lesson_plan.id}/"
-                }
-            })
-        
-        return Response(calendar_data)
-    
-    def _get_subject_color(self, subject):
-        """Get color for subject in calendar."""
-        # Simple color mapping based on subject name
-        color_map = {
-            'mathematics': '#FF6B6B',
-            'english': '#4ECDC4',
-            'kiswahili': '#45B7D1',
-            'science': '#96CEB4',
-            'social studies': '#FFEAA7',
-            'cre': '#DDA0DD',
-            'pre-technical': '#98D8C8',
-            'agriculture': '#F7DC6F',
-            'business studies': '#BB8FCE',
-            'computer': '#85C1E9',
-            'physics': '#F1948A',
-            'chemistry': '#82E0AA',
-            'biology': '#F8C471',
-            'history': '#F5B7B1',
-            'geography': '#AED6F1',
-        }
-        
-        subject_name_lower = subject.name.lower()
-        for key, color in color_map.items():
-            if key in subject_name_lower:
-                return color
-        
-        # Default color
-        return '#D5DBDB'
-    
-    @action(detail=False, methods=['GET'])
-    def statistics(self, request):
-        """Get lesson plan statistics."""
-        if not request.user.is_staff and not hasattr(request.user, 'teacher_profile'):
-            return Response(
-                {'error': 'Only teachers and admins can view lesson plan statistics'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        queryset = self.get_queryset()
-        
-        # If teacher, filter to their lesson plans
-        if hasattr(request.user, 'teacher_profile'):
-            queryset = queryset.filter(teacher=request.user.teacher_profile)
-        
-        # Get date range from query params or default to last 30 days
-        end_date = timezone.now().date()
-        start_date = end_date - timedelta(days=30)
-        
-        if request.query_params.get('start_date'):
-            start_date = request.query_params.get('start_date')
-        if request.query_params.get('end_date'):
-            end_date = request.query_params.get('end_date')
-        
-        queryset = queryset.filter(date__range=[start_date, end_date])
-        
-        statistics = {
-            'total_plans': queryset.count(),
-            'completed_plans': queryset.filter(is_completed=True).count(),
-            'pending_plans': queryset.filter(is_completed=False).count(),
-            'completion_rate': round(
-                (queryset.filter(is_completed=True).count() / max(queryset.count(), 1)) * 100, 2
-            ),
-            'by_subject': list(queryset.values('subject__name').annotate(
-                count=Count('id'),
-                completed=Count('id', filter=Q(is_completed=True))
-            ).order_by('-count')),
-            'by_class': list(queryset.values('class_assigned__display_name').annotate(
-                count=Count('id'),
-                completed=Count('id', filter=Q(is_completed=True))
-            ).order_by('-count')),
-            'date_range': {
-                'start_date': start_date,
-                'end_date': end_date
-            }
-        }
-        
-        return Response(statistics)
+        return queryset.select_related(
+            'teacher', 'subject', 'class_assigned'
+        )
 
-class SyllabusViewSet(BaseAcademicViewSet):
-    """
-    ViewSet for Syllabus management with progress tracking.
-    """
+
+# ============================================================================
+# COMPETENCY-BASED EDUCATION VIEWSETS
+# ============================================================================
+
+class CompetencyAreaViewSet(BaseViewSet):
+    """ViewSet for CompetencyArea model."""
     
-    queryset = Syllabus.objects.all().order_by('subject', 'academic_year')
-    serializer_class = SyllabusSerializer
-    filterset_fields = ['subject', 'academic_year', 'curriculum', 'is_complete']
-    search_fields = ['subject__name', 'learning_outcomes', 'title']
-    ordering_fields = ['subject__name', 'academic_year__name', 'version']
-    ordering = ['subject', 'academic_year']
-
-    @action(detail=True, methods=['post'])
-    def mark_topic_completed(self, request, pk=None):
-        """
-        Mark a topic as completed or not completed.
-        """
-        syllabus = self.get_object()
-        topic_index = request.data.get('topic_index')
-        completed = request.data.get('completed', True)
-        
-        if topic_index is None:
-            return Response(
-                {'error': 'topic_index is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        try:
-            syllabus.mark_topic_completed(int(topic_index), completed)
-            serializer = self.get_serializer(syllabus)
-            return Response({
-                'message': f'Topic {topic_index} marked as {"completed" if completed else "not completed"}',
-                'syllabus': serializer.data
-            })
-        except IndexError:
-            return Response(
-                {'error': 'Invalid topic index'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
+    queryset = CompetencyArea.objects.all()
+    serializer_class = CompetencyAreaSerializer
+    filterset_class = CompetencyAreaFilter
+    search_fields = ['name', 'code', 'description', 'curriculum']
+    ordering_fields = ['name', 'code', 'order', 'curriculum']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.prefetch_related('grade_levels', 'subjects', 'child_areas')
+    
     @action(detail=True, methods=['get'])
-    def progress(self, request, pk=None):
-        """
-        Get detailed syllabus progress information.
-        """
-        syllabus = self.get_object()
+    def assessments(self, request, pk=None):
+        """Get competency assessments for this area."""
+        competency_area = self.get_object()
+        assessments = competency_area.competency_assessments.all()
+        serializer = CompetencyAssessmentSerializer(assessments, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def statistics(self, request, pk=None):
+        """Get statistics for this competency area."""
+        competency_area = self.get_object()
         
-        # Calculate topic statistics
-        topics = syllabus.topics or []
-        completed_topics = syllabus.completed_topics or []
-        
-        topic_stats = []
-        for i, topic in enumerate(topics):
-            topic_stats.append({
-                'index': i,
-                'title': topic.get('title', f'Topic {i + 1}'),
-                'completed': i in completed_topics,
-                'estimated_hours': topic.get('estimated_hours', 0),
-                'competencies': topic.get('competencies', [])
-            })
-        
-        # Calculate completion by competency
-        competency_completion = {}
-        for topic in topic_stats:
-            for competency in topic['competencies']:
-                if competency not in competency_completion:
-                    competency_completion[competency] = {'total': 0, 'completed': 0}
-                
-                competency_completion[competency]['total'] += 1
-                if topic['completed']:
-                    competency_completion[competency]['completed'] += 1
+        assessments = competency_area.competency_assessments.all()
+        if assessments.exists():
+            avg_score = assessments.aggregate(Avg('score'))['score__avg']
+            total_students = assessments.values('student').distinct().count()
+        else:
+            avg_score = 0
+            total_students = 0
         
         return Response({
-            'syllabus_info': {
-                'title': syllabus.title,
-                'subject': syllabus.subject.name,
-                'version': syllabus.version,
-                'academic_year': syllabus.academic_year.name
-            },
-            'progress': {
-                'completion_percentage': syllabus.completion_percentage,
-                'topics_count': syllabus.topics_count,
-                'completed_topics_count': syllabus.completed_topics_count,
-                'remaining_topics': syllabus.topics_count - syllabus.completed_topics_count,
-                'estimated_total_hours': sum(t.get('estimated_hours', 0) for t in topics),
-                'completed_hours': sum(
-                    t.get('estimated_hours', 0) 
-                    for i, t in enumerate(topics) 
-                    if i in completed_topics
-                )
-            },
-            'topic_details': topic_stats,
-            'competency_coverage': competency_completion,
-            'next_topic': self._get_next_topic(topic_stats)
+            'competency_area': competency_area.name,
+            'average_score': avg_score,
+            'total_students': total_students,
+            'student_count': competency_area.student_count,
+            'levels': competency_area.get_competency_levels()
         })
 
-    def _get_next_topic(self, topic_stats):
-        """Get the next incomplete topic."""
-        for topic in topic_stats:
-            if not topic['completed']:
-                return topic
-        return None
 
-
-class AcademicEventViewSet(BaseAcademicViewSet):
-    """ViewSet for managing academic events."""
-    serializer_class = AcademicEventSerializer
-    permission_classes = [IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['event_type', 'is_active', 'is_published', 'is_cancelled', 'academic_year', 'term']
-    search_fields = ['title', 'description', 'location', 'organizer__name']
-    ordering_fields = ['start_date', 'end_date', 'priority', 'created_at']
+class CompetencyAssessmentViewSet(BaseViewSet):
+    """ViewSet for CompetencyAssessment model."""
     
-    # FIX: Changed from 'start_time' to just 'start_date'
-    queryset = AcademicEvent.objects.all().order_by('start_date', 'priority')
-    
-    def get_permissions(self):
-        """Set permissions based on action."""
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            permission_classes = [IsAdminUser]
-        else:
-            permission_classes = [IsAuthenticated]
-        return [permission() for permission in permission_classes]
+    queryset = CompetencyAssessment.objects.all()
+    serializer_class = CompetencyAssessmentSerializer
+    filterset_class = CompetencyAssessmentFilter
+    search_fields = [
+        'student__first_name', 'student__last_name',
+        'competency_area__name', 'level'
+    ]
+    ordering_fields = ['score', 'assessment_date', 'level']
     
     def get_queryset(self):
-        """Override queryset to add filtering."""
         queryset = super().get_queryset()
-        
-        # Filter by date range
-        start_date = self.request.query_params.get('start_date')
-        end_date = self.request.query_params.get('end_date')
-        
-        if start_date:
-            queryset = queryset.filter(start_date__gte=start_date)
-        if end_date:
-            queryset = queryset.filter(end_date__lte=end_date)
-        
-        # Filter by event type
-        event_type = self.request.query_params.get('event_type')
-        if event_type:
-            queryset = queryset.filter(event_type=event_type)
-        
-        # Show only published events to non-admin users
-        if not self.request.user.is_staff:
-            queryset = queryset.filter(is_published=True, is_active=True)
-        
-        # Filter by priority
-        priority = self.request.query_params.get('priority')
-        if priority:
-            queryset = queryset.filter(priority=priority)
-        
-        # Filter by target audience
-        target_audience = self.request.query_params.get('target_audience')
-        if target_audience:
-            queryset = queryset.filter(target_audience__icontains=target_audience)
-        
-        return queryset
-    
-    @action(detail=False, methods=['GET'])
-    def upcoming(self, request):
-        """Get upcoming events."""
-        today = timezone.now().date()
-        queryset = self.get_queryset().filter(
-            start_date__gte=today,
-            is_active=True,
-            is_cancelled=False
+        return queryset.select_related(
+            'student', 'competency_area', 'grade_level',
+            'assessed_by', 'verified_by'
         )
-        
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
+
+
+# ============================================================================
+# INFRASTRUCTURE VIEWSETS
+# ============================================================================
+
+class ClassroomViewSet(BaseViewSet):
+    """ViewSet for Classroom model."""
+    
+    queryset = Classroom.objects.all()
+    serializer_class = ClassroomSerializer
+    filterset_class = ClassroomFilter
+    search_fields = ['room_number', 'name', 'building', 'description']
+    ordering_fields = ['building', 'floor', 'room_number', 'capacity']
+    
+    @action(detail=True, methods=['get'])
+    def schedule(self, request, pk=None):
+        """Get schedule for this classroom."""
+        classroom = self.get_object()
+        schedule = classroom.get_schedule()
+        serializer = ScheduleSerializer(schedule, many=True)
         return Response(serializer.data)
     
-    @action(detail=False, methods=['GET'])
-    def current(self, request):
-        """Get current events (ongoing today)."""
-        today = timezone.now().date()
-        queryset = self.get_queryset().filter(
-            start_date__lte=today,
-            end_date__gte=today,
-            is_active=True,
-            is_cancelled=False
-        )
+    @action(detail=True, methods=['get'])
+    def current_usage(self, request, pk=None):
+        """Get current usage of this classroom."""
+        classroom = self.get_object()
+        current_class = classroom.current_class
         
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['GET'])
-    def past(self, request):
-        """Get past events."""
-        today = timezone.now().date()
-        queryset = self.get_queryset().filter(
-            end_date__lt=today,
-            is_active=True
-        )
-        
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['GET'])
-    def calendar_view(self, request):
-        """Get events for calendar view."""
-        start_date = request.query_params.get('start_date')
-        end_date = request.query_params.get('end_date')
-        
-        if not start_date or not end_date:
-            # Default to current month
-            today = timezone.now().date()
-            start_date = today.replace(day=1)
-            if today.month == 12:
-                end_date = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
-            else:
-                end_date = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
-        
-        queryset = self.get_queryset().filter(
-            start_date__gte=start_date,
-            end_date__lte=end_date,
-            is_active=True,
-            is_cancelled=False
-        )
-        
-        calendar_data = []
-        for event in queryset:
-            # Determine event color based on type or priority
-            color = self._get_event_color(event)
-            
-            calendar_data.append({
-                'id': str(event.id),
-                'title': event.title,
-                'start': event.start_date.isoformat(),
-                'end': event.end_date.isoformat(),
-                'color': color,
-                'allDay': True,  # Events are all-day since there's no time field
-                'extendedProps': {
-                    'event_type': event.event_type,
-                    'location': event.location,
-                    'organizer': event.organizer.name if event.organizer else None,
-                    'priority': event.priority,
-                    'description': event.description,
-                    'url': f"/api/v1/academics/events/{event.id}/"
+        if current_class:
+            return Response({
+                'is_occupied': True,
+                'current_class': {
+                    'id': current_class.id,
+                    'name': current_class.name,
+                    'subject': current_class.subject.name if hasattr(current_class, 'subject') else None,
+                    'teacher': current_class.teacher.get_full_name() if current_class.teacher else None,
+                    'start_time': current_class.schedule.start_time if hasattr(current_class, 'schedule') else None,
+                    'end_time': current_class.schedule.end_time if hasattr(current_class, 'schedule') else None,
                 }
             })
-        
-        return Response(calendar_data)
-    
-    def _get_event_color(self, event):
-        """Get color for event in calendar."""
-        # Color mapping based on event type
-        color_map = {
-            'exam': '#FF6B6B',  # Red for exams
-            'holiday': '#4ECDC4',  # Teal for holidays
-            'meeting': '#45B7D1',  # Blue for meetings
-            'training': '#96CEB4',  # Green for training
-            'competition': '#FFEAA7',  # Yellow for competitions
-            'ceremony': '#DDA0DD',  # Purple for ceremonies
-            'parent_event': '#98D8C8',  # Mint for parent events
-            'sports': '#F7DC6F',  # Orange for sports
-            'cultural': '#BB8FCE',  # Lavender for cultural events
-        }
-        
-        # Try to get color from event type
-        if event.event_type in color_map:
-            return color_map[event.event_type]
-        
-        # Default colors based on priority
-        priority_colors = {
-            'high': '#FF6B6B',  # Red for high priority
-            'medium': '#F7DC6F',  # Yellow for medium priority
-            'low': '#96CEB4',  # Green for low priority
-        }
-        
-        return priority_colors.get(event.priority, '#D5DBDB')  # Gray default
-    
-    @action(detail=False, methods=['GET'])
-    def by_type(self, request):
-        """Get events grouped by type."""
-        queryset = self.get_queryset().filter(is_active=True)
-        
-        events_by_type = {}
-        for event in queryset:
-            if event.event_type not in events_by_type:
-                events_by_type[event.event_type] = {
-                    'count': 0,
-                    'upcoming': 0,
-                    'past': 0,
-                    'events': []
-                }
-            
-            events_by_type[event.event_type]['count'] += 1
-            
-            today = timezone.now().date()
-            if event.start_date > today:
-                events_by_type[event.event_type]['upcoming'] += 1
-            elif event.end_date < today:
-                events_by_type[event.event_type]['past'] += 1
-            
-            events_by_type[event.event_type]['events'].append({
-                'id': str(event.id),
-                'title': event.title,
-                'start_date': event.start_date,
-                'end_date': event.end_date,
-                'priority': event.priority
+        else:
+            return Response({
+                'is_occupied': False,
+                'current_class': None
             })
-        
-        return Response(events_by_type)
+
+
+# ============================================================================
+# ACADEMIC REPORT VIEWSETS
+# ============================================================================
+
+class AcademicReportViewSet(BaseViewSet):
+    """ViewSet for AcademicReport model."""
     
-    @action(detail=True, methods=['POST'])
+    queryset = AcademicReport.objects.all()
+    serializer_class = AcademicReportSerializer
+    filterset_class = AcademicReportFilter
+    search_fields = [
+        'student__first_name', 'student__last_name',
+        'form_teacher_comment', 'head_teacher_comment'
+    ]
+    ordering_fields = ['academic_year', 'gpa', 'overall_score']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.select_related('student', 'enrollment', 'generated_by')
+    
+    @action(detail=True, methods=['post'])
+    def generate(self, request, pk=None):
+        """Generate academic report."""
+        report = self.get_object()
+        report.generate_report()
+        report.save()
+        
+        return Response({
+            'status': 'success',
+            'message': 'Academic report generated',
+            'report': AcademicReportSerializer(report).data
+        })
+    
+    @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):
-        """Publish an event."""
-        if not request.user.is_staff:
-            return Response(
-                {'error': 'Only admin users can publish events'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        """Publish academic report."""
+        report = self.get_object()
+        report.publish_report()
         
-        event = self.get_object()
-        event.is_published = True
-        event.updated_by = request.user
-        event.save()
-        
-        serializer = self.get_serializer(event)
+        return Response({
+            'status': 'success',
+            'message': 'Academic report published',
+            'report': AcademicReportSerializer(report).data
+        })
+
+
+# ============================================================================
+# EVENT AND CONFIGURATION VIEWSETS
+# ============================================================================
+
+class AcademicEventViewSet(BaseViewSet):
+    """ViewSet for AcademicEvent model."""
+    
+    queryset = AcademicEvent.objects.all()
+    serializer_class = AcademicEventSerializer
+    filterset_class = AcademicEventFilter
+    search_fields = ['title', 'description', 'location', 'organizer']
+    ordering_fields = ['start_date', 'end_date', 'event_type']
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        return queryset.prefetch_related('participants', 'affected_classes')
+    
+    @action(detail=False, methods=['get'], url_path='upcoming')
+    def upcoming_events(self, request):
+        """Get upcoming events."""
+        days = int(request.query_params.get('days', 30))
+        events = AcademicEvent.get_upcoming_events(days)
+        serializer = AcademicEventSerializer(events, many=True)
         return Response(serializer.data)
     
-    @action(detail=True, methods=['POST'])
-    def cancel(self, request, pk=None):
-        """Cancel an event."""
-        if not request.user.is_staff:
-            return Response(
-                {'error': 'Only admin users can cancel events'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+    @action(detail=False, methods=['get'], url_path='by-date')
+    def events_by_date(self, request):
+        """Get events for a specific date."""
+        date_str = request.query_params.get('date', timezone.now().date().isoformat())
         
-        event = self.get_object()
-        event.is_cancelled = True
-        event.updated_by = request.user
-        event.save()
-        
-        serializer = self.get_serializer(event)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['GET'])
-    def countdown(self, request):
-        """Get countdown to next important events."""
-        today = timezone.now().date()
-        
-        # Get upcoming high-priority events
-        upcoming_events = self.get_queryset().filter(
-            start_date__gte=today,
-            is_active=True,
-            is_cancelled=False,
-            priority='high'
-        ).order_by('start_date')[:5]
-        
-        countdown_data = []
-        for event in upcoming_events:
-            days_until = (event.start_date - today).days
-            
-            countdown_data.append({
-                'id': str(event.id),
-                'title': event.title,
-                'event_type': event.event_type,
-                'start_date': event.start_date,
-                'days_until': days_until,
-                'priority': event.priority,
-                'location': event.location
-            })
-        
-        return Response(countdown_data)
-    
-    @action(detail=False, methods=['GET'])
-    def statistics(self, request):
-        """Get event statistics."""
-        queryset = self.get_queryset().filter(is_active=True)
-        
-        # Get date range from query params or default to current academic year
         try:
-            current_year = AcademicYear.objects.filter(is_current=True).first()
-            if current_year:
-                start_date = current_year.start_date
-                end_date = current_year.end_date
-            else:
-                # Default to current year
-                start_date = timezone.now().date().replace(month=1, day=1)
-                end_date = timezone.now().date().replace(month=12, day=31)
-        except:
-            start_date = timezone.now().date().replace(month=1, day=1)
-            end_date = timezone.now().date().replace(month=12, day=31)
+            date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'error': 'Invalid date format. Use YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
-        if request.query_params.get('start_date'):
-            start_date = request.query_params.get('start_date')
-        if request.query_params.get('end_date'):
-            end_date = request.query_params.get('end_date')
+        events = AcademicEvent.get_events_for_date(date)
+        serializer = AcademicEventSerializer(events, many=True)
+        return Response(serializer.data)
+
+
+class GradingScaleViewSet(BaseViewSet):
+    """ViewSet for GradingScale model."""
+    
+    queryset = GradingScale.objects.all()
+    serializer_class = GradingScaleSerializer
+    filterset_class = GradingScaleFilter
+    search_fields = ['name', 'description']
+    ordering_fields = ['name', 'scale_type', 'academic_level']
+    
+    @action(detail=True, methods=['get'])
+    def calculate_grade(self, request, pk=None):
+        """Calculate grade for a given score."""
+        grading_scale = self.get_object()
+        score = request.query_params.get('score')
+        max_score = request.query_params.get('max_score', 100)
         
-        queryset = queryset.filter(
-            start_date__gte=start_date,
-            end_date__lte=end_date
-        )
+        if not score:
+            return Response(
+                {'error': 'score parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
-        statistics = {
-            'total_events': queryset.count(),
-            'published_events': queryset.filter(is_published=True).count(),
-            'cancelled_events': queryset.filter(is_cancelled=True).count(),
-            'by_type': list(queryset.values('event_type').annotate(
-                count=Count('id'),
-                published=Count('id', filter=Q(is_published=True)),
-                cancelled=Count('id', filter=Q(is_cancelled=True))
-            ).order_by('-count')),
-            'by_priority': list(queryset.values('priority').annotate(
-                count=Count('id')
-            ).order_by('-count')),
-            'by_month': list(queryset.extra(
-                {'month': "EXTRACT(month FROM start_date)"}
-            ).values('month').annotate(
-                count=Count('id')
-            ).order_by('month')),
-            'date_range': {
-                'start_date': start_date,
-                'end_date': end_date
-            }
+        try:
+            score = float(score)
+            max_score = float(max_score)
+        except ValueError:
+            return Response(
+                {'error': 'score and max_score must be numbers'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        grade_info = grading_scale.get_grade_for_score(score, max_score)
+        
+        if grade_info:
+            return Response(grade_info)
+        else:
+            return Response(
+                {'error': 'Unable to calculate grade for given score'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class AcademicConfigurationViewSet(
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet
+):
+    """ViewSet for AcademicConfiguration model."""
+    
+    queryset = AcademicConfiguration.objects.all()
+    serializer_class = AcademicConfigurationSerializer
+    permission_classes = [IsAuthenticated, IsAdminUser]
+    
+    def get_object(self):
+        """Always return the single configuration instance."""
+        return AcademicConfiguration.load()
+    
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        """Get current academic configuration."""
+        config = self.get_object()
+        serializer = self.get_serializer(config)
+        return Response(serializer.data)
+
+
+# ============================================================================
+# SETUP AND HEALTH CHECK API VIEWS
+# ============================================================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def setup_check(request):
+    """Check if academic system is properly set up."""
+    checks = {
+        'academic_years': AcademicYear.objects.filter(is_active=True).exists(),
+        'academic_terms': AcademicTerm.objects.filter(is_active=True).exists(),
+        'grade_levels': GradeLevel.objects.filter(is_active=True).exists(),
+        'subjects': Subject.objects.filter(is_active=True).exists(),
+        'classrooms': Classroom.objects.filter(is_active=True).exists(),
+        'competency_areas': CompetencyArea.objects.filter(is_active=True).exists(),
+        'current_academic_year': AcademicYear.objects.filter(is_current=True).exists(),
+        'current_academic_term': AcademicTerm.objects.filter(is_current=True).exists(),
+    }
+    
+    is_setup_complete = all(checks.values())
+    
+    # Identify missing setup items
+    missing_items = []
+    for key, exists in checks.items():
+        if not exists:
+            missing_items.append({
+                'name': key.replace('_', ' ').title(),
+                'key': key,
+                'priority': 1 if key in ['academic_years', 'grade_levels', 'subjects'] else 2
+            })
+    
+    return Response({
+        'is_setup_complete': is_setup_complete,
+        'checks': checks,
+        'missing_items': missing_items,
+        'missing_count': len(missing_items),
+        'timestamp': timezone.now().isoformat()
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+@cache_page(60 * 2)  # Cache for 2 minutes
+def essential_data(request):
+    """Get essential data for initial UI rendering."""
+    data = {}
+    
+    # Academic years
+    data['academic_years'] = list(
+        AcademicYear.objects.filter(is_active=True)
+        .values('id', 'name', 'academic_year', 'is_current')
+        .order_by('-start_date')[:10]
+    )
+    
+    # Current academic year
+    current_year = AcademicYear.objects.filter(is_current=True).first()
+    if current_year:
+        data['current_year'] = {
+            'id': current_year.id,
+            'name': current_year.name,
+            'academic_year': current_year.academic_year,
         }
-        
-        return Response(statistics)
-
-# ==================== DASHBOARD AND ANALYTICS VIEWS ====================
-
-class AcademicDashboardView(APIView):
-    """API view for academic dashboard data."""
     
-    permission_classes = [permissions.IsAuthenticated]
+    # Grade levels
+    data['grade_levels'] = list(
+        GradeLevel.objects.filter(is_active=True)
+        .values('id', 'name', 'code', 'level')
+        .order_by('order')[:12]
+    )
     
-    def get(self, request):
-        current_year = AcademicYear.objects.filter(is_current=True).first()
-        current_term = AcademicTerm.objects.filter(is_current=True).first()
-        
-        if not current_year:
-            return Response({'error': 'No current academic year set'}, status=404)
-        
-        # Get statistics with efficient queries
-        class_stats = Class.objects.filter(academic_year=current_year).aggregate(
-            total=Count('id'),
-            total_capacity=Sum('capacity'),
-            total_students=Sum('current_strength')
-        )
-        
-        enrollment_stats = StudentEnrollment.objects.filter(
-            academic_year=current_year,
-            status='active'
-        ).aggregate(
-            total=Count('id'),
-            new_this_month=Count('id', filter=Q(
-                enrollment_date__gte=timezone.now().replace(day=1)
-            ))
-        )
-        
-        teacher_stats = TeacherProfile.objects.filter(is_active=True).aggregate(
-            total=Count('id'),
-            with_assignments=Count('id', filter=Q(
-                subject_assignments__is_active=True,
-                subject_assignments__academic_year=current_year
-            ))
-        )
-        
-        event_stats = AcademicEvent.objects.filter(
-            academic_year=current_year,
-            is_published=True
-        ).aggregate(
-            total=Count('id'),
-            upcoming=Count('id', filter=Q(start_date__gte=timezone.now().date()))
-        )
-        
-        # Get recent activities
-        recent_enrollments = StudentEnrollment.objects.filter(
-            academic_year=current_year
-        ).select_related('student__student_profile', 'class_enrolled')[:5]
-        
-        upcoming_events = AcademicEvent.objects.filter(
-            academic_year=current_year,
-            start_date__gte=timezone.now().date(),
-            is_published=True
-        ).select_related('organizer')[:5]
-        
-        recent_lesson_plans = LessonPlan.objects.filter(
-            academic_year=current_year
-        ).select_related('teacher__user', 'subject', 'class_assigned')[:5]
-        
-        # Class occupancy overview
-        class_occupancy = Class.objects.filter(
-            academic_year=current_year
-        ).values(
-            'name', 'display_name', 'grade_level'
-        ).annotate(
-            occupancy_rate=Avg('occupancy_rate'),
-            student_count=F('current_strength')
-        ).order_by('grade_level', 'name')[:10]
-        
-        dashboard_data = {
-            'overview': {
-                'academic_year': {
-                    'id': str(current_year.id),
-                    'name': current_year.name,
-                    'progress': current_year.progress_percentage
-                },
-                'current_term': AcademicTermMinimalSerializer(current_term).data if current_term else None,
-                'statistics': {
-                    'classes': class_stats,
-                    'enrollments': enrollment_stats,
-                    'teachers': teacher_stats,
-                    'events': event_stats
-                }
-            },
-            'recent_activities': {
-                'enrollments': StudentEnrollmentSerializer(recent_enrollments, many=True).data,
-                'events': AcademicEventSerializer(upcoming_events, many=True).data,
-                'lesson_plans': LessonPlanSerializer(recent_lesson_plans, many=True).data
-            },
-            'class_overview': class_occupancy,
-            'quick_links': self._get_quick_links(request.user),
-            'last_updated': timezone.now()
-        }
-        
-        return Response(dashboard_data)
+    # Subjects
+    data['subjects'] = list(
+        Subject.objects.filter(is_active=True)
+        .values('id', 'name', 'code', 'category')
+        .order_by('name')[:50]
+    )
     
-    def _get_quick_links(self, user):
-        """Get quick links based on user permissions."""
-        links = []
-        
-        # Common links for all authenticated users
-        links.append({'name': 'My Classes', 'url': '/api/academics/classes/my/'})
-        links.append({'name': 'Upcoming Events', 'url': '/api/academics/events/upcoming/'})
-        
-        # Admin/Staff specific links
-        if user.is_staff or user.is_superuser:
-            links.append({'name': 'Manage Academic Years', 'url': '/api/academics/years/'})
-            links.append({'name': 'Bulk Enrollment', 'url': '/api/academics/enrollments/bulk_enroll/'})
-            links.append({'name': 'Teacher Workload', 'url': '/api/academics/assignments/teacher_workload/'})
-        
-        # Teacher specific links
-        if hasattr(user, 'teacher_profile'):
-            links.append({'name': 'My Lesson Plans', 'url': '/api/academics/lesson-plans/my/'})
-            links.append({'name': 'My Assignments', 'url': '/api/academics/assignments/by_teacher/'})
-        
-        return links
+    # Classrooms
+    data['classrooms'] = list(
+        Classroom.objects.filter(is_active=True)
+        .values('id', 'name', 'room_number', 'capacity', 'building')
+        .order_by('building', 'room_number')[:30]
+    )
+    
+    # Competency areas
+    data['competency_areas'] = list(
+        CompetencyArea.objects.filter(is_active=True)
+        .values('id', 'name', 'code', 'curriculum')
+        .order_by('name')[:20]
+    )
+    
+    return Response({
+        'data': data,
+        'counts': {key: len(value) for key, value in data.items()},
+        'has_minimum_data': (
+            len(data.get('grade_levels', [])) > 0 and
+            len(data.get('subjects', [])) > 0
+        ),
+        'timestamp': timezone.now().isoformat()
+    })
 
 
-class ClassStatisticsView(APIView):
-    """API view for class statistics."""
+# ============================================================================
+# DASHBOARD AND ANALYTICS API VIEWS
+# ============================================================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def dashboard_statistics(request):
+    """Get dashboard statistics."""
+    today = timezone.now().date()
     
-    permission_classes = [permissions.IsAuthenticated]
+    # Get current academic year
+    current_year = AcademicYear.get_current_academic_year()
+    current_term = AcademicTerm.get_current_term() if current_year else None
     
-    def get(self, request):
-        academic_year = request.query_params.get('academic_year')
-        grade_level = request.query_params.get('grade_level')
+    # Counts
+    total_students = User.objects.filter(role='student', is_active=True).count()
+    total_teachers = User.objects.filter(role='teacher', is_active=True).count()
+    total_classes = Class.objects.count()
+    total_subjects = Subject.objects.filter(is_active=True).count()
+    
+    # Today's attendance
+    today_attendance = Attendance.objects.filter(date=today)
+    attendance_summary = today_attendance.aggregate(
+        total=Count('id'),
+        present=Count('id', filter=Q(status='present')),
+        absent=Count('id', filter=Q(status='absent')),
+        late=Count('id', filter=Q(status='late'))
+    )
+    
+    attendance_rate = (
+        (attendance_summary['present'] / attendance_summary['total'] * 100)
+        if attendance_summary['total'] > 0 else 0
+    )
+    
+    # Performance statistics
+    grades = Grade.objects.all()
+    avg_score = grades.aggregate(Avg('score'))['score__avg'] or 0
+    
+    # Upcoming assessments
+    upcoming_assessments = Assessment.objects.filter(
+        date__gte=today,
+        date__lte=today + timedelta(days=7)
+    ).count()
+    
+    # Upcoming events
+    upcoming_events = AcademicEvent.get_upcoming_events(days=7).count()
+    
+    statistics = {
+        'overview': {
+            'total_students': total_students,
+            'total_teachers': total_teachers,
+            'total_classes': total_classes,
+            'total_subjects': total_subjects,
+        },
+        'attendance': {
+            'today_total': attendance_summary['total'],
+            'today_present': attendance_summary['present'],
+            'today_absent': attendance_summary['absent'],
+            'today_late': attendance_summary['late'],
+            'attendance_rate': round(attendance_rate, 2),
+        },
+        'performance': {
+            'average_score': round(avg_score, 2),
+            'total_assessments': grades.count(),
+        },
+        'upcoming': {
+            'assessments': upcoming_assessments,
+            'events': upcoming_events,
+        },
+        'current_academic': {
+            'year': current_year.name if current_year else None,
+            'term': current_term.name if current_term else None,
+        },
+        'date': today.isoformat()
+    }
+    
+    return Response(statistics)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def class_performance(request):
+    """Get class performance analysis."""
+    academic_year = request.query_params.get('academic_year')
+    term = request.query_params.get('term')
+    
+    classes = Class.objects.all()
+    
+    if academic_year:
+        classes = classes.filter(academic_year=academic_year)
+    if term:
+        classes = classes.filter(term=term)
+    
+    performance_data = []
+    
+    for class_obj in classes:
+        # Get grades for this class
+        grades = Grade.objects.filter(class_assigned=class_obj)
         
-        classes = Class.objects.all()
-        
-        if academic_year:
-            classes = classes.filter(academic_year_id=academic_year)
-        
-        if grade_level:
-            classes = classes.filter(grade_level=grade_level)
-        
-        # Optimize query with prefetch
-        classes = classes.prefetch_related(
-            Prefetch('enrollments', queryset=StudentEnrollment.objects.filter(status='active')),
-            Prefetch('subject_assignments', queryset=SubjectAssignment.objects.filter(is_active=True))
-        )
-        
-        statistics = []
-        for class_obj in classes:
-            # Get gender distribution
-            gender_dist = class_obj.enrollments.aggregate(
-                male=Count('id', filter=Q(student__student_profile__gender='male')),
-                female=Count('id', filter=Q(student__student_profile__gender='female'))
+        if grades.exists():
+            stats = grades.aggregate(
+                avg_score=Avg('score'),
+                highest_score=Max('score'),
+                lowest_score=Min('score'),
+                total_students=Count('student', distinct=True)
             )
             
-            stats = {
-                'class_id': str(class_obj.id),
-                'class_name': class_obj.display_name,
-                'grade_level': class_obj.get_grade_level_display(),
-                'section': class_obj.section,
-                'teacher': class_obj.class_teacher.user.get_full_name() if class_obj.class_teacher and class_obj.class_teacher.user else None,
-                'capacity': {
-                    'total': class_obj.capacity,
-                    'current': class_obj.current_strength,
-                    'available': class_obj.available_seats,
-                    'occupancy_rate': class_obj.occupancy_rate
-                },
-                'gender_distribution': gender_dist,
-                'subject_count': class_obj.subject_assignments.count(),
-                'teacher_count': class_obj.subject_assignments.values('teacher').distinct().count()
-            }
-            statistics.append(stats)
-        
-        # Calculate summary statistics
-        if statistics:
-            summary = {
-                'total_classes': len(statistics),
-                'total_students': sum(s['capacity']['current'] for s in statistics),
-                'total_capacity': sum(s['capacity']['total'] for s in statistics),
-                'average_occupancy': sum(s['capacity']['occupancy_rate'] for s in statistics) / len(statistics),
-                'gender_summary': {
-                    'male': sum(s['gender_distribution']['male'] for s in statistics),
-                    'female': sum(s['gender_distribution']['female'] for s in statistics)
-                }
-            }
-        else:
-            summary = {}
-        
-        return Response({
-            'statistics': statistics,
-            'summary': summary,
-            'filters': {
-                'academic_year': academic_year,
-                'grade_level': grade_level
-            }
-        })
-
-
-class TeacherWorkloadView(APIView):
-    """API view for teacher workload statistics."""
-    
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get(self, request):
-        academic_year = request.query_params.get('academic_year')
-        department = request.query_params.get('department')
-        
-        assignments = SubjectAssignment.objects.filter(is_active=True)
-        
-        if academic_year:
-            assignments = assignments.filter(academic_year_id=academic_year)
-        
-        if department:
-            assignments = assignments.filter(teacher__department_id=department)
-        
-        workload_data = assignments.values(
-            'teacher_id', 'teacher__user__first_name', 'teacher__user__last_name',
-            'teacher__employment_type', 'teacher__department__name'
-        ).annotate(
-            total_periods=Sum('periods_per_week'),
-            total_classes=Count('class_assigned', distinct=True),
-            total_subjects=Count('subject', distinct=True),
-            class_teacher_count=Count('id', filter=Q(is_class_teacher=True))
-        ).order_by('-total_periods')
-        
-        # Calculate workload percentage
-        for item in workload_data:
-            # Determine max periods based on employment type
-            if item['teacher__employment_type'] == 'full_time':
-                max_periods = 40
-            elif item['teacher__employment_type'] == 'part_time':
-                max_periods = 20
-            else:
-                max_periods = 30  # Default
+            # Calculate pass rate
+            total_grades = grades.count()
+            passing_grades = grades.filter(is_passing=True).count()
+            pass_rate = (passing_grades / total_grades * 100) if total_grades > 0 else 0
             
-            item['workload_percentage'] = min(100, (item['total_periods'] / max_periods) * 100)
-            item['workload_status'] = self._get_workload_status(item['workload_percentage'])
-            item['teacher_name'] = f"{item['teacher__user__first_name']} {item['teacher__user__last_name']}"
-            item['employment_type'] = item['teacher__employment_type']
-            item['department'] = item['teacher__department__name']
-        
-        serializer = TeacherWorkloadSerializer(workload_data, many=True)
-        
-        # Calculate summary statistics
-        if workload_data:
-            summary = {
-                'total_teachers': len(workload_data),
-                'average_periods': sum(item['total_periods'] for item in workload_data) / len(workload_data),
-                'average_workload': sum(item['workload_percentage'] for item in workload_data) / len(workload_data),
-                'overloaded_count': sum(1 for item in workload_data if item['workload_percentage'] > 90),
-                'optimal_count': sum(1 for item in workload_data if 70 <= item['workload_percentage'] <= 90),
-                'underloaded_count': sum(1 for item in workload_data if item['workload_percentage'] < 70)
-            }
-        else:
-            summary = {}
-        
-        return Response({
-            'workload_data': serializer.data,
-            'summary': summary,
-            'filters_applied': {
-                'academic_year': academic_year,
-                'department': department
-            }
-        })
-    
-    def _get_workload_status(self, percentage):
-        """Determine workload status based on percentage."""
-        if percentage > 90:
-            return 'overloaded'
-        elif percentage >= 70:
-            return 'optimal'
-        else:
-            return 'underloaded'
-
-
-class AcademicSearchView(APIView):
-    """API view for academic search across multiple models."""
-    
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get(self, request):
-        serializer = AcademicSearchSerializer(data=request.query_params)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        data = serializer.validated_data
-        query = data.get('query', '')
-        results = {
-            'subjects': [],
-            'classes': [],
-            'events': [],
-            'teachers': [],
-            'students': []
-        }
-        
-        if query:
-            # Search subjects with optimization
-            subjects = Subject.objects.filter(
-                Q(name__icontains=query) |
-                Q(code__icontains=query) |
-                Q(description__icontains=query)
-            ).select_related('department')[:10]
-            results['subjects'] = SubjectSerializer(subjects, many=True).data
+            # Attendance rate
+            attendance_summary = class_obj.get_attendance_summary()
             
-            # Search classes
-            classes = Class.objects.filter(
-                Q(name__icontains=query) |
-                Q(section__icontains=query) |
-                Q(room_number__icontains=query) |
-                Q(display_name__icontains=query)
-            ).select_related('academic_year', 'class_teacher__user')[:10]
-            results['classes'] = ClassSerializer(classes, many=True).data
-            
-            # Search events
-            events = AcademicEvent.objects.filter(
-                Q(title__icontains=query) |
-                Q(description__icontains=query) |
-                Q(venue__icontains=query)
-            ).select_related('academic_year', 'organizer')[:10]
-            results['events'] = AcademicEventSerializer(events, many=True).data
-            
-            # Search teachers
-            teachers = TeacherProfile.objects.filter(
-                Q(user__first_name__icontains=query) |
-                Q(user__last_name__icontains=query) |
-                Q(staff_id__icontains=query) |
-                Q(qualification__icontains=query)
-            ).select_related('user', 'department')[:10]
-            from teachers.serializers import TeacherMinimalSerializer
-            results['teachers'] = TeacherMinimalSerializer(teachers, many=True).data
-            
-            # Search students (through enrollments)
-            enrollments = StudentEnrollment.objects.filter(
-                Q(student__first_name__icontains=query) |
-                Q(student__last_name__icontains=query) |
-                Q(enrollment_number__icontains=query)
-            ).select_related('student__student_profile', 'class_enrolled')[:10]
-            results['students'] = StudentEnrollmentSerializer(enrollments, many=True).data
-        
-        # Add counts
-        results['counts'] = {
-            'subjects': len(results['subjects']),
-            'classes': len(results['classes']),
-            'events': len(results['events']),
-            'teachers': len(results['teachers']),
-            'students': len(results['students'])
-        }
-        
-        return Response(results)
-
-
-# ==================== SIMPLIFIED VIEWS (Replace old duplicate views) ====================
-
-class AcademicOverviewView(APIView):
-    """Get academic overview and dashboard data."""
+            performance_data.append({
+                'class_id': class_obj.id,
+                'class_name': class_obj.name,
+                'grade_level': class_obj.grade_level.name,
+                'total_students': class_obj.students_count,
+                'average_score': round(stats['avg_score'] or 0, 2),
+                'highest_score': stats['highest_score'] or 0,
+                'lowest_score': stats['lowest_score'] or 0,
+                'pass_rate': round(pass_rate, 2),
+                'attendance_rate': attendance_summary.get('attendance_rate', 0),
+            })
     
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get(self, request):
-        # Use the dashboard view instead
-        dashboard_view = AcademicDashboardView()
-        return dashboard_view.get(request)
+    return Response(performance_data)
 
 
-# ==================== UTILITY VIEWS ====================
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def student_progress(request, student_id):
+    """Get student progress tracking."""
+    try:
+        student = User.objects.get(id=student_id, role='student')
+    except User.DoesNotExist:
+        return Response(
+            {'error': 'Student not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    
+    # Get student's enrollments
+    enrollments = Enrollment.objects.filter(student=student, status='active')
+    
+    if not enrollments.exists():
+        return Response(
+            {'error': 'Student has no active enrollments'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    
+    current_enrollment = enrollments.latest('enrollment_date')
+    
+    # Get grades
+    grades = Grade.objects.filter(student=student)
+    
+    # Get attendance
+    attendance = Attendance.objects.filter(student=student)
+    
+    # Calculate statistics
+    if grades.exists():
+        avg_score = grades.aggregate(Avg('score'))['score__avg']
+        improvement_rate = self.calculate_improvement_rate(grades)
+    else:
+        avg_score = 0
+        improvement_rate = 0
+    
+    if attendance.exists():
+        attendance_summary = attendance.aggregate(
+            total=Count('id'),
+            present=Count('id', filter=Q(status='present'))
+        )
+        attendance_percentage = (
+            attendance_summary['present'] / attendance_summary['total'] * 100
+            if attendance_summary['total'] > 0 else 0
+        )
+    else:
+        attendance_percentage = 0
+    
+    # Subject progress
+    subject_progress = []
+    for enrollment in enrollments:
+        subject_enrollments = enrollment.subject_enrollments.all()
+        for se in subject_enrollments:
+            subject_grades = grades.filter(subject=se.subject)
+            if subject_grades.exists():
+                subject_avg = subject_grades.aggregate(Avg('score'))['score__avg']
+                subject_progress.append({
+                    'subject': se.subject.name,
+                    'average_score': subject_avg or 0,
+                    'grade': se.grade,
+                    'is_passing': se.score >= se.subject.passing_score if se.score else False,
+                })
+    
+    progress_data = {
+        'student': {
+            'id': student.id,
+            'name': student.get_full_name(),
+            'student_id': student.student_id,
+        },
+        'current_class': current_enrollment.class_assigned.name,
+        'current_grade_level': current_enrollment.class_assigned.grade_level.name,
+        'current_gpa': self.calculate_gpa(grades),
+        'attendance_percentage': round(attendance_percentage, 2),
+        'improvement_rate': round(improvement_rate, 2),
+        'subject_progress': subject_progress,
+        'predicted_grade': self.predict_grade(avg_score, improvement_rate),
+        'timestamp': timezone.now().isoformat()
+    }
+    
+    return Response(progress_data)
 
-class ExportEnrollmentsCSVView(APIView):
-    """API view to export enrollments as CSV."""
+
+# ============================================================================
+# EXPORT API VIEWS
+# ============================================================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def export_grades(request):
+    """Export grades as CSV."""
+    academic_year = request.query_params.get('academic_year')
+    term = request.query_params.get('term')
+    class_id = request.query_params.get('class_id')
     
-    permission_classes = [permissions.IsAuthenticated]
+    grades = Grade.objects.all()
     
-    def get(self, request):
-        # Use the export_csv action from StudentEnrollmentViewSet
-        enrollment_viewset = StudentEnrollmentViewSet()
-        enrollment_viewset.request = request
-        enrollment_viewset.format_kwarg = None
-        
-        return enrollment_viewset.export_csv(request)
+    if academic_year:
+        grades = grades.filter(academic_year=academic_year)
+    if term:
+        grades = grades.filter(term=term)
+    if class_id:
+        grades = grades.filter(class_assigned_id=class_id)
+    
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="grades_export.csv"'
+    
+    writer = csv.writer(response)
+    writer.writerow([
+        'Student ID', 'Student Name', 'Class',
+        'Subject', 'Assessment', 'Score',
+        'Grade', 'Percentage', 'Assessment Date',
+        'Graded By'
+    ])
+    
+    for grade in grades.select_related(
+        'student', 'class_assigned', 'subject',
+        'assessment', 'graded_by'
+    ):
+        writer.writerow([
+            grade.student.student_id,
+            grade.student.get_full_name(),
+            grade.class_assigned.name,
+            grade.subject.name,
+            grade.assessment.name,
+            grade.score,
+            grade.grade,
+            grade.percentage,
+            grade.assessment.date,
+            grade.graded_by.get_full_name() if grade.graded_by else ''
+        ])
+    
+    return response
 
 
-class AcademicCalendarView(APIView):
-    """Get academic calendar data for full calendar.js or similar."""
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def export_attendance(request):
+    """Export attendance as CSV."""
+    start_date = request.query_params.get('start_date')
+    end_date = request.query_params.get('end_date')
+    class_id = request.query_params.get('class_id')
     
-    permission_classes = [permissions.IsAuthenticated]
+    attendance = Attendance.objects.all()
     
-    def get(self, request):
-        # Use the calendar action from AcademicEventViewSet
-        event_viewset = AcademicEventViewSet()
-        event_viewset.request = request
-        event_viewset.format_kwarg = None
-        
-        return event_viewset.calendar(request)
+    if start_date:
+        attendance = attendance.filter(date__gte=start_date)
+    if end_date:
+        attendance = attendance.filter(date__lte=end_date)
+    if class_id:
+        attendance = attendance.filter(class_assigned_id=class_id)
+    
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="attendance_export.csv"'
+    
+    writer = csv.writer(response)
+    writer.writerow([
+        'Student ID', 'Student Name', 'Class',
+        'Date', 'Status', 'Check-in Time',
+        'Check-out Time', 'Reason', 'Verified By'
+    ])
+    
+    for record in attendance.select_related(
+        'student', 'class_assigned', 'verified_by'
+    ):
+        writer.writerow([
+            record.student.student_id,
+            record.student.get_full_name(),
+            record.class_assigned.name,
+            record.date,
+            record.get_status_display(),
+            record.check_in_time or '',
+            record.check_out_time or '',
+            record.reason or '',
+            record.verified_by.get_full_name() if record.verified_by else ''
+        ])
+    
+    return response
+
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def calculate_improvement_rate(grades):
+    """Calculate improvement rate based on recent grades."""
+    if not grades.exists():
+        return 0
+    
+    # Get latest grades (last 5 assessments)
+    latest_grades = list(grades.order_by('-assessment__date')[:5])
+    
+    if len(latest_grades) < 2:
+        return 0
+    
+    # Calculate improvement between first and last
+    first_score = latest_grades[-1].score
+    last_score = latest_grades[0].score
+    
+    if first_score == 0:
+        return 0
+    
+    improvement = ((last_score - first_score) / first_score) * 100
+    return improvement
+
+
+def calculate_gpa(grades):
+    """Calculate GPA from grades."""
+    if not grades.exists():
+        return 0
+    
+    total_grade_points = 0
+    total_weight = 0
+    
+    for grade in grades:
+        if grade.grade_point:
+            weight = grade.assessment.weight or 1
+            total_grade_points += grade.grade_point * weight
+            total_weight += weight
+    
+    if total_weight == 0:
+        return 0
+    
+    return total_grade_points / total_weight
+
+
+def predict_grade(current_score, improvement_rate):
+    """Predict final grade based on current score and improvement rate."""
+    if not current_score:
+        return None
+    
+    predicted_score = current_score * (1 + improvement_rate / 100)
+    
+    if predicted_score >= 90:
+        return 'A+'
+    elif predicted_score >= 80:
+        return 'A'
+    elif predicted_score >= 70:
+        return 'B+'
+    elif predicted_score >= 60:
+        return 'B'
+    elif predicted_score >= 50:
+        return 'C+'
+    elif predicted_score >= 40:
+        return 'C'
+    elif predicted_score >= 30:
+        return 'D'
+    else:
+        return 'F'

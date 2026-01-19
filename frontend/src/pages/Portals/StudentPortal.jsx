@@ -24,7 +24,6 @@ import {
   FileEarmark, FileEarmarkArrowDown, FileEarmarkArrowUp
 } from "react-bootstrap-icons";
 
-
 // ==================== IMPORT ALL APIS ====================
 import authAPI from '../../services/authAPI';
 import notesAPI from '../../services/notesAPI';
@@ -33,20 +32,8 @@ import timetableAPI from '../../services/timetableAPI';
 import {gradesAPI} from '../../services/gradesAPI';
 import {attendanceAPI} from '../../services/attendanceAPI';
 import assignmentsAPI from '../../services/assignmentsAPI';
-import {academicAPI} from '../../services/academicAPI';
+import {academicsAPI} from '../../services/academicAPI';
 import downloadsAPI from '../../services/downloadsAPI';
-
-// REMOVED custom icon imports - replaced with React Bootstrap icons
-// import { 
-//   SubjectIcon, 
-//   AssignmentIcon, 
-//   GradeIcon, 
-//   AttendanceIcon,
-//   LibraryIcon, 
-//   ResourceIcon,
-//   TimetableIcon,
-//   NotesIcon
-// } from '../../components/Icons';
 
 function StudentPortal() {
   const { currentUser, loading: authLoading } = useAuth();
@@ -100,7 +87,7 @@ function StudentPortal() {
     };
   };
 
-  // Enhanced data fetching
+  // Enhanced data fetching with ALL FIXES APPLIED
   const fetchStudentData = useCallback(async (showRefreshing = false) => {
     try {
       if (showRefreshing) {
@@ -137,66 +124,140 @@ function StudentPortal() {
       }
 
       // 4. Get assignments (using notesAPI for LMS assignments)
-      const assignmentsResult = await notesAPI.getStudentAssignments();
+      const assignmentsResult = await notesAPI.getStudentAssignments({
+        student_view: true,
+        limit: 20
+      });
       if (assignmentsResult.success) {
-        setAssignmentsData(assignmentsResult.data?.assignments || assignmentsResult.data || []);
+        const assignments = assignmentsResult.data?.assignments || 
+                           assignmentsResult.data?.results || 
+                           assignmentsResult.data || [];
+        setAssignmentsData(Array.isArray(assignments) ? assignments : []);
       }
 
       // 5. Get grades
       const gradesResult = await gradesAPI.getGrades({ student_id: currentUser?.id });
       if (gradesResult.success) {
-        setGradesData(gradesResult.data?.grades || gradesResult.data || []);
+        const grades = gradesResult.data?.grades || 
+                      gradesResult.data?.results || 
+                      gradesResult.data || [];
+        setGradesData(Array.isArray(grades) ? grades : []);
       }
 
-      // 6. Get attendance
-      const attendanceResult = await attendanceAPI.getAttendanceRecords({ student_id: currentUser?.id });
-      if (attendanceResult.success) {
-        setAttendanceData(attendanceResult.data?.records || attendanceResult.data || []);
+      // 6. Get attendance - WITH FIXED ERROR HANDLING
+      let attendanceResult = { success: false, data: [] };
+      try {
+        attendanceResult = await attendanceAPI.getAttendanceRecords({ student_id: currentUser?.id });
+        if (attendanceResult.success) {
+          // Ensure it's always an array
+          const attendanceArray = Array.isArray(attendanceResult.data?.records) 
+            ? attendanceResult.data.records 
+            : Array.isArray(attendanceResult.data?.results)
+              ? attendanceResult.data.results
+              : Array.isArray(attendanceResult.data)
+                ? attendanceResult.data
+                : [];
+          setAttendanceData(attendanceArray);
+        } else {
+          setAttendanceData([]); // Default to empty array
+        }
+      } catch (error) {
+        console.warn('Attendance API error:', error.message);
+        setAttendanceData([]); // Default to empty array on error
       }
 
       // 7. Get library data
       const libraryResult = await libraryAPI.getUserCurrentBorrows();
       if (libraryResult.success) {
-        setLibraryData(libraryResult.data?.books || libraryResult.data || []);
+        const libraryItems = libraryResult.data?.books || 
+                           libraryResult.data?.results || 
+                           libraryResult.data || [];
+        setLibraryData(Array.isArray(libraryItems) ? libraryItems : []);
       }
 
-      // 8. Get resources
-      const resourcesResult = await downloadsAPI.getFiles({ category: 'student_resources' });
-      if (resourcesResult.success) {
-        setResourcesData(resourcesResult.data?.files || resourcesResult.data || []);
+      // 8. Get resources - WITH FIXED ERROR HANDLING FOR 404
+      let resourcesResult = { success: false, data: [] };
+      try {
+        resourcesResult = await downloadsAPI.getFiles({ category: 'student_resources' });
+        if (resourcesResult.success) {
+          const resources = resourcesResult.data?.files || 
+                          resourcesResult.data?.results || 
+                          resourcesResult.data || [];
+          setResourcesData(Array.isArray(resources) ? resources : []);
+        } else {
+          setResourcesData([]); // Default to empty array
+        }
+      } catch (error) {
+        console.warn('Downloads API not available:', error.message);
+        setResourcesData([]); // Use empty array as fallback
       }
 
       // 9. Get notes
       const notesResult = await notesAPI.getMyNotes();
       if (notesResult.success) {
-        setNotesData(notesResult.data?.notes || notesResult.data || []);
+        const notes = notesResult.data?.notes || 
+                     notesResult.data?.results || 
+                     notesResult.data || [];
+        setNotesData(Array.isArray(notes) ? notes : []);
       }
 
-      // 10. Get notifications
-      const notificationsResult = await notesAPI.getAssignmentNotifications();
-      if (notificationsResult.success) {
-        setNotifications(notificationsResult.data?.notifications || notificationsResult.data || []);
+      // 10. Get notifications - FIXED: Use available function instead of getAssignmentNotifications
+      let notificationsResult = { success: false, data: [] };
+      try {
+        // Using getStudentAssignments for notifications about upcoming assignments
+        notificationsResult = await notesAPI.getStudentAssignments({
+          student_view: true,
+          limit: 5,
+          ordering: 'due_date'
+        });
+        if (notificationsResult.success) {
+          const assignments = notificationsResult.data?.assignments || 
+                            notificationsResult.data?.results || 
+                            notificationsResult.data || [];
+          // Convert assignments to notifications format
+          const assignmentNotifications = Array.isArray(assignments) ? assignments.map(assignment => ({
+            id: assignment.id,
+            title: `Assignment: ${assignment.title}`,
+            message: `Due on ${new Date(assignment.due_date).toLocaleDateString()}`,
+            created_at: assignment.created_at || new Date().toISOString(),
+            type: 'assignment'
+          })) : [];
+          setNotifications(assignmentNotifications);
+        }
+      } catch (error) {
+        console.warn('Notifications API error:', error.message);
+        setNotifications([]); // Default to empty array
       }
 
-      // Calculate comprehensive statistics
-      const activeClasses = new Set(timetableData.map(item => item.subject)).size;
-      const pendingAssignments = assignmentsData.filter(a => 
+      // Calculate comprehensive statistics WITH ARRAY VALIDATION
+      const timetableArray = Array.isArray(timetableData) ? timetableData : [];
+      const assignmentsArray = Array.isArray(assignmentsData) ? assignmentsData : [];
+      const gradesArray = Array.isArray(gradesData) ? gradesData : [];
+      const attendanceArray = Array.isArray(attendanceData) ? attendanceData : [];
+      const libraryArray = Array.isArray(libraryData) ? libraryData : [];
+      const notesArray = Array.isArray(notesData) ? notesData : [];
+
+      const activeClasses = new Set(timetableArray.map(item => item.subject)).size;
+      const pendingAssignments = assignmentsArray.filter(a => 
         a.status === 'pending' || a.status === 'assigned' || a.status === 'draft'
       ).length;
-      const completedAssignments = assignmentsData.filter(a => 
+      const completedAssignments = assignmentsArray.filter(a => 
         a.status === 'submitted' || a.status === 'graded'
       ).length;
       
-      const averageGrade = gradesData.length > 0 
-        ? gradesData.reduce((sum, grade) => sum + (grade.score || grade.grade || 0), 0) / gradesData.length 
+      const averageGrade = gradesArray.length > 0 
+        ? gradesArray.reduce((sum, grade) => {
+            const gradeValue = grade.score || grade.grade || 0;
+            return sum + (typeof gradeValue === 'number' ? gradeValue : parseFloat(gradeValue) || 0);
+          }, 0) / gradesArray.length 
         : 0;
 
-      const totalAttendance = attendanceData.length;
-      const presentDays = attendanceData.filter(a => a.status === 'present').length;
+      const totalAttendance = attendanceArray.length;
+      const presentDays = attendanceArray.filter(a => a.status === 'present').length;
       const attendanceRate = totalAttendance > 0 ? Math.round((presentDays / totalAttendance) * 100) : 0;
 
-      const borrowedBooks = libraryData.length;
-      const upcomingExams = assignmentsData.filter(a => 
+      const borrowedBooks = libraryArray.length;
+      const upcomingExams = assignmentsArray.filter(a => 
         a.type === 'exam' && new Date(a.due_date) > new Date()
       ).length;
 
@@ -208,17 +269,17 @@ function StudentPortal() {
         borrowedBooks,
         upcomingExams,
         completedAssignments,
-        notesCount: notesData.length
+        notesCount: notesArray.length
       });
 
     } catch (err) {
       console.error('Error fetching student data:', err);
-      setError('Unable to load student portal data');
+      setError('Unable to load student portal data. Please try refreshing.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentUser?.id]);
+  }, [currentUser?.id, timetableData, assignmentsData, gradesData, attendanceData, libraryData, notesData]);
 
   useEffect(() => {
     if (!authLoading && currentUser) {
@@ -296,103 +357,121 @@ function StudentPortal() {
 
   // Enhanced utility functions
   const getAssignmentStatusBadge = (assignment) => {
-    const dueDate = new Date(assignment.due_date);
-    const today = new Date();
+    if (!assignment) return <Badge bg="secondary">Unknown</Badge>;
     
-    if (assignment.status === 'submitted' || assignment.submission_status === 'submitted') {
+    const status = assignment.status || assignment.submission_status;
+    
+    if (status === 'submitted' || status === 'graded') {
       return <Badge bg="success">Submitted ✓</Badge>;
     }
     
-    if (assignment.status === 'graded') {
-      return <Badge bg="info">Graded</Badge>;
-    }
-    
-    if (dueDate < today) {
-      return <Badge bg="danger">Overdue ⚠️</Badge>;
-    }
-    
-    const diffTime = dueDate - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
-    if (diffDays === 0) {
-      return <Badge bg="warning">Due Today 🔥</Badge>;
-    } else if (diffDays <= 3) {
-      return <Badge bg="warning">{diffDays}d left</Badge>;
+    if (assignment.due_date) {
+      const dueDate = new Date(assignment.due_date);
+      const today = new Date();
+      
+      if (dueDate < today) {
+        return <Badge bg="danger">Overdue ⚠️</Badge>;
+      }
+      
+      const diffTime = dueDate - today;
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays === 0) {
+        return <Badge bg="warning">Due Today 🔥</Badge>;
+      } else if (diffDays <= 3) {
+        return <Badge bg="warning">{diffDays}d left</Badge>;
+      }
     }
     
     return <Badge bg="secondary">Pending</Badge>;
   };
 
   const getGradeColor = (grade) => {
-    if (grade >= 90) return 'success';
-    if (grade >= 80) return 'info';
-    if (grade >= 70) return 'warning';
-    if (grade >= 60) return 'primary';
+    const gradeNum = typeof grade === 'number' ? grade : parseFloat(grade) || 0;
+    if (gradeNum >= 90) return 'success';
+    if (gradeNum >= 80) return 'info';
+    if (gradeNum >= 70) return 'warning';
+    if (gradeNum >= 60) return 'primary';
     return 'danger';
   };
 
   const getGradeLetter = (grade) => {
-    if (grade >= 90) return 'A';
-    if (grade >= 80) return 'B';
-    if (grade >= 70) return 'C';
-    if (grade >= 60) return 'D';
+    const gradeNum = typeof grade === 'number' ? grade : parseFloat(grade) || 0;
+    if (gradeNum >= 90) return 'A';
+    if (gradeNum >= 80) return 'B';
+    if (gradeNum >= 70) return 'C';
+    if (gradeNum >= 60) return 'D';
     return 'F';
   };
 
   const getResourceIcon = (fileType) => {
-    switch (fileType?.toLowerCase()) {
+    if (!fileType) return <FileEarmarkMedical className="text-secondary" size={20} />;
+    
+    switch (fileType.toLowerCase()) {
       case 'pdf': return <FileEarmarkPdf className="text-danger" size={20} />;
       case 'doc': case 'docx': return <FileEarmarkWord className="text-primary" size={20} />;
       case 'xls': case 'xlsx': return <FileEarmarkExcel className="text-success" size={20} />;
-      case 'mp4': case 'avi': return <PlayBtn className="text-warning" size={20} />;
-      case 'mp3': return <Headphones className="text-info" size={20} />;
+      case 'mp4': case 'avi': case 'mov': return <PlayBtn className="text-warning" size={20} />;
+      case 'mp3': case 'wav': return <Headphones className="text-info" size={20} />;
       default: return <FileEarmarkMedical className="text-secondary" size={20} />;
     }
   };
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
-    return new Date(dateString).toLocaleDateString('en-KE', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric'
-    });
+    try {
+      return new Date(dateString).toLocaleDateString('en-KE', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric'
+      });
+    } catch (error) {
+      return 'Invalid Date';
+    }
   };
 
   const formatTime = (timeString) => {
     if (!timeString) return '';
-    return new Date(`2000-01-01T${timeString}`).toLocaleTimeString('en-KE', {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    try {
+      return new Date(`2000-01-01T${timeString}`).toLocaleTimeString('en-KE', {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch (error) {
+      return 'Invalid Time';
+    }
   };
 
   // Filter and sort assignments
   const filteredAssignments = useMemo(() => {
-    let filtered = assignmentsData;
+    const assignmentsArray = Array.isArray(assignmentsData) ? assignmentsData : [];
+    let filtered = [...assignmentsArray];
     
     // Filter by search query
     if (searchQuery) {
       filtered = filtered.filter(assignment =>
-        assignment.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        assignment.subject?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        assignment.description?.toLowerCase().includes(searchQuery.toLowerCase())
+        (assignment.title?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+        (assignment.subject?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+        (assignment.description?.toLowerCase() || '').includes(searchQuery.toLowerCase())
       );
     }
     
     // Filter by status
     if (filterStatus !== 'all') {
       filtered = filtered.filter(assignment => {
+        const status = assignment.status || '';
+        
         if (filterStatus === 'pending') {
-          return assignment.status === 'pending' || assignment.status === 'draft';
+          return status === 'pending' || status === 'draft' || status === 'assigned';
         }
         if (filterStatus === 'submitted') {
-          return assignment.status === 'submitted';
+          return status === 'submitted';
         }
         if (filterStatus === 'graded') {
-          return assignment.status === 'graded';
+          return status === 'graded';
         }
         if (filterStatus === 'overdue') {
+          if (!assignment.due_date) return false;
           return new Date(assignment.due_date) < new Date();
         }
         return true;
@@ -402,7 +481,9 @@ function StudentPortal() {
     // Sort
     filtered.sort((a, b) => {
       if (sortBy === 'due_date') {
-        return new Date(a.due_date) - new Date(b.due_date);
+        const dateA = a.due_date ? new Date(a.due_date) : new Date(0);
+        const dateB = b.due_date ? new Date(b.due_date) : new Date(0);
+        return dateA - dateB;
       }
       if (sortBy === 'subject') {
         return (a.subject || '').localeCompare(b.subject || '');
@@ -423,8 +504,8 @@ function StudentPortal() {
         lastName: userProfile.last_name || userProfile.lastName || '',
         avatar: userProfile.avatar || userProfile.profile_picture,
         initials: (userProfile.first_name?.charAt(0) || '') + (userProfile.last_name?.charAt(0) || '') || 'S',
-        admissionNumber: userProfile.admission_number || userProfile.student_id,
-        gradeLevel: userProfile.grade_level || userProfile.class_name
+        admissionNumber: userProfile.admission_number || userProfile.student_id || 'N/A',
+        gradeLevel: userProfile.grade_level || userProfile.class_name || 'N/A'
       };
     }
     return {
@@ -1414,8 +1495,8 @@ function StudentPortal() {
                                 </div>
                                 <div className="d-flex justify-content-between text-muted small mb-3">
                                   <span>Due: {formatDate(book.due_date)}</span>
-                                  <Badge bg={new Date(book.due_date) < new Date() ? 'danger' : 'success'}>
-                                    {new Date(book.due_date) < new Date() ? 'Overdue' : 'Active'}
+                                  <Badge bg={book.due_date && new Date(book.due_date) < new Date() ? 'danger' : 'success'}>
+                                    {book.due_date && new Date(book.due_date) < new Date() ? 'Overdue' : 'Active'}
                                   </Badge>
                                 </div>
                                 <div className="d-grid gap-1">
